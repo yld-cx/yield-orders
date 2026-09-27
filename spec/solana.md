@@ -26,13 +26,17 @@ swap
 close
 ```
 
-Permissionless infrastructure instructions `initialize_pair` and `initialize_tick` create canonical market accounts and vaults. They confer no economic privilege and are not user-facing Yield Order actions.
+A Use receives Asset and locks Quote only. The full-term Yield quote is frozen at opening in **Asset units**. No Yield is paid upfront. If the user Repays before maturity, Yield is prorated by elapsed time with a **1-second minimum billable interval** and paid in Asset together with the returned Asset principal. A same-timestamp Repay therefore pays 1 second of Yield rather than zero. If the user does not Repay, permissionless Close settles the predefined Quote Swap and no Asset Yield is owed.
 
-The Solana program MUST produce the same economic result as the EVM implementation for equivalent Pair, Direction, Price, Duration, amounts and ordering, subject only to deterministic chain-specific integer representation and transaction mechanics.
+Supplier liquidity revolves by default. `withdraw` burns a selected fraction of the supplier's **active shares**. Its proportional Available part leaves immediately; its proportional active Working claim is redirected into an internal **Exit settlement pool**.
+
+The active market remains open while Exit exists: Supply, Use and immediate Swap continue against active liquidity. Repay and Close resolve Exit Working with priority. Repay Yield follows the same principal split, so Exit shares receive Asset Yield when Repay resolution is allocated to Exit.
+
+Permissionless infrastructure instructions `initialize_pair`, `initialize_tick`, and `settle` create canonical market accounts or advance deterministic Tick settlement. They confer no economic privilege and are not user-facing Yield Order actions.
+
+The Solana program MUST produce the same economic result as the EVM implementation for equivalent Pair, Direction, Price, Duration, amounts, timestamps and ordering, subject only to deterministic chain-specific integer representation and transaction mechanics.
 
 No Solana-specific feature may alter the economic meaning of a Yield Order.
-
----
 
 # 2. Runtime model
 
@@ -60,32 +64,35 @@ Production v0.1 has **no global writable protocol account** and no mutable globa
 The production program binary fixes:
 
 ```text
-BPS            = 10_000
-FEE_BPS        = 1_000 // 10%
-FEE_TO         = deployment-specific Pubkey
-MIN_DAILY_FEE  = 0.01%
-MAX_DAILY_FEE  = 1.00%
-CURVE_EXPONENT = 3
+BPS               = 10_000
+Q128              = 2^128
+FEE_BPS           = 1_000 // 10%
+FEE_TO            = deployment-specific Pubkey
+MIN_DAILY_BPS     = 1     // 0.01% / day
+MAX_DAILY_BPS     = 100   // 1.00% / day
+CURVE_EXPONENT    = 3
+MIN_BILLABLE_SECONDS = 1
 ```
 
-There is no writable `GlobalConfig` in the production economic path, no `next_pair_id`, and no `next_position_id`.
+There is no writable `GlobalConfig`, no `next_pair_id`, and no **global** `next_position_id`. Position sequencing is local to each already-writable Tick through `next_position_seq`.
 
-There is no upgrade authority in the final immutable deployment. Development/test deployments may use upgradeability before code freeze, but the production v0.1 program MUST be made immutable.
+There is no upgrade authority in the final immutable deployment.
 
 ## 3.2 Canonical scalar and wide-integer encoding
 
-All PDA derivation and fixed-size account layouts use the following frozen encodings:
+Frozen encodings:
 
 ```text
 direction          u8
 price_tick         i32 little-endian
 duration_days      u64 little-endian
 generation_id      u64 little-endian
-position_nonce     u64 little-endian
+exit_generation_id u64 little-endian
+position_seq       u64 little-endian
 Pubkey / mint      raw 32 bytes
 ```
 
-`mint0 < mint1` means unsigned lexicographic comparison of the raw 32-byte Pubkeys. Seed prefixes such as `"pair"`, `"tick"`, `"generation"` and `"position"` are their literal UTF-8 bytes. Numeric PDA seeds use exactly the little-endian byte encoding above.
+`mint0 < mint1` means unsigned lexicographic comparison of raw 32-byte Pubkeys. Numeric PDA seeds use the little-endian encodings above.
 
 Canonical stored wide integer:
 
@@ -93,11 +100,30 @@ Canonical stored wide integer:
 U256LE = [u64; 4]
 ```
 
-with limb 0 least-significant and each limb Borsh-serialized little-endian. Arithmetic conversions between `U256LE` and the implementation's checked wide-integer type MUST preserve the unsigned 256-bit value exactly.
+with limb 0 least-significant and each limb Borsh-serialized little-endian.
 
-Unless stated otherwise, token transfer amounts are `u64`, timestamps are `i64`, status/direction are `u8`, and generations/nonces/durations are `u64`.
+Unless stated otherwise, token transfer/principal/reserve amounts are `u64`, timestamps are `i64`, status/direction are `u8`, and generations/position sequences/durations are `u64`.
 
-Provider `shares`, Tick `total_shares`, all X128 growth accumulators/checkpoints, finalized generation growth, and canonical `price_x128` are **U256LE**. Shares are intentionally not `u64`: pro-rata share minting can produce more share units than Asset raw units when `S/C > 1`. Any U256 overflow MUST revert.
+The following are `U256LE`:
+
+```text
+ProviderPosition.shares
+ProviderPosition.exit_shares
+Tick.total_shares
+Tick.total_exit_shares
+price_x128
+
+yield_asset_growth_x128
+swap_quote_growth_x128
+exit_asset_growth_x128
+exit_yield_asset_growth_x128
+exit_quote_growth_x128
+
+all corresponding provider checkpoints
+all finalized active/Exit growth snapshots
+```
+
+Any overflow, underflow, or narrowing truncation MUST revert.
 
 ## 3.3 Pair PDA
 
@@ -109,9 +135,9 @@ Seeds:
 ["pair", mint0, mint1]
 ```
 
-where `mint0 < mint1` uses the frozen raw-byte comparison above.
+where `mint0 < mint1` uses the frozen raw-byte comparison.
 
-Stores fixed-size fields:
+Stores:
 
 ```text
 mint0: Pubkey
@@ -119,51 +145,19 @@ mint1: Pubkey
 bump: u8
 ```
 
-`initialize_pair(mint_a, mint_b)` is permissionless. It MUST:
+`initialize_pair(mint_a, mint_b)` is permissionless. It rejects identical mints, canonicalizes ordering, validates supported token programs/extensions, initializes only the canonical Pair PDA, and grants no creator rights.
 
-```text
-reject identical mints
-canonicalize mint0 < mint1
-validate supported token programs / Token-2022 extension policy
-initialize only the canonical Pair PDA
-assign no owner/admin/creator rights to the payer
-```
-
-The payer funds account rent only. The Pair PDA address is the canonical Solana pair identifier. Pair creation requires no global counter and does not serialize unrelated pair creation.
-
-Client/SDK Pair lookup MUST expose the same chain-neutral operation used by the product:
-
-```text
-getPair(mintA, mintB)
-```
-
-The helper canonicalizes `mint0 < mint1`, derives `PDA(["pair", mint0, mint1])`, fetches the Pair account, and returns the Pair PDA together with the decoded Pair state in one call. `getPair(mintA, mintB)` and `getPair(mintB, mintA)` MUST resolve to the same Pair PDA and state. No additional onchain lookup instruction is required because the Pair address is already deterministic. A valid but uninitialized Pair is reported as non-existent; invalid identical mint input is rejected by the helper before transaction construction.
-
-Enumerating every Pair that contains a given mint remains an indexer/client discovery concern; no unbounded mint→Pair account list is required in the program.
+The SDK `getPair(mintA, mintB)` canonicalizes, derives and fetches this PDA. Reversed input MUST resolve identically. Pair discovery across all markets remains an indexer/client concern.
 
 ## 3.4 Tick PDA
 
-A directional exact tick:
-
-```text
-Pair × Direction × Price Tick × DurationDays
-```
-
-Direction encoding is frozen:
-
-```text
-direction = 0 → Asset = mint0, Quote = mint1
-direction = 1 → Asset = mint1, Quote = mint0
-all other values → reject
-```
-
-Seeds use the frozen scalar byte layout:
+Seeds:
 
 ```text
 ["tick", pair, direction:u8, price_tick:i32_le, duration_days:u64_le]
 ```
 
-Stores fixed-size fields in this semantic domain:
+Stores fixed-size fields:
 
 ```text
 pair: Pubkey
@@ -173,20 +167,48 @@ quote_mint: Pubkey
 price_tick: i32
 price_x128: U256LE
 duration_days: u64
+
+// active + total Working state
 available_supply: u64
 working_supply: u64
+exit_working: u64
+
 total_shares: U256LE
-yield_growth_x128: U256LE
+yield_asset_growth_x128: U256LE
 swap_quote_growth_x128: U256LE
 generation: u64
+
+// Exit settlement state
+total_exit_shares: U256LE
+exit_asset_growth_x128: U256LE
+exit_yield_asset_growth_x128: U256LE
+exit_quote_growth_x128: U256LE
+exit_generation: u64
+
+// funded reserves
+exit_asset_reserve: u64
+yield_asset_reserve: u64
+exit_quote_reserve: u64
+
+// deterministic Term Position order
+next_position_seq: u64
+settle_cursor: u64
+
 bump: u8
 ```
 
-`initialize_tick(pair, direction, price_tick, duration_days)` is permissionless. It MUST validate the Pair/mints, `direction ∈ {0,1}`, canonical price-tick range, `duration_days > 0`, checked `duration_days * 86_400`, token compatibility, and uniqueness of the Tick PDA. It computes and stores canonical `price_x128` and initializes the three canonical Tick vault token accounts defined in §4. The payer funds rent only and receives no economic or administrative rights.
+Derived active values are not stored separately:
+
+```text
+active_working   = working_supply - exit_working
+active_principal = available_supply + active_working
+```
+
+`initialize_tick(...)` validates Pair/direction/price/duration/token policy, stores canonical `price_x128`, initializes every active/Exit/reserve/cursor field to zero, and creates the three Tick vaults in §4.
 
 ## 3.5 GenerationState PDA
 
-One immutable finalized snapshot per exhausted generation.
+Immutable snapshot of an exhausted **active** generation.
 
 Seeds:
 
@@ -194,25 +216,48 @@ Seeds:
 ["generation", tick, generation_id:u64_le]
 ```
 
-Stores fixed-size fields:
+Stores:
 
 ```text
 tick: Pubkey
 generation_id: u64
-final_yield_growth_x128: U256LE
+final_yield_asset_growth_x128: U256LE
 final_swap_quote_growth_x128: U256LE
 bump: u8
 ```
 
-The `swap` or `close` instruction that exhausts the generation MUST receive the canonical GenerationState PDA for the **current pre-increment generation**, initialize it in the same instruction, and persist final growth before resetting the Tick. The transaction caller/taker is the rent payer for this PDA in v0.1.
+A Swap, Close, or Repay that exhausts active principal while active shares still exist MUST initialize the current GenerationState in the same instruction after the final active growth increment.
 
-A provider can be behind by multiple Tick generations, but its shares belong to exactly one stored `provider.generation`. When `provider.generation < tick.generation`, any provider-mutating instruction (`supply`, `withdraw`, `collect`, or provider account close) MUST receive the GenerationState PDA derived from that stored provider generation. The program derives and validates the PDA; omission or substitution MUST fail.
+A stale ProviderPosition synchronizes exactly its stored active generation snapshot in O(1).
 
-Synchronization reads exactly one finalized snapshot and is O(1); it never walks intervening generations because the provider owned no shares in generations it did not join.
+## 3.6 ExitGenerationState PDA
 
-GenerationState PDAs are permanent protocol history in v0.1 and are not closed.
+Immutable snapshot of an exhausted **Exit** generation.
 
-## 3.6 ProviderPosition PDA
+Seeds:
+
+```text
+["exit_generation", tick, exit_generation_id:u64_le]
+```
+
+Stores:
+
+```text
+tick: Pubkey
+exit_generation_id: u64
+final_exit_asset_growth_x128: U256LE
+final_exit_yield_asset_growth_x128: U256LE
+final_exit_quote_growth_x128: U256LE
+bump: u8
+```
+
+A Repay or Close that reduces `exit_working` to zero while Exit shares still exist MUST initialize the current ExitGenerationState after the final Exit growth increment and before resetting current Exit-share/growth state.
+
+A stale provider synchronizes exactly its stored Exit generation snapshot in O(1).
+
+Active and Exit generation snapshots are independent and permanent in v0.1.
+
+## 3.7 ProviderPosition PDA
 
 One mutable provider position per:
 
@@ -226,82 +271,89 @@ Seeds:
 ["provider", tick, supplier]
 ```
 
-Stores fixed-size fields:
+Stores:
 
 ```text
 supplier: Pubkey
 tick: Pubkey
-generation: u64
+
+// active
+active_generation: u64
 shares: U256LE
-yield_growth_last_x128: U256LE
+yield_asset_growth_last_x128: U256LE
 swap_quote_growth_last_x128: U256LE
-owed_yield: u64
+owed_yield_asset: u64
 owed_swap_quote: u64
+yield_fee_carry: u16 // remainder in BPS-denominator units, always < BPS
+
+// Exit
+exit_generation: u64
+exit_shares: U256LE
+exit_asset_growth_last_x128: U256LE
+exit_yield_asset_growth_last_x128: U256LE
+exit_quote_growth_last_x128: U256LE
+owed_exit_asset: u64
+owed_exit_yield_asset: u64
+owed_exit_quote: u64
+
 last_supply_slot: u64
 bump: u8
 ```
 
-On first initialization of a ProviderPosition, before any new shares are minted, set exactly:
+On first initialization, set both generation IDs to the current Tick generation IDs, all shares/owed balances and `yield_fee_carry` to zero, and every growth checkpoint to the corresponding current Tick accumulator.
 
-```text
-generation = tick.generation
-shares = 0
-owed_yield = 0
-owed_swap_quote = 0
-yield_growth_last_x128 = tick.yield_growth_x128
-swap_quote_growth_last_x128 = tick.swap_quote_growth_x128
-last_supply_slot = 0
-```
+`ProviderPosition` is permanent in v0.1 and MUST NOT be closed. Keeping the canonical supplier × Tick PDA preserves `yield_fee_carry` across periods with zero shares/claims, preventing collection-frequency fee reset through account closure/recreation.
 
-This makes a new provider current by construction and prevents historical growth from being inherited.
-
-A ProviderPosition MAY remain allocated indefinitely. If the supplier chooses to close it, the program MUST first synchronize any stale generation and current growth, then require:
-
-```text
-provider.generation == tick.generation
-provider.shares == 0
-provider.owed_yield == 0
-provider.owed_swap_quote == 0
-```
-
-Only `supplier` may close the ProviderPosition. Rent is returned to `supplier`. Historical actions remain reconstructable from events.
-
-## 3.7 TermPosition PDA
+## 3.8 TermPosition PDA
 
 Permanent Use position.
 
-The caller supplies a client-chosen `position_nonce: u64`. Seeds:
+Each Tick assigns a monotonically increasing local `position_seq: u64`.
+
+The client supplies the expected current sequence and the program requires:
 
 ```text
-["position", tick, user, position_nonce:u64_le]
+position_seq == tick.next_position_seq
 ```
 
-Stores fixed-size fields:
+Seeds:
 
 ```text
-position_nonce: u64
+["position", tick, position_seq:u64_le]
+```
+
+Stores:
+
+```text
+position_seq: u64
 tick: Pubkey
 user: Pubkey
+
 asset_amount: u64
 quote_principal: u64
-gross_yield_fee: u64
+full_term_yield_asset: u64
+close_fee: u64
+
 opened_at: i64
 maturity: i64
 status: u8 // 0 ACTIVE, 1 REPAID, 2 CLOSED
 bump: u8
 ```
 
-The full TermPosition PDA is the canonical Solana position identifier. A `(tick, user, position_nonce)` tuple may be initialized only once.
+On successful Use:
 
-Client-chosen nonces remove the global writable position counter, allow independent Uses on unrelated ticks to execute in parallel, and allow multiple Use instructions in one transaction because every Position PDA is derivable before transaction construction.
+```text
+position_seq = tick.next_position_seq
+tick.next_position_seq = checked_add(1)
+```
+
+The Position PDA is the canonical Solana position identifier. Same-Tick Uses already serialize on the writable Tick account; the local sequence introduces no additional cross-Tick contention.
 
 TermPosition PDAs remain readable after settlement and are not closed in v0.1.
 
----
-
 # 4. Token vaults
 
-Each Tick uses three distinct canonical token-account PDAs; v0.1 does **not** use one shared ATA for these custody domains:
+Each Tick uses three canonical token-account PDAs:
 
 ```text
 Asset Vault          ["asset_vault", tick]
@@ -309,70 +361,72 @@ Quote Escrow Vault   ["quote_escrow", tick]
 Quote Proceeds Vault ["quote_proceeds", tick]
 ```
 
-`initialize_tick` creates and initializes these token accounts under the appropriate SPL Token / allowed Token-2022 program. Their token-account authority is the Tick PDA. Asset Vault mint is `asset_mint`; both Quote vault mints are `quote_mint`. The payer funds rent only.
+Their authority is the Tick PDA. Asset Vault mint is `asset_mint`; both Quote vaults use `quote_mint`.
 
-Because SPL token accounts can receive unsolicited external transfers, raw vault balance equality is **not** a protocol invariant. Unsolicited excess is treated as unaccounted donation/dust: it creates no shares, position, growth, or claim and has no v0.1 sweep path.
+External unsolicited transfers create no shares or claims and are treated as unaccounted donation/dust.
 
 ## 4.1 Asset Vault
 
-SPL token account controlled by Tick PDA authority.
-
-Holds accounted currently Available Asset.
-
-`working_supply` is accounting for Asset that has left the vault and is held by Use users.
-
-Required solvency invariant:
+The Asset Vault holds all accounted Asset that is physically inside the program:
 
 ```text
-asset_vault.amount >= available_supply
+active Available Asset
+funded but uncollected Exit Asset principal
+funded but uncollected gross Asset Yield
 ```
 
-Any balance above `available_supply` is unaccounted donation/dust and MUST NOT be included in Supply/Withdraw/Use/Swap accounting.
+`working_supply` is Asset outside the vault in ACTIVE Uses.
+
+Required solvency:
+
+```text
+asset_vault.amount
+    >= available_supply
+     + exit_asset_reserve
+     + yield_asset_reserve
+```
+
+These are distinct accounting buckets:
+
+- `available_supply` may be consumed by Use/Swap.
+- `exit_asset_reserve` is already-resolved Exit principal and MUST never be reused.
+- `yield_asset_reserve` backs gross active + Exit Yield claims funded by Repay and MUST never be reused.
+
+Any physical balance above the accounted sum is donation/dust.
 
 ## 4.2 Quote Escrow Vault
 
 Holds Quote Principal locked by ACTIVE Term Positions.
 
-Escrowed Quote MUST NOT be used for provider claims or protocol fees before Repay/Close settlement.
+No Yield is deposited here.
 
-Required solvency invariant:
+Required solvency:
 
 ```text
 quote_escrow_vault.amount >= sum(quote_principal of ACTIVE positions for the tick)
 ```
 
-The implementation does not iterate positions onchain to check this sum; conservation is proved by instruction accounting/property tests. External excess is unaccounted donation/dust.
+The program proves this by instruction conservation rather than iteration.
 
 ## 4.3 Quote Proceeds Vault
 
-Holds funded provider Quote claims:
+Holds funded Quote claims:
 
 ```text
-Gross Yield paid at Use opening
-Net Swap proceeds from immediate Swap
-Net Close proceeds
+active net Immediate Swap proceeds
+active net Close proceeds
+Exit net Close proceeds
 ```
 
-Accounting distinguishes:
+It does **not** hold Yield; Yield is Asset-denominated in v0.1.
+
+Required solvency includes all funded active Quote claims plus:
 
 ```text
-owed_yield
-owed_swap_quote
+exit_quote_reserve
 ```
 
-although both may be physically held in the same Quote Proceeds Vault because they use the same Quote mint for the tick.
-
-Required solvency invariant:
-
-```text
-quote_proceeds_vault.amount >= all funded but uncollected provider Quote claims
-```
-
-Growth rounding/dust may make the physical vault balance larger than currently claimable accounting. External excess is likewise not claimable.
-
-Protocol fees MUST NOT remain in this vault after the fee-bearing instruction; they transfer directly to a token account whose owner is compile-time `FEE_TO` and whose mint is the Tick Quote mint.
-
----
+Close/Swap protocol fees leave Quote custody in the fee-bearing instruction and go directly to the validated Quote account owned by immutable `FEE_TO`.
 
 # 5. Token compatibility
 
@@ -422,143 +476,242 @@ Every transfer path MUST verify that the exact canonical raw token amount was de
 
 # 6. Shared tick economics
 
-For each tick:
+For each Tick:
 
 ```text
-A = available_supply
-W = working_supply
-C = A + W
-S = total_shares
+A  = available_supply
+W  = working_supply
+E  = exit_working
+Wa = W - E
+Ca = A + Wa
+S  = total_shares
+X  = total_exit_shares
 ```
 
-Provider shares own proportional **current remaining Asset principal `C`** through one fungible share class. Shares do not separately identify Available and Working principal; those are pooled states.
+Active shares own `Ca`. Exit shares own the unresolved Exit Working pool `E` plus Exit growth already created for their generation.
 
-Supply into a live tick therefore joins the current `A + W` principal exposure pro rata, including existing Working principal. Working is not permanently attached to the provider that supplied before a Use opened.
-
-Realized Quote principal and Yield are separate historical receivables distributed through growth accounting and are not returned to Available liquidity. A later supplier checkpoints current growth before receiving shares and therefore receives no historical economics.
-
-Before any share burn, accrued economics are synchronized into `owed_yield` / `owed_swap_quote`. Those balances remain claimable after `shares` reaches zero, while a zero-share provider receives no future growth.
-
-The action split is:
+Required bounds:
 
 ```text
-withdraw → Asset principal
-collect  → realized Quote principal + earned Yield
+0 <= E <= W
+(Ca == 0) == (S == 0)
+(E  == 0) == (X == 0)
+X >= E whenever E > 0
 ```
 
----
+Supply, Use and Swap operate only on the active pool. Use never changes `E`; Swap never touches Exit. Withdraw burns active shares and redirects only their proportional `Wa` into Exit. Repay/Close resolve Exit first.
+
+Yield is always denominated in **Asset**. A Use freezes its full-term Asset Yield quote but funds no Yield at opening. If the Use Repays, actual Asset Yield is prorated by elapsed time and funded then. Repay Yield follows the same Exit/active principal split as the returned Asset.
+
+This gives a non-blocking market while preserving the two clear outcomes:
+
+```text
+Repay → Asset principal + accrued Asset Yield
+Close → Quote at the posted price
+```
 
 # 7. Price and Yield pricing
 
 ## 7.1 Canonical tick price
 
-`price_tick` is a signed `i32` constrained to the canonical TickMath range:
+`price_tick` is signed `i32` constrained to:
 
 ```text
 -887272 <= price_tick <= 887272
 ```
 
-For protocol economics it represents **raw Quote units per raw Asset unit** for this directional Tick. Direction chooses Asset/Quote; it does not invert the tick automatically.
-
-Both EVM and Solana MUST use the same canonical integer mapping:
+It represents raw Quote units per raw Asset unit.
 
 ```text
 sqrt_price_x96 = TickMath.getSqrtRatioAtTick(price_tick)
 price_x128      = floor(sqrt_price_x96^2 / 2^64)
-P               = price_x128 / 2^128
 quote_principal = ceil(asset_amount * price_x128 / 2^128)
 ```
 
-`price_x128` is stored as U256LE. `sqrt_price_x96^2`, price derivation, and `asset_amount * price_x128` MUST use checked sufficiently-wide intermediates (U512-style is acceptable) and MUST exactly match the shared golden vectors. `quote_principal` MUST be non-zero and fit `u64`.
+All wide arithmetic is checked and MUST match EVM golden vectors. `quote_principal` must be non-zero and fit `u64`.
 
-Human display price is derived only in the product layer using token decimals:
-
-```text
-display Quote/Asset = (price_x128 / 2^128) * 10^asset_decimals / 10^quote_decimals
-```
-
-No oracle participates in this mapping.
+Human display conversion belongs to the product layer. No oracle participates.
 
 ## 7.2 Yield curve
 
-Use the same canonical curve as EVM:
+Yield uses **active liquidity only**:
 
 ```text
-MIN_DAILY_FEE  = 0.01%
-MAX_DAILY_FEE  = 1.00%
+Wa = working_supply - exit_working
+Ca = available_supply + Wa
+u  = Wa / Ca
+```
+
+The theoretical curve is:
+
+```text
+MIN_DAILY_BPS  = 1    // 0.01% / day
+MAX_DAILY_BPS  = 100  // 1.00% / day
 CURVE_EXPONENT = 3
 ```
 
-Working Share:
-
-\[
-u=W/(A+W)
-\]
-
-Marginal rate:
-
-\[
-r(u)=Min+(Max-Min)u^n
-\]
-
-Integrated Use fee over `u0 → u1`:
-
-\[
-I(u_0,u_1)=Min(u_1-u_0)+\frac{Max-Min}{n+1}(u_1^{n+1}-u_0^{n+1})
-\]
-
-For Price `P`, capacity `C`, duration `D` days:
-
-\[
-GrossYieldFee=P \times C \times D \times I(u_0,u_1)
-\]
-
-Canonical integer conversion matches EVM:
+For Use amount `x`:
 
 ```text
-Quote Principal                    → round UP to Quote smallest units
-Gross Yield Fee                    → round UP to Quote smallest units
-Reference Yield Fee for Swap       → round UP using the same quote path
-Protocol fee derived from a source → round DOWN
+u0 = Wa / Ca
+u1 = (Wa + x) / Ca
 ```
 
-The Rust fixed-point implementation MUST be deterministic, overflow-checked and split-resistant within documented rounding bounds. Final round-up conversion MUST use checked ceil division.
+and:
 
-Use `u128`/`U256`-style checked intermediate arithmetic or a vetted wide-integer library where required. Silent saturation is forbidden.
+\[
+I(u_0,u_1)=Min(u_1-u_0)+\frac{Max-Min}{4}(u_1^4-u_0^4)
+\]
 
----
+For duration `D` days:
+
+\[
+FullTermYieldAsset=Ca \times D \times I(u_0,u_1)
+\]
+
+### Canonical integer algorithm
+
+Solana MUST execute the exact same normative Q128 sequence as EVM:
+
+```text
+Q128 = 2^128
+minBps = 1
+maxBps = 100
+
+u0X128 = floor(Wa       * Q128 / Ca)
+u1X128 = floor((Wa + x) * Q128 / Ca)
+
+pow4X128(u):
+    u2 = floor(u  * u  / Q128)
+    u4 = floor(u2 * u2 / Q128)
+    return u4
+
+u0Pow4X128 = pow4X128(u0X128)
+u1Pow4X128 = pow4X128(u1X128)
+
+deltaUX128  = u1X128 - u0X128
+deltaU4X128 = u1Pow4X128 - u0Pow4X128
+
+curveNumeratorX128 =
+      4 * minBps * deltaUX128
+    + (maxBps - minBps) * deltaU4X128
+
+curveDenominator = 4 * BPS * Q128
+durationCurveNumerator = checked(D * curveNumeratorX128)
+
+full_term_yield_asset = ceil(
+    Ca * durationCurveNumerator / curveDenominator
+)
+```
+
+The Q128 utilization calculations and both `pow4X128` multiplications round DOWN exactly where shown. The final full-term Yield division rounds UP. No other intermediate division is permitted. Rust MUST use checked `U256`/wider intermediates sufficient to match the EVM golden vectors exactly; narrowing to `u64` occurs only after the final result is proven to fit.
+
+If the canonical result is zero, Use/Swap for that amount rejects. The SDK uses the same algorithm for previews. Display-only marginal `Current Yield` may evaluate `Min + (Max-Min)u^3`, but `full_term_yield_asset` is authoritative for a concrete Use amount.
+
+Canonical conversions match EVM:
+
+```text
+Quote Principal                    → UP
+Q128 utilization / powers          → DOWN at the exact steps above
+Full-Term Yield Asset              → UP only at final formula
+Repay billable-time Yield Asset    → UP
+Reference Yield Quote              → UP
+Close/Swap protocol fee            → DOWN
+Collect Yield fee                  → DOWN with persistent BPS carry
+```
+
+At Use, `full_term_yield_asset` is frozen and no Yield is transferred.
+
+At Repay:
+
+```text
+term_seconds     = maturity - opened_at
+elapsed          = Clock.unix_timestamp - opened_at
+billable_elapsed = max(MIN_BILLABLE_SECONDS, elapsed)
+```
+
+with `0 <= elapsed < term_seconds`, and:
+
+```text
+gross_yield_asset =
+    ceil(full_term_yield_asset * billable_elapsed / term_seconds)
+```
+
+Require:
+
+```text
+gross_yield_asset <= full_term_yield_asset
+```
+
+For Close/Swap protocol fee calculation:
+
+```text
+reference_yield_quote =
+    ceil(full_term_yield_asset * price_x128 / 2^128)
+```
+
+for a Position, or the equivalent reference full-term Yield quote for an Immediate Swap.
+
+Exit Working MUST NOT affect active utilization or the full-term Yield quote of a new Use.
 
 # 8. Growth accounting
 
-Use Q128-equivalent cumulative growth accounting:
+Two share domains and three economic growth streams are required.
+
+Active:
 
 ```text
-yield_growth_x128
+yield_asset_growth_x128
 swap_quote_growth_x128
 ```
 
-Before provider share mutation or Collect:
+Provider synchronization:
 
 ```text
-owed_yield += shares * (yield_growth_x128 - yield_growth_last_x128) / Q128
-owed_swap_quote += shares * (swap_quote_growth_x128 - swap_quote_growth_last_x128) / Q128
+owed_yield_asset += shares * (yield_asset_growth_x128 - yield_asset_growth_last_x128) / Q128
+owed_swap_quote  += shares * (swap_quote_growth_x128 - swap_quote_growth_last_x128) / Q128
 ```
 
-Then checkpoints update.
+Exit:
 
-A provider joining later checkpoints current growth before receiving shares, so it receives no historical economics.
+```text
+exit_asset_growth_x128
+exit_yield_asset_growth_x128
+exit_quote_growth_x128
+```
 
-Growth increments round down. Provider claim realization rounds down.
+Provider synchronization:
 
-When a provider burns all shares, synchronization happens first. Existing `owed_*` survives for later Collect, while future growth contributes zero because the provider has zero shares.
+```text
+owed_exit_asset += exit_shares * (exit_asset_growth_x128 - exit_asset_growth_last_x128) / Q128
+owed_exit_yield_asset += exit_shares * (exit_yield_asset_growth_x128 - exit_yield_asset_growth_last_x128) / Q128
+owed_exit_quote += exit_shares * (exit_quote_growth_x128 - exit_quote_growth_last_x128) / Q128
+```
 
-Any instruction distributing growth MUST require `total_shares > 0`; silently skipping a zero denominator is forbidden.
+New active shares checkpoint active growth before minting. New Exit shares checkpoint all Exit growth before minting.
 
----
+No Yield growth is created at Use opening.
+
+Repay may create:
+
+```text
+Exit Asset principal growth
+Exit Asset Yield growth
+active Asset Yield growth
+```
+
+Close may create:
+
+```text
+Exit Quote growth
+active Quote growth
+```
+
+Growth increments and realization round down. A non-zero growth distribution MUST have the corresponding non-zero share denominator. Active and Exit growth never cross-distribute.
 
 # 9. supply instruction
 
-Canonical product parameters:
+Inputs:
 
 ```text
 tick
@@ -566,33 +719,32 @@ asset_amount: u64
 referrer
 ```
 
-Before minting shares, synchronize provider accounting, including the provider's finalized GenerationState when stale. `referrer` is logged only and never stored.
+Perform one settlement step, then synchronize the provider's active and Exit accounting as required.
 
-If the tick is empty:
+Define:
+
+```text
+Ca = available_supply + working_supply - exit_working
+S = total_shares
+```
+
+If empty:
 
 ```text
 S == 0
-C == 0
+Ca == 0
 shares_minted = asset_amount
 ```
 
 otherwise:
 
 \[
-shares_minted=\lfloor asset_amount \times S/C \rfloor
+shares_minted=\lfloor asset_amount \times S/Ca \rfloor
 \]
 
-Require:
+Require `asset_amount > 0`, `(S == 0) == (Ca == 0)`, and `shares_minted > 0`.
 
-```text
-asset_amount > 0
-(S == 0) == (C == 0)
-shares_minted > 0
-```
-
-CPI transfer exact Asset amount from supplier token account to Asset Vault.
-
-Then:
+Transfer exact Asset into Asset Vault, then:
 
 ```text
 available_supply += asset_amount
@@ -601,58 +753,118 @@ provider.shares += shares_minted
 provider.last_supply_slot = current_slot
 ```
 
-New Supply is immediately usable. It joins the current pooled `A + W` principal but receives no historical growth because the provider checkpoint was updated before share minting.
-
----
+Supply does not change Working, Exit, or Yield reserves. It is allowed while Exit exists and joins only active principal.
 
 # 10. withdraw instruction
 
-Withdraw removes only currently Available Asset.
-
-Synchronize provider accounting first, including any required finalized GenerationState; do not pay Quote proceeds.
-
-Requirements:
+Canonical protocol input:
 
 ```text
-asset_amount > 0
+tick
+shares_to_withdraw: U256LE
+```
+
+Product UX exposes percentages / Max and converts them to active shares; users do not enter raw share units.
+
+Perform one settlement step, then synchronize both active and Exit provider growth.
+
+Pre-withdraw:
+
+```text
+A  = available_supply
+Wa = working_supply - exit_working
+Ca = A + Wa
+S  = total_shares
+x  = shares_to_withdraw
+```
+
+Require:
+
+```text
+x > 0
+x <= provider.shares
 S > 0
-C > 0
-asset_amount <= available_supply
-asset_amount <= floor(provider.shares * C / S)
+Ca > 0
 current_slot > provider.last_supply_slot
 ```
 
-Shares burned round up:
+Compute:
 
 \[
-shares_burned=\lceil asset_amount \times S/C \rceil
+principal_claim=\lfloor x \times Ca/S \rfloor
 \]
 
-Require `shares_burned <= provider.shares`.
+\[
+available_out=\lfloor x \times A/S \rfloor
+\]
+
+```text
+working_to_exit = principal_claim - available_out
+```
+
+Normally require non-zero `principal_claim`, plus `available_out <= A` and `working_to_exit <= Wa`.
+
+The only exception is a Max/full-provider-share withdrawal where `x == provider.shares` and `principal_claim == 0` after rounding. That call MAY burn the provider's remaining sub-unit active-share dust with `available_out = 0` and `working_to_exit = 0`. Partial zero-principal withdrawals MUST reject.
+
+Burn active shares immediately:
+
+```text
+available_supply -= available_out
+total_shares -= x
+provider.shares -= x
+```
+
+Redirect Working ownership without changing `working_supply`:
+
+```text
+exit_working += working_to_exit
+```
+
+If `working_to_exit > 0`, mint Exit shares against the pre-add Exit pool:
+
+```text
+if pre_exit_working == 0:
+    require pre_total_exit_shares == 0
+    exit_shares_minted = working_to_exit
+else:
+    exit_shares_minted = floor(
+        working_to_exit * pre_total_exit_shares / pre_exit_working
+    )
+    require exit_shares_minted > 0
+```
 
 Then:
 
 ```text
-available_supply -= asset_amount
-total_shares -= shares_burned
-provider.shares -= shares_burned
-Asset Vault → supplier Asset account
+provider.exit_shares += exit_shares_minted
+tick.total_exit_shares += exit_shares_minted
 ```
 
-After mutation require:
+New Exit shares checkpoint current Exit principal/Yield/Quote growth and inherit no historical claims.
+
+CPI transfer `available_out` from Asset Vault to supplier. `working_supply` remains unchanged.
+
+Post-state invariants:
 
 ```text
-(available_supply + working_supply == 0) == (total_shares == 0)
-asset_vault.amount >= available_supply
+exit_working <= working_supply
+(active_principal == 0) == (total_shares == 0)
+(exit_working == 0) == (total_exit_shares == 0)
+total_exit_shares >= exit_working whenever exit_working > 0
+
+asset_vault.amount
+    >= available_supply
+     + exit_asset_reserve
+     + yield_asset_reserve
 ```
 
-If Withdraw removes the final principal unit, it MUST burn the final share. Revert rather than leave `C == 0 && S > 0` or `C > 0 && S == 0`.
+A full active withdrawal may leave `provider.shares == 0` and `provider.exit_shares > 0`.
 
-Solana uses a one-slot supplier cooldown as the chain-native equivalent of the EVM one-block cooldown. The cooldown does not reserve newly supplied Available liquidity for the new supplier.
+Exit shares do not participate in new Use opening. If later Repay resolution is allocated to Exit, they receive both the resolved Asset principal and the corresponding Asset Yield.
 
-A provider whose shares become zero keeps only already synchronized `owed_*` claims and receives no future Yield or Swap/Close growth.
+Exit is one-way in v0.1: there is no Exit→Active conversion; re-entry uses a new Supply.
 
----
+The one-slot Supply→Withdraw cooldown remains mandatory.
 
 # 11. use instruction
 
@@ -661,89 +873,179 @@ Inputs include:
 ```text
 tick
 asset_amount: u64
-max_yield_fee: u64
+max_full_term_yield_asset: u64
 deadline: i64
-position_nonce: u64
+position_seq: u64
 referrer
 ```
 
-Requirements:
+Perform one settlement step first.
+
+Define active state:
+
+```text
+Wa = working_supply - exit_working
+Ca = available_supply + Wa
+```
+
+Require:
 
 ```text
 asset_amount > 0
 asset_amount <= available_supply
-C > 0
+Ca > 0
 total_shares > 0
 Clock.unix_timestamp <= deadline
 quote_principal > 0
-gross_yield_fee > 0
-gross_yield_fee <= max_yield_fee
-close_fee = floor(gross_yield_fee * FEE_BPS / BPS)
+full_term_yield_asset > 0
+full_term_yield_asset <= max_full_term_yield_asset
+position_seq == tick.next_position_seq
+```
+
+Compute:
+
+```text
+reference_yield_quote =
+    ceil(full_term_yield_asset * price_x128 / 2^128)
+
+close_fee =
+    floor(reference_yield_quote * FEE_BPS / BPS)
+```
+
+Require:
+
+```text
 close_fee <= quote_principal
 ```
 
-Time math:
-
-```text
-opened_at = Clock.unix_timestamp
-term_seconds = checked(duration_days * 86_400)
-maturity = checked(opened_at + term_seconds)
-```
-
-Reject any value that cannot be represented as the specified integer type. Slot is not used for maturity.
+Exit never blocks Use.
 
 Execution:
 
 ```text
 available_supply -= asset_amount
 working_supply += asset_amount
+exit_working unchanged
 
 Asset Vault → user Asset account
 Quote user account → Quote Escrow Vault
-Gross Yield user account → Quote Proceeds Vault
 ```
 
-Yield growth:
+No Yield is transferred and no Yield growth is created at Use opening.
+
+Create `PDA(["position", tick, position_seq])`, storing:
 
 ```text
-yield_growth_x128 += gross_yield_fee * Q128 / total_shares
+asset_amount
+quote_principal
+full_term_yield_asset
+close_fee
+opened_at
+maturity
+status = ACTIVE
 ```
 
-Growth rounds down and uses the non-zero pre-existing `total_shares`.
-
-Create the permanent TermPosition PDA:
-
-```text
-["position", tick, user, position_nonce]
-```
-
-The nonce is supplied by the client and MUST be unused for that `(tick, user)` tuple. No global writable counter is touched.
-
-No protocol fee is transferred at Use opening.
-
----
+then increment `next_position_seq` with checked arithmetic.
 
 # 12. repay instruction
 
-Only the Term Position user may Repay before maturity.
+Only the Term Position user may Repay before maturity. v0.1 is full repayment.
+
+Canonical inputs include:
+
+```text
+position
+max_yield_asset: u64
+```
+
+Apply the settlement hook unless this Position is the current cursor entry.
+
+Let:
+
+```text
+x = position.asset_amount
+term_seconds = position.maturity - position.opened_at
+elapsed = Clock.unix_timestamp - position.opened_at
+billable_elapsed = max(MIN_BILLABLE_SECONDS, elapsed)
+
+gross_yield_asset =
+    ceil(position.full_term_yield_asset * billable_elapsed / term_seconds)
+```
+
+Require:
+
+```text
+0 <= elapsed < term_seconds
+gross_yield_asset <= position.full_term_yield_asset
+gross_yield_asset <= max_yield_asset
+```
+
+Principal resolution:
+
+```text
+exit_fill = min(x, exit_working)
+active_return = x - exit_fill
+```
+
+Yield split:
+
+```text
+exit_yield_asset =
+    floor(gross_yield_asset * exit_fill / x)
+
+active_yield_asset =
+    gross_yield_asset - exit_yield_asset
+```
 
 Execution:
 
 ```text
-user Asset account → Asset Vault
-working_supply -= asset_amount
-available_supply += asset_amount
-Quote Escrow Vault → user Quote account
+user Asset account → Asset Vault:
+    x + gross_yield_asset
+
+working_supply -= x
+exit_working -= exit_fill
+available_supply += active_return
+
+Quote Escrow Vault → user Quote account:
+    quote_principal
+
 status = REPAID
 ```
 
-No Repay fee.
+Funded accounting:
 
-Yield remains earned.
+```text
+if exit_fill > 0:
+    exit_asset_reserve += exit_fill
+    exit_asset_growth_x128 += exit_fill * Q128 / total_exit_shares
 
-Remove the position from any active-user index/account structure if the implementation maintains one onchain; otherwise emit sufficient events and retain the permanent Position PDA.
+if gross_yield_asset > 0:
+    yield_asset_reserve += gross_yield_asset
 
----
+if exit_yield_asset > 0:
+    exit_yield_asset_growth_x128 += exit_yield_asset * Q128 / total_exit_shares
+
+if active_yield_asset > 0:
+    yield_asset_growth_x128 += active_yield_asset * Q128 / total_shares
+```
+
+Required denominator rules:
+
+```text
+exit_fill > 0 or exit_yield_asset > 0 → total_exit_shares > 0
+active_yield_asset > 0               → total_shares > 0
+total_shares == 0                    → active_return == 0
+                                      and active_yield_asset == 0
+```
+
+Repay itself takes no immediate protocol fee. Gross Asset Yield is funded into `yield_asset_reserve`; the Yield protocol fee is charged when the provider Collects.
+
+If `exit_working` becomes zero, finalize the Exit generation atomically after final Exit principal/Yield growth.
+
+If active principal becomes zero while active shares still exist, finalize the active generation after final active Yield growth.
+
+If this Position is the cursor entry after any pre-step, increment `settle_cursor` exactly once.
 
 # 13. close instruction
 
@@ -752,42 +1054,74 @@ Permissionless when:
 ```text
 status == ACTIVE
 Clock.unix_timestamp >= maturity
-total_shares > 0
 ```
 
-Compute, rounding down:
+Apply the settlement hook unless this Position is the current cursor entry.
 
-\[
-close_fee=gross_yield_fee \times FEE_BPS/BPS
-\]
+Close is the predefined Swap outcome. The Use user keeps the Asset and pays no Asset Yield.
 
-The Position was required at Use creation to satisfy `close_fee <= quote_principal`.
+Use the `close_fee` frozen in the Position at Use opening.
+
+Compute:
+
+```text
+provider_swap_proceeds = quote_principal - close_fee
+x = asset_amount
+exit_fill = min(x, exit_working)
+active_fill = x - exit_fill
+
+exit_quote =
+    floor(provider_swap_proceeds * exit_fill / x)
+
+active_quote =
+    provider_swap_proceeds - exit_quote
+```
 
 Execution:
 
 ```text
-working_supply -= asset_amount
-Quote Escrow Vault → FEE_TO Quote token account: close_fee
-Quote Escrow Vault → Quote Proceeds Vault: quote_principal - close_fee
-swap_quote_growth_x128 += provider_swap_proceeds * Q128 / total_shares
+working_supply -= x
+exit_working -= exit_fill
+
+Quote Escrow Vault → FEE_TO Quote account:
+    close_fee
+
 status = CLOSED
 ```
 
-Growth uses pre-reset `total_shares` and rounds down.
+Route net Quote:
 
-If this Close makes `available_supply + working_supply == 0`, the same instruction MUST create/finalize the current GenerationState PDA and perform §16 rollover atomically.
+```text
+exit_quote   → Quote Proceeds Vault
+active_quote → Quote Proceeds Vault
+```
+
+Accounting/growth:
+
+```text
+if exit_quote > 0:
+    exit_quote_reserve += exit_quote
+    exit_quote_growth_x128 += exit_quote * Q128 / total_exit_shares
+
+if active_quote > 0:
+    swap_quote_growth_x128 += active_quote * Q128 / total_shares
+```
+
+A non-zero Exit distribution requires `total_exit_shares > 0`; a non-zero active distribution requires `total_shares > 0`. In particular, `total_shares == 0` MUST imply `active_quote == 0`.
+
+Close creates no Asset Yield growth.
+
+Finalize Exit and/or active generations if their respective principal reaches zero with shares still live. Both may finalize in one Close.
 
 No oracle is used.
 
-The user keeps the Asset.
-
----
+If this Position is the cursor entry after any pre-step, increment `settle_cursor` exactly once.
 
 # 14. swap instruction
 
-Immediate Swap accepts the predefined tick price with no Term Position.
+Immediate Swap accepts the predefined Tick price with no Term Position.
 
-Inputs include:
+Inputs:
 
 ```text
 tick
@@ -797,23 +1131,31 @@ deadline: i64
 referrer
 ```
 
-Requirements:
+Perform one settlement step first.
+
+Require:
 
 ```text
 asset_amount > 0
 asset_amount <= available_supply
-C > 0
+active_principal > 0
 total_shares > 0
 Clock.unix_timestamp <= deadline
 ```
 
-Compute Quote Principal from tick price, rounding up.
+Exit never blocks Swap.
 
-Compute Reference Yield Fee using the same pre-execution Use quote path, rounding up.
+Compute Quote Principal.
 
-\[
-swap_fee=\left\lfloor reference_yield_fee \times FEE_BPS/BPS \right\rfloor
-\]
+For fee calculation only, compute the **Reference Full-Term Yield Asset** using the same active-liquidity Yield function as an equivalent Use, then:
+
+```text
+reference_yield_quote =
+    ceil(reference_full_term_yield_asset * price_x128 / 2^128)
+
+swap_fee =
+    floor(reference_yield_quote * FEE_BPS / BPS)
+```
 
 Require:
 
@@ -826,150 +1168,300 @@ Execution:
 
 ```text
 available_supply -= asset_amount
-Asset Vault → taker Asset account
-Taker Quote account → Quote Proceeds Vault / FEE_TO split
-FEE_TO token account receives swap_fee
-Quote Proceeds Vault receives quote_principal - swap_fee
+Asset Vault → taker
+FEE_TO Quote account receives swap_fee
+Quote Proceeds Vault receives provider_swap_proceeds
 swap_quote_growth_x128 += provider_swap_proceeds * Q128 / total_shares
 ```
 
-Implementation may perform two Quote transfers or one transfer into protocol custody followed by a fee transfer in the same instruction. Final balances must match canonical economics atomically.
+`exit_working` and Exit growth/reserves remain unchanged.
 
-Growth uses pre-reset `total_shares` and rounds down.
-
-If this Swap exhausts remaining principal, the same instruction MUST create/finalize the current GenerationState PDA and perform §16 rollover atomically.
-
-No Working state and no Term Position are created.
-
----
+If active principal is exhausted while active shares remain, finalize the active generation atomically.
 
 # 15. collect instruction
 
-Synchronize provider first, including the provider's finalized GenerationState when stale.
+`collect` is a supplier action. It performs one settlement step, synchronizes the supplier's active and Exit generation/growth accounting, and transfers everything currently claimable.
 
 Let:
 
 ```text
-gross_yield = owed_yield
+exit_asset = owed_exit_asset
+
+active_yield_asset = owed_yield_asset
+exit_yield_asset = owed_exit_yield_asset
+gross_yield_asset = active_yield_asset + exit_yield_asset
+
+fee_numerator =
+    gross_yield_asset * FEE_BPS + provider.yield_fee_carry
+
+yield_fee_asset =
+    floor(fee_numerator / BPS)
+
+provider.yield_fee_carry =
+    fee_numerator % BPS
+
+net_yield_asset =
+    gross_yield_asset - yield_fee_asset
+
+exit_quote = owed_exit_quote
 swap_quote = owed_swap_quote
 ```
 
-Compute protocol Yield fee, rounding down:
-
-\[
-yield_fee_to=gross_yield \times FEE_BPS/BPS
-\]
-
-Require `yield_fee_to <= gross_yield`.
-
-Atomic CPI transfers:
+Atomic transfers:
 
 ```text
-Quote Proceeds Vault → FEE_TO Quote token account: yield_fee_to
-Quote Proceeds Vault → provider Quote account: (gross_yield - yield_fee_to) + swap_quote
-```
+Asset Vault → supplier Asset account:
+    exit_asset + net_yield_asset
 
-Then zero:
+Asset Vault → FEE_TO Asset token account:
+    yield_fee_asset
 
-```text
-owed_yield
-owed_swap_quote
-```
-
-Swap Quote is not charged again.
-
-A supplier may Withdraw first and Collect later without losing accrued claims. `shares == 0` does not block Collect of historical `owed_*`; it only prevents future growth accrual.
-
----
-
-# 16. Generation finalization
-
-The post-state live-share invariant is:
-
-```text
-C = available_supply + working_supply
-(C == 0) == (total_shares == 0)
-```
-
-Supply/Withdraw preserve this directly.
-
-If Swap or Close would produce:
-
-```text
-available_supply + working_supply == 0
-total_shares > 0 // pre-finalization shares
-```
-
-finalize the current generation after applying that instruction's final growth increment with the pre-reset non-zero `total_shares`.
-
-The exhausting instruction MUST receive and initialize:
-
-```text
-["generation", tick, tick.generation]
-```
-
-with the caller/taker as rent payer, and store:
-
-```text
-tick
-generation_id = tick.generation
-final_yield_growth_x128
-final_swap_quote_growth_x128
+Quote Proceeds Vault → supplier Quote account:
+    exit_quote + swap_quote
 ```
 
 Then:
 
 ```text
-available_supply = 0
-working_supply = 0
+exit_asset_reserve -= exit_asset
+yield_asset_reserve -= gross_yield_asset
+exit_quote_reserve -= exit_quote
+
+owed_exit_asset = 0
+owed_exit_yield_asset = 0
+owed_yield_asset = 0
+owed_exit_quote = 0
+owed_swap_quote = 0
+```
+
+Exit/active realized Quote is not charged again. Only Yield is charged at collection, and that fee is paid in Asset. `yield_fee_carry` makes the cumulative fee independent of how the supplier partitions the same cumulative gross Yield across Collect calls:
+
+```text
+cumulative Yield fee = floor(cumulative gross Yield * FEE_BPS / BPS)
+```
+
+Require `provider.yield_fee_carry < BPS` after every Collect.
+
+Collect may transfer both Asset and Quote. It does not require Exit to be fully resolved; current Exit shares may remain for future Repay/Close resolution.
+
+`collect` is supplier-authorized in v0.1; it is not permissionless and cannot redirect another supplier's proceeds.
+
+# 16. Active and Exit generation finalization
+
+## 16.1 Active generation
+
+Define:
+
+```text
+active_principal = available_supply + working_supply - exit_working
+```
+
+Invariant:
+
+```text
+(active_principal == 0) == (total_shares == 0)
+```
+
+If Swap, Close, or Repay makes active principal zero while active shares still exist, the instruction MUST initialize:
+
+```text
+["generation", tick, tick.generation]
+```
+
+after the final active Yield/Quote growth increment, storing:
+
+```text
+final_yield_asset_growth_x128
+final_swap_quote_growth_x128
+```
+
+then:
+
+```text
 total_shares = 0
 generation += 1
-yield_growth_x128 = 0
+yield_asset_growth_x128 = 0
 swap_quote_growth_x128 = 0
 ```
 
-A ProviderPosition whose stored generation is older than `tick.generation` MUST be synchronized using the GenerationState PDA derived from `provider.generation`. Synchronization realizes that generation's final growth into `owed_*`, sets old shares to zero, advances `provider.generation` to the current generation, and checkpoints current growth before any new shares are minted.
+Do **not** zero `working_supply`, `exit_working`, or `yield_asset_reserve`: remaining Working may belong entirely to Exit and funded Yield claims may remain uncollected.
 
-A provider stale across many later generations still needs only its own stored generation snapshot and no iteration.
+A Withdraw that directly burns the final active shares needs no GenerationState snapshot because no stale active shares remain.
 
-A full Withdraw with `W == 0` must burn all remaining shares when it removes all Available Asset. It does not create a GenerationState because no stale shares remain. Any attempted state with `C == 0 && S > 0` or `C > 0 && S == 0` MUST revert.
+## 16.2 Exit generation
 
-Generation synchronization/finalization MUST remain O(1) and require no provider iteration.
+Invariant:
 
----
+```text
+(exit_working == 0) == (total_exit_shares == 0)
+total_exit_shares >= exit_working whenever exit_working > 0
+```
 
-# 17. Duration and time
+If Repay or Close makes `exit_working == 0` while Exit shares still exist, after the final Exit principal/Yield/Quote growth increment initialize:
+
+```text
+["exit_generation", tick, tick.exit_generation]
+```
+
+and persist:
+
+```text
+final_exit_asset_growth_x128
+final_exit_yield_asset_growth_x128
+final_exit_quote_growth_x128
+```
+
+then:
+
+```text
+total_exit_shares = 0
+exit_generation += 1
+exit_asset_growth_x128 = 0
+exit_yield_asset_growth_x128 = 0
+exit_quote_growth_x128 = 0
+```
+
+Do not zero `exit_asset_reserve`, `yield_asset_reserve`, or `exit_quote_reserve`; they back funded but uncollected claims.
+
+Stale provider synchronization reads exactly one stored active snapshot and/or one stored Exit snapshot. No generation walk is permitted.
+
+Neither generation finalization changes `settle_cursor`.
+
+# 17. Settlement cursor, duration and time
+
+Each Tick stores:
+
+```text
+next_position_seq
+settle_cursor
+```
+
+and each TermPosition PDA is directly derivable as:
+
+```text
+["position", tick, position_seq]
+```
+
+All Uses in one Tick share the same `duration_days`, so Position maturity is non-decreasing with sequence.
+
+## 17.1 `settle` instruction
+
+`settle` is permissionless and touches at most one cursor Position.
+
+Conceptually:
+
+```text
+if settle_cursor == next_position_seq:
+    no-op
+
+position = PDA(["position", tick, settle_cursor])
+
+if position.status != ACTIVE:
+    settle_cursor += 1
+    return
+
+if Clock.unix_timestamp < position.maturity:
+    return
+
+Close(position) using canonical Close economics
+settle_cursor += 1
+```
+
+The caller supplies the canonical current cursor Position account and any deterministic generation-snapshot / fee accounts required if that Close exhausts active or Exit state. The program derives and validates every PDA.
+
+### 17.1.1 Canonical settlement account bundle
+
+Each instruction appends a canonical **settlement remaining-account bundle** after its instruction-specific accounts:
+
+```text
+queue empty (settle_cursor == next_position_seq):
+    []
+
+cursor exists and is terminal OR ACTIVE but not mature:
+    [cursor_position]
+
+cursor is ACTIVE and mature:
+    [cursor_position,
+     quote_escrow_vault,
+     quote_proceeds_vault,
+     fee_to_quote_account,
+     optional_active_generation_state,
+     optional_exit_generation_state]
+```
+
+Rules:
+
+- `cursor_position` MUST equal `PDA(["position", tick, settle_cursor])`.
+- The two Quote vaults MUST be the canonical Tick vault PDAs.
+- `fee_to_quote_account` MUST satisfy §18 even when `close_fee == 0`; a zero fee simply transfers nothing.
+- `optional_active_generation_state` is present iff this Close exhausts active principal while current active shares are live, and MUST equal `PDA(["generation", tick, generation])`.
+- `optional_exit_generation_state` is present iff this Close exhausts `exit_working` while current Exit shares are live, and MUST equal `PDA(["exit_generation", tick, exit_generation])`.
+- If only one generation snapshot is required, it occupies the next account slot directly; clients insert no placeholders.
+- The program MUST reject missing, extra, substituted, wrongly ordered, or non-canonical settlement accounts.
+
+The SDK MUST construct this bundle from fresh Tick/cursor state and simulation. If state changes before inclusion such that a different bundle is required, the instruction MUST revert rather than silently skip or alter settlement.
+
+## 17.2 Automatic one-step settlement hook
+
+Every economic Tick instruction attempts one settlement step before its own mutation. `repay`/`close` skip the pre-step when targeting the current cursor Position and advance it themselves on success.
+
+A step never loops. No hosted indexer is needed: the next Position PDA is derived directly from `settle_cursor`.
+
+Because Exit does not block Use/Swap, normal successful market actions can both advance settlement and continue trading.
+
+## 17.3 Duration, Yield time and maturity
 
 `duration_days` is a positive whole integer with no semantic maximum.
 
 At Use:
 
 ```text
-Clock.unix_timestamp <= deadline
 opened_at = Clock.unix_timestamp
 term_seconds = checked(duration_days * 86_400)
 maturity = checked(opened_at + term_seconds)
 ```
 
-All timestamp math uses signed `i64`-representable Unix seconds and checked conversion/multiplication/addition. Reject unrepresentable maturity.
-
-At Swap:
+At Repay:
 
 ```text
-Clock.unix_timestamp <= deadline
+elapsed = Clock.unix_timestamp - opened_at
+0 <= elapsed < term_seconds
+billable_elapsed = max(MIN_BILLABLE_SECONDS, elapsed)
+gross_yield_asset =
+    ceil(full_term_yield_asset * billable_elapsed / term_seconds)
 ```
 
-Before maturity only Repay is valid; at/after maturity only Close is valid.
+with `MIN_BILLABLE_SECONDS = 1`. A same-timestamp Repay is therefore billed as exactly 1 second. Because `full_term_yield_asset > 0`, every successful Repay owes at least 1 raw Asset unit under canonical round-up.
 
-**Unix time controls deadline and maturity. Slot is used only for the Supply→Withdraw cooldown.**
+The Position's full-term Yield is frozen at opening. Only elapsed time changes the amount owed.
 
----
+Before maturity only Repay is valid; at/after maturity only Close is valid. Unix time controls maturity/deadlines/Yield proration; slot is used only for Supply→Withdraw cooldown.
+
+Exit is pooled priority settlement, not tagged Working. `exit_working` grows on Withdraw and shrinks on Repay/Close; new Uses never increase an existing Exit claim. Any later Repay/Close may satisfy Exit first, including resolution of a Use opened after the Withdraw. Later Withdraws may join the same live Exit generation, so v0.1 does not promise a per-provider Exit completion timestamp or term horizon.
 
 # 18. Fee recipient
 
 `FEE_TO` is a compile-time immutable production program constant.
 
-For every Quote mint, fee-bearing instructions MUST receive a valid token account whose:
+Fee denomination depends on the economic source:
+
+```text
+Collect Yield fee → Asset token
+Close fee         → Quote token
+Immediate Swap fee → Quote token
+```
+
+For any instruction that may transfer a protocol fee, the program MUST receive and validate the required FEE_TO token account(s).
+
+Asset fee account requirements:
+
+```text
+owner == FEE_TO
+mint  == tick.asset_mint
+token program matches tick.asset_mint
+```
+
+Quote fee account requirements:
 
 ```text
 owner == FEE_TO
@@ -977,13 +1469,13 @@ mint  == tick.quote_mint
 token program matches tick.quote_mint
 ```
 
-The product SHOULD use the canonical Associated Token Account and create it before the fee-bearing action if necessary.
+Because automatic settlement may Close a mature Position inside another economic action, adapters MUST prepare the Quote FEE_TO account whenever the current cursor Position may be mature.
 
-The program MUST derive/check the immutable `FEE_TO` owner and MUST NOT accept a caller-selected fee recipient.
+`collect` additionally requires the Asset FEE_TO account when claimable gross Asset Yield is non-zero.
+
+The program MUST NOT accept a caller-selected fee recipient.
 
 There is no protocol-fee vault or later fee withdrawal instruction.
-
----
 
 # 19. Referral attribution
 
@@ -1009,15 +1501,18 @@ Product flows may compose:
 
 ```text
 withdraw + collect
+settle + collect
 multiple independent Uses
 multiple Swaps
 Repay selected positions
 Close selected positions
 ```
 
-Each Use creates a separate TermPosition PDA using a client-supplied distinct `position_nonce`, so all Position PDAs are derivable before transaction construction. No instruction depends on a global mutable ID counter.
+Each Use creates a separate TermPosition PDA using the Tick-local `position_seq`. For multiple Uses on the same Tick in one transaction, the client pre-reads `next_position_seq` and derives consecutive Position PDAs; each instruction validates the sequence it observes after the preceding instruction.
 
-There is no program-level `batch_use` or similar requirement.
+There is no program-level `batch_use`, `batch_close`, or `batch_settle` requirement.
+
+The automatic one-step settlement hook is part of each economic instruction. Explicit `settle(tick)` remains available when callers want to advance the cursor without another economic action.
 
 If account/compute/transaction-size limits prevent one transaction, the product must split the UX into multiple explicit transactions rather than changing protocol semantics.
 
@@ -1025,12 +1520,10 @@ If account/compute/transaction-size limits prevent one transaction, the product 
 
 # 21. Events
 
-The Anchor event schema is frozen to mirror the EVM economic domain. Solana identifiers are Pubkeys/PDAs where EVM uses numeric IDs.
+Canonical Anchor economic events:
 
 ```text
-PairCreated(
-  pair, mint0, mint1
-)
+PairCreated(pair, mint0, mint1)
 
 TickCreated(
   tick, pair, direction, price_tick, duration_days, asset_mint, quote_mint
@@ -1041,202 +1534,313 @@ Supplied(
 )
 
 Withdrawn(
-  tick, supplier, asset_amount, shares_burned
+  tick, supplier,
+  shares_burned,
+  principal_claim,
+  available_asset_out,
+  working_to_exit,
+  exit_shares_minted
 )
 
 Collected(
   tick, supplier,
-  gross_yield, yield_fee_to, net_yield,
-  swap_quote, total_quote_out
+  exit_asset,
+  gross_yield_asset, yield_fee_asset, net_yield_asset,
+  exit_quote, swap_quote,
+  total_asset_out, total_quote_out
 )
 
 UseOpened(
-  position, position_nonce, tick, user,
-  asset_amount, quote_principal, gross_yield_fee,
+  position, position_seq, tick, user,
+  asset_amount, quote_principal,
+  full_term_yield_asset, close_fee,
   opened_at, maturity, referrer
 )
 
 TermRepaid(
-  position, tick, user,
-  asset_amount, quote_principal
+  position, tick, position_seq, user,
+  asset_amount, quote_principal,
+  gross_yield_asset,
+  exit_fill, active_return,
+  exit_yield_asset, active_yield_asset
 )
 
 TermClosed(
-  position, tick, user, caller,
+  position, tick, position_seq, user, caller,
   asset_amount, quote_principal,
-  close_fee, provider_swap_proceeds
+  close_fee, provider_swap_proceeds,
+  exit_fill, exit_quote, active_quote
 )
 
 ImmediateSwap(
   tick, taker,
   asset_amount, quote_principal,
-  reference_yield_fee, swap_fee, provider_swap_proceeds,
+  reference_full_term_yield_asset,
+  reference_yield_quote,
+  swap_fee, provider_swap_proceeds,
   referrer
 )
 
 GenerationFinalized(
   tick, generation_id,
-  final_yield_growth_x128, final_swap_quote_growth_x128
+  final_yield_asset_growth_x128,
+  final_swap_quote_growth_x128
+)
+
+ExitGenerationFinalized(
+  tick, exit_generation_id,
+  final_exit_asset_growth_x128,
+  final_exit_yield_asset_growth_x128,
+  final_exit_quote_growth_x128
 )
 ```
 
-`referrer` is optional/zero Pubkey when absent and appears only on Supply, Use and Immediate Swap. It never changes economics.
-
----
+`settle` emits no separate event when it only advances past an already-terminal Position; a settlement Close emits canonical `TermClosed`.
 
 # 22. Client-facing reads
 
-RPC/account-readable canonical state is required. An indexer is optional for speed/search and MUST NOT be required to reconstruct current essential positions.
+RPC/account-readable canonical state is required. An indexer is optional for discovery/search and MUST NOT be required for current state or Tick settlement.
 
-The SDK MUST expose `getPair(mintA, mintB)` as specified in §3.3: canonicalize the two mints, derive the unique Pair PDA, fetch the account, and return Pair identity + state in one operation. Input order MUST NOT affect the result.
+The SDK MUST expose `getPair(mintA, mintB)` by canonical PDA derivation.
 
-All core v0.1 account structs used for discovery MUST be fixed-size Borsh/Anchor layouts with no variable-length `Vec`/`String` fields.
-
-The SDK MUST publish stable memcmp/GPA filter offsets for at least:
+All discovery account structs are fixed-size. Publish stable GPA/memcmp offsets for at least:
 
 ```text
 ProviderPosition.supplier
 ProviderPosition.tick
-ProviderPosition.generation
+ProviderPosition.active_generation
+ProviderPosition.exit_generation
 
 TermPosition.user
 TermPosition.tick
 TermPosition.status
 ```
 
-This allows the reference frontend to discover connected-wallet Earn and Use state with RPC `getProgramAccounts`-style filtering and then fetch canonical accounts directly through Solana Kit.
-
-The program/account model must expose enough canonical state for the product/shared math crate to derive:
+SDK/domain reads must derive at least:
 
 ```text
 available liquidity
-working liquidity
-working share
-current Yield quote
-provider shares
-provider claimable Yield
-provider claimable Swap Quote
-Term Position status/maturity
+active Working = working_supply - exit_working
+Exit Working
+active principal
+
+current Yield rate from active liquidity
+
+provider active shares
+provider Exit shares
+claimable Exit Asset principal
+claimable active Asset Yield
+claimable Exit Asset Yield
+claimable Exit Quote
+claimable active Swap Quote
+
+Term Position:
+  status
+  maturity
+  full_term_yield_asset
+  current accrued Yield if Repay were submitted now
+
+next_position_seq
+settle_cursor
 ```
 
-Canonical preview math MUST live in a shared deterministic Rust/TypeScript test-vector implementation matching EVM semantics. Dedicated onchain `preview_*` instructions are optional; if provided they MUST return the same integers.
+Canonical preview helpers MUST apply the same one-step automatic settlement hook as the corresponding instruction before quoting action-specific values. A mature cursor Close must be reflected in the returned state/quote.
 
-Global Orders/search/history may use an indexer for UX acceleration, but current account state remains authoritative and directly RPC-readable.
+Canonical preview helpers SHOULD expose the same fields as EVM:
 
----
+```text
+previewSupply
+previewWithdraw
+previewUse
+previewRepay
+previewSwap
+previewCollect
+```
+
+The current settlement Position is derived directly as `PDA(["position", tick, settle_cursor])`; no indexer lookup is needed.
 
 # 23. Rounding
 
-Match EVM economic direction exactly:
+Match EVM directions exactly:
 
 ```text
-Supply shares             → DOWN
-Withdraw max principal    → DOWN
-Withdraw shares burned    → UP
-Quote Principal required  → UP
-Gross Yield Fee           → UP
-Reference Yield Fee       → UP
-Growth increments         → DOWN
-Provider claims           → DOWN
-Protocol fees             → DOWN, fee <= source amount
+Supply active shares                    → DOWN
+Withdraw active principal claim         → DOWN
+Withdraw immediate Available component  → DOWN
+Working→Exit component                  → claim - Available
+Exit shares minted                      → DOWN
+
+Quote Principal                         → UP
+Full-Term Yield Asset                   → UP
+Repay billable-time Yield Asset         → UP
+Reference Yield Quote                   → UP
+
+Repay Yield allocated to Exit           → DOWN
+Repay active Yield                      → exact remainder
+
+Close net Quote allocated to Exit        → DOWN
+Close active Quote                       → exact remainder
+
+Active/Exit growth increments            → DOWN
+Provider claims                          → DOWN
+Protocol fees                            → DOWN
 ```
 
-Token transfer amounts (`asset_amount`, `quote_principal`, Yield, fees, payouts) are SPL raw amounts and therefore MUST fit `u64`. Any canonical computed transfer amount that does not fit `u64` MUST revert before state mutation.
+All token transfer/reserve amounts MUST fit `u64`. Shares/growth/price use U256LE with checked wider intermediates where required. No silent saturation or truncation.
 
-`total_shares`, provider `shares`, `price_x128`, all growth accumulators/checkpoints, and finalized generation growth use the frozen U256LE storage domain. Multiplication/division intermediates use checked wider arithmetic where required (U512-style is acceptable). No narrowing conversion may truncate silently.
+Rounding MUST NOT create:
 
-Cross-chain golden vectors MUST compare exact normalized integer outputs where token decimals and fixed-point representations are equivalent.
-
----
+```text
+gross_yield_asset > full_term_yield_asset
+active_yield_asset > 0 with total_shares == 0
+Exit growth with total_exit_shares == 0
+unfunded Asset/Quote claims
+```
 
 # 24. Security invariants
 
 The Anchor program MUST prove/test:
 
-1. PDA ownership and seeds cannot be substituted.
-2. There is no global writable protocol counter/account in Supply/Use/Repay/Swap/Close/Withdraw/Collect paths.
-3. Token accounts/mints/program IDs and extension allowlists are validated on every CPI path.
-4. `available_supply + working_supply` Asset accounting is conserved.
-5. After every successful state transition, `(available_supply + working_supply == 0) == (total_shares == 0)`.
-6. `asset_vault.amount >= available_supply`; unsolicited excess creates no claim.
-7. Escrow Quote cannot fund provider claims before settlement and active escrow liabilities never exceed escrow vault balance.
-8. Quote Proceeds Vault cannot pay more than funded provider claims; unsolicited/dust excess creates no claim.
-9. No provider iteration in Use/Repay/Swap/Close or generation synchronization.
-10. No historical economics for later suppliers.
-11. Withdraw synchronizes claims before burning shares; previously accrued Yield/Swap claims survive even when shares reach zero.
-12. A zero-share provider receives no future Yield or Swap/Close growth.
-13. Current shareholders receive later Swap/Close growth when existing Working principal resolves.
-14. Swap/Close fees go only to immutable `FEE_TO` and never exceed Quote Principal.
-15. Same-slot Supply→Withdraw is rejected for that provider position.
-16. Generation rollover cannot leak old claims into new shares.
-17. A stale provider can synchronize exactly its stored finalized generation in O(1), even if the Tick advanced many generations.
-18. ProviderPosition cannot close with shares, owed claims, or unsynchronized generation state.
-19. Position status changes exactly once.
-20. Repay/Close maturity boundary is strict and deadlines use Unix time.
-21. Unsupported Token-2022 behavior cannot corrupt balances.
-22. Stored `price_x128` is the canonical value for `price_tick`; Quote Principal uses the frozen round-up formula.
-23. U256 share/growth arithmetic is checked; representability overflow reverts before state mutation.
-24. All token transfer amounts fit `u64`; all wider arithmetic/conversions are checked with no overflow, underflow, truncation, or silent saturation.
-25. Growth distribution with `total_shares == 0` always reverts.
-26. Multiple Uses in one transaction can pre-derive independent TermPosition PDAs with distinct nonces.
-
----
+1. PDA ownership/seeds cannot be substituted.
+2. There is no global writable protocol counter/account in economic paths.
+3. Token programs/mints/accounts/extensions are validated on every CPI path.
+4. `exit_working <= working_supply` always.
+5. `active_principal = available_supply + working_supply - exit_working` never underflows.
+6. `(active_principal == 0) == (total_shares == 0)`.
+7. `(exit_working == 0) == (total_exit_shares == 0)` and `total_exit_shares >= exit_working` whenever `exit_working > 0`.
+8. Asset Vault covers `available_supply + exit_asset_reserve + yield_asset_reserve`.
+9. Quote Escrow covers every ACTIVE Position's Quote Principal by conservation.
+10. Quote Proceeds covers funded active + Exit Quote claims.
+11. Withdraw burns active shares and redirects only proportional active Working; it does not change `working_supply`.
+12. Use creates no Yield transfer/growth and freezes `full_term_yield_asset`.
+13. Exit Working never affects new Use Yield pricing.
+14. Repay Yield uses frozen full-term Yield and `billable_elapsed = max(1, actual elapsed Unix seconds)` only.
+15. `0 < gross_yield_asset <= full_term_yield_asset` for every successful Repay; same-timestamp Repay is billed as 1 second.
+16. Repay returns Quote and transfers Asset principal + accrued Asset Yield.
+17. Repay and Close consume Exit Working first.
+18. Repay Yield follows the same principal resolution ratio and is conserved exactly.
+19. Exit shares may receive Repay Yield but receive no new Use-opening or Immediate-Swap economics.
+20. Close creates no Asset Yield.
+21. Close net proceeds split exactly into Exit + active portions.
+22. Use/Swap/Supply remain executable while Exit exists when ordinary active constraints pass.
+23. Use and Swap never change `exit_working`.
+24. Exit is pooled priority settlement, not tagged Working.
+25. No provider iteration in Use/Repay/Swap/Close/settle/generation synchronization.
+26. Active and Exit generation snapshots cannot leak historical claims.
+27. Stale provider sync reads at most one stored snapshot per generation domain.
+28. ProviderPosition is permanent in v0.1; its fee carry and generation checkpoints cannot be reset through account closure/recreation.
+29. Position status changes exactly once and maturity boundary is strict.
+30. `position_seq` is unique/monotonic per Tick.
+31. `settle_cursor <= next_position_seq` always and never decreases.
+32. Cursor Position PDA is directly derivable and `settle` touches at most one entry.
+33. Automatic settlement uses canonical Close economics/events.
+34. Generation finalization never resets/skips `settle_cursor`.
+35. Same-slot Supply→Withdraw is rejected.
+36. Yield protocol fee is charged in Asset at Collect only.
+37. Close/Swap protocol fees are charged in Quote only.
+38. FEE_TO Asset/Quote accounts are validated against immutable `FEE_TO`.
+39. Unsupported Token-2022 behavior cannot corrupt accounting.
+40. All wide arithmetic/conversions are checked.
+41. Growth with zero corresponding share denominator always reverts.
+42. Cross-chain normalized economic outputs match EVM golden vectors.
+43. The canonical Q128 Yield algorithm matches EVM at every intermediate/final rounding vector.
+44. Repeated Collect calls over the same cumulative gross Yield charge the same cumulative Yield fee as one Collect.
+45. `yield_fee_carry < BPS` always and cannot be reset by leaving/re-entering a Tick.
+46. A zero-principal Withdraw is possible only for Max/full-provider-share dust burn and transfers no Asset/Exit ownership.
+47. Automatic settlement rejects any missing/extra/substituted/out-of-order account bundle.
+48. Swap rejects after `deadline` exactly like EVM.
 
 # 25. Required tests
 
-Mirror the EVM economic suite plus Solana-specific cases:
+Mirror the EVM suite plus Solana-specific cases:
 
 ```text
-PDA seed canonicalization and frozen little-endian numeric encoding
-U256LE limb/storage round-trip vectors
-initialize_pair canonical mint ordering, token-policy validation and duplicate rejection
-SDK getPair reversed-input equivalence, canonical Pair PDA derivation, initialized/uninitialized Pair behavior
-initialize_tick direction mapping, TickMath range, duration, price_x128 and three-vault creation
-new ProviderPosition initialization checkpoints current growth and inherits no history
-Pair creation without a global counter
-parallel Uses on unrelated ticks without a global writable account
-multiple Use instructions in one transaction with preselected distinct nonces
-duplicate position nonce rejection
-wrong vault/mint/token-program rejection
-wrong FEE_TO token-account owner rejection
-wrong FEE_TO token-account mint rejection
-legacy SPL Token path
-Token-2022 no-extension path
-Token-2022 MetadataPointer / TokenMetadata path
-unsupported Token-2022 mint extension rejection
-unsupported Token-2022 account extension rejection
-unsolicited Asset Vault donation does not increase Available/shares
-unsolicited Quote vault donation does not create claims
-same-slot Supply/Withdraw rejection
-atomic Withdraw + Collect transaction
-full Withdraw → shares zero → historical Collect succeeds
-full Withdraw → future growth gives withdrawn provider zero
-supplier joins while Working > 0 and receives no historical Yield
-existing Working Repay after share ownership changes
-existing Working Close after share ownership changes
-full generation exhaustion via Swap and restart
-full generation exhaustion via Close and restart
-correct GenerationState PDA creation/rent payer
-missing/wrong GenerationState rejection for stale provider
-provider stale across multiple later generations syncs only stored generation
-ProviderPosition close blocked while shares/owed/stale; succeeds only when empty/current
-permanent TermPosition PDA after REPAID/CLOSED
-deadline exact-boundary and expired cases
-maturity checked-math overflow rejection
-Gross Yield / Reference Yield round-up vectors
-protocol fee round-down vectors
-CloseFee / SwapFee <= Quote Principal boundary
-u64 transfer overflow rejection
-share mint/result above u64 succeeds when within U256
-U256 share overflow rejection
-zero-total-shares growth rejection
-transaction account-limit fallback behavior
-fixed-layout GPA filters for supplier/user/status
-cross-chain TickMath / price_x128 / Quote Principal golden vectors with EVM
-cross-chain Yield/share/growth golden-vector parity with EVM
-```
+PDA seed canonicalization and little-endian encoding
+U256LE round-trip vectors
+initialize_pair canonical ordering / policy / duplicate rejection
+initialize_tick active/Exit/reserve/cursor zero state and three vault creation
+GenerationState and ExitGenerationState canonical PDA creation
+new ProviderPosition checkpoints all active and Exit growth domains
+no global writable counter
+parallel Uses on unrelated Ticks
+same-Tick position_seq assignment and consecutive pre-derivation
+wrong/stale position_seq rejection
+wrong cursor Position PDA rejection
+wrong vault/mint/token-program/FEE_TO account rejection
+Token / allowed Token-2022 paths and unsupported extension rejection
+unsolicited vault donations create no claims
 
----
+Supply/Withdraw percentage-share vectors matching EVM
+mixed Available + active Working withdrawal
+full active withdrawal leaving Exit shares
+partial zero-principal Withdraw rejection
+Max/full-share zero-principal dust burn
+multiple Exit providers / same provider repeated withdrawal
+Exit share minting after partial Exit resolution
+Exit invariant total_exit_shares >= exit_working
+Use/Swap/Supply while Exit exists
+
+Use transfers Asset out and Quote Principal into escrow only
+Use transfers no Yield
+canonical Q128 Yield intermediate-rounding + full_term_yield_asset cross-chain vectors
+Use max_full_term_yield_asset bound
+Close fee frozen at Use opening
+
+Repay same timestamp (= 1 billable second) / one-second / partial-day / near-maturity Yield vectors
+Repay max_yield_asset bound
+Repay rate unaffected by later utilization
+Repay Asset principal + Yield exact transfer
+Repay Exit-first principal allocation
+Repay Exit/active Yield split
+Repay yield_asset_reserve solvency
+Repay with total_shares == 0 implies zero active Yield
+newer Use Repay may satisfy older Exit
+
+Close Exit-first proportional Quote split
+Close creates no Asset Yield
+Close uses stored close_fee
+Close with total_shares == 0 requires active_quote == 0
+simultaneous active + Exit generation finalization
+
+Immediate Swap reference full-term Asset Yield vectors
+Reference Yield Asset→Quote conversion
+Swap fee vectors
+Swap while Exit exists
+
+Collect Exit Asset only
+Collect active Asset Yield only
+Collect Exit Asset Yield only
+Collect mixed active + Exit Yield
+Collect Exit/active Quote
+Yield fee paid in Asset
+Yield-fee carry split-Collect equivalence and persistence
+Asset Vault reserve solvency after partial/full Collect
+Use/Swap cannot spend exit_asset_reserve or yield_asset_reserve
+Quote Proceeds reserve solvency
+
+active generation restart while Exit continues
+Exit generation restart while old claims remain uncollected
+stale provider active/Exit snapshots
+
+settle empty / terminal / non-mature / mature cursor cases
+settle Close with active generation snapshot creation
+settle Close with Exit generation snapshot creation
+settle Close with both snapshot creations
+settlement account omission/substitution/order/extra-account rejection
+automatic settlement before economic instructions
+settle cursor survives active/Exit generation rollovers
+
+TickMath / price_x128 / Quote Principal golden vectors
+full-term Asset Yield golden vectors
+elapsed Repay Yield golden vectors
+Exit principal/Yield/Quote growth golden vectors
+Asset and Quote protocol fee vectors
+Swap deadline exact-boundary / expired vectors
+u64 transfer/reserve overflow rejection
+U256 share/growth overflow rejection
+fixed-layout GPA filters
+cross-chain full action-sequence parity with EVM
+```
 
 # 26. Out of scope v0.1
 
@@ -1247,12 +1851,16 @@ LTV
 variable debt
 resting Demand orders
 provider FIFO matching
+provider-specific Working-position assignment
+provider Exit FIFO queues
+Exit cancellation / Exit→Active conversion
 upgradeable production program
 governance economics
 onchain referral rewards
 protocol token
 transferable LP/share token
 external AMM deployment
+offchain indexer dependency for settlement
 automatic refinancing
 portfolio margin
 ```
@@ -1262,13 +1870,45 @@ portfolio margin
 # 27. Canonical Solana mental model
 
 ```text
-Supply   → Asset Vault / Available
-Use      → Available → Working; Quote escrowed; Yield funded
-Repay    → Working → Available; Quote escrow returned
-Swap     → Available Asset leaves; net Quote becomes provider claim
-Close    → Working resolves; net Quote becomes provider claim
-Withdraw → Available Asset principal leaves Asset Vault
-Collect  → realized Quote principal + earned Yield leave Quote Proceeds Vault
+Supply   → Asset Vault / active Available
+
+Use      → active Available → active Working
+           Asset Vault → taker
+           Quote → Quote Escrow Vault
+           freeze full-term Asset Yield
+           no Yield paid yet
+
+Repay    → taker returns Asset principal + accrued Asset Yield
+           Quote escrow → taker
+           principal:
+             ├─ Exit first → Exit Asset reserve/growth
+             └─ excess → active Available
+           Yield:
+             ├─ Exit portion → Exit Yield growth
+             └─ active portion → active Yield growth
+
+Swap     → active Available → active provider Quote
+
+Close    → Working resolves to net Quote
+           no Asset Yield
+           ├─ Exit first → Exit Quote reserve/growth
+           └─ excess → active provider Quote growth
+
+Withdraw → burn selected active shares
+           ├─ proportional Available → supplier immediately
+           └─ proportional active Working → Exit Working
+
+Settle   → derive one Position from settle_cursor; close if mature
+
+Collect  → Exit Asset principal
+           + net Asset Yield
+           + Exit Quote
+           + active Swap/Close Quote
 ```
 
-The Solana implementation is a runtime mapping of the same Yield Orders economics, not a different protocol.
+The active market never pauses merely because Exit exists. Exit is a pooled priority-settlement domain for Working ownership removed from active shares; it is not tagged inventory.
+
+> **Return → Asset + Asset Yield. Swap → Quote.**
+
+Yield is funded only on Repay and grows with elapsed Use time subject to the 1-second minimum billable interval. No oracle or hosted indexer is required for correctness.
+
