@@ -1248,25 +1248,64 @@ wrong position sequence
 
 Chain/protocol diagnostics may appear in expandable technical details.
 
-# 26. Indexing and source of truth
+# 26. Discovery, indexing and source of truth
 
-Indexers may be used for:
+## 26.1 Curated market discovery — `yieldlist.json`
+
+The official v0.1 product MAY use a curated `yieldlist.json` registry for lightweight market discovery without requiring an indexer.
+
+```text
+yieldlist.json
+    ↓
+known supported markets
+    ↓
+canonical Pair / Tick lookup
+    ↓
+live RPC / onchain state
+```
+
+`yieldlist.json` is a **product discovery layer only**. It is never a source of truth for liquidity, Yield, positions, settlement state, balances, fees, or execution.
+
+Entries MAY include product metadata such as:
+
+```text
+network / deployment
+token addresses or mints
+market pair
+symbol / name
+token icon
+preferred display order
+official supported ticks / price grid
+featured / community metadata
+```
+
+Before displaying executable state or constructing a transaction, the adapter MUST resolve and reconcile the referenced Pair/Tick against canonical onchain state.
+
+A missing market from `yieldlist.json` does not make the market invalid at protocol level. Permissionlessly created Pair/Tick state remains valid if it satisfies the protocol specification.
+
+The official registry MAY be maintained through repository contributions so token communities can propose markets for discovery in the yld.cx interface.
+
+`yieldlist.json` MUST NOT be required for protocol correctness, connected-wallet state, execution, or Tick settlement. A client that already knows a canonical Pair/Tick MAY interact with it directly through RPC even when the market is not listed.
+
+## 26.2 Optional indexer
+
+An indexer MAY supplement or later replace registry-based discovery for:
 
 ```text
 speed
-search
+all-market search
+token → Pair / market discovery
 sorting
-activity feeds
+recent activity
 analytics
 global Orders history
-token → Pair / market discovery
 ```
 
 The reference indexer SHOULD maintain token→Pair discovery so the UI can search a token and list every indexed market involving it. This discovery index is not canonical protocol state; before execution the product resolves/reconciles the selected Pair and Tick against onchain state.
 
 Canonical protocol state remains source of truth.
 
-**Tick settlement MUST NOT depend on an indexer.**
+**Tick settlement MUST NOT depend on `yieldlist.json` or an indexer.**
 
 EVM settlement reads:
 
@@ -1287,7 +1326,7 @@ EVM essential provider/position state MUST remain RPC + Multicall readable throu
 
 Solana essential connected-wallet state MUST remain RPC/account readable through fixed-size ProviderPosition and TermPosition account layouts with stable SDK-published filters. GPA/indexer support may accelerate portfolio/history search, but is not required to find the next Position to settle.
 
-The product must tolerate indexer lag by reconciling with final onchain state after transactions.
+The product must tolerate indexer or registry lag by reconciling with canonical onchain state before execution and with final onchain state after transactions.
 
 ---
 
@@ -1482,4 +1521,3 @@ Collect     → resolved Asset + net Asset Yield + Quote
 The market does not pause for withdrawals. Resolving is priority on Working resolution, not tagged inventory: new Uses do not increase an existing Exit claim, while later Repay/Close may satisfy it sooner.
 
 > **Return → Asset + Asset Yield. Swap → Quote.**
-
