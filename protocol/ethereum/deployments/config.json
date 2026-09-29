@@ -1,0 +1,16 @@
+{
+  "productionReady": false,
+  "feeTo": "0x000000000000000000000000000000000000dEaD",
+  "saltNamespace": "yld.cx-v0.1-test",
+  "rawSalt": "0xac02890a70fa3d999940d9d63267b610f4d3ddf0ddbf78fc7910546a6f5cd7e4",
+  "guardedSalt": "0x3ba9736449da70e90e1e6b78d35c80c25cec49d917f551170c2da342998f6c59",
+  "address": "0x00000B5d2B9a767a183Fd84aa239a43121203426",
+  "creationCodeHash": "0xa7de615641c7aa1242c0cabfb5256290d62c031d9c0d2bc62087104a6dbf76be",
+  "runtimeCodeHash": "0x34b789014f29aa5b03020c4ee7f990e9151eea485ecd5ebbd4163d842fdda41f",
+  "compiler": "solc 0.8.36; cancun; optimizer 200; viaIR",
+  "networks": {
+    "ethereum": 1,
+    "base": 8453,
+    "robinhood": 4663
+  }
+}
