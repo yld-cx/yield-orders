@@ -1,11 +1,11 @@
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
 import { configVariable, defineConfig } from "hardhat/config";
 
-export const ETHEREUM_RPC_URL = process.env.ETHEREUM_RPC_URL ?? "https://ethereum-rpc.publicnode.com";
-export const BASE_RPC_URL = process.env.BASE_RPC_URL ?? "https://mainnet.base.org";
-export const ROBINHOOD_RPC_URL = process.env.ROBINHOOD_RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com";
+export const ETHEREUM_RPC_URL = process.env.ETHEREUM_RPC_URL || "https://ethereum-rpc.publicnode.com";
+export const BASE_RPC_URL = process.env.BASE_RPC_URL || "https://mainnet.base.org";
+export const ROBINHOOD_RPC_URL = process.env.ROBINHOOD_RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
 export const TEST_FEE_TO = "0x000000000000000000000000000000000000dEaD" as const;
-export const YLD_FEE_TO = process.env.YLD_FEE_TO ?? TEST_FEE_TO;
+export const YLD_FEE_TO = process.env.YLD_FEE_TO;
 export const YLD_DEPLOYER = process.env.YLD_DEPLOYER;
 export const YLD_DEPLOYER_CONFIG = configVariable("YLD_DEPLOYER");
 export const YLD_NETWORK = process.env.YLD_NETWORK;

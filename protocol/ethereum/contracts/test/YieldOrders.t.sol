@@ -419,6 +419,79 @@ contract YieldOrdersTest is YieldOrders {
         require(protocol.tokenLiability(address(largeAsset)) == type(uint256).max, "large supply remains intact");
     }
 
+    function _setupRepayCapacityMarket() internal returns (MockERC20 hugeAsset, MockERC20 tinyQuote, uint256 lowTick) {
+        hugeAsset = new MockERC20("Huge Asset", "HUGE", 18);
+        tinyQuote = new MockERC20("Tiny Quote", "TINY", 18);
+        uint256 pairId = protocol.createPair(address(hugeAsset), address(tinyQuote));
+        uint8 direction = address(hugeAsset) < address(tinyQuote) ? 0 : 1;
+        lowTick = protocol.createTick(pairId, direction, -887272, 1);
+        hugeAsset.mint(PROVIDER, type(uint256).max);
+        tinyQuote.mint(TAKER, type(uint256).max);
+        vm.prank(PROVIDER);
+        hugeAsset.approve(address(protocol), type(uint256).max);
+        vm.prank(TAKER);
+        hugeAsset.approve(address(protocol), type(uint256).max);
+        vm.prank(TAKER);
+        tinyQuote.approve(address(protocol), type(uint256).max);
+        vm.prank(PROVIDER);
+        protocol.supply(lowTick, type(uint256).max, address(0));
+    }
+
+    function testUseRepayCapacityExactBoundary() public {
+        (MockERC20 hugeAsset, , uint256 lowTick) = _setupRepayCapacityMarket();
+        uint256 principal = 115496865684420085078288223316955053204900112972514152743266012636331840087102;
+        uint256 expectedYield = 295223552896110345282761691732854648369871693126411296191571371581289552833;
+        require(principal + expectedYield == type(uint256).max, "exact representable boundary");
+        YieldOrders.UsePreview memory valid = protocol.previewUse(lowTick, principal);
+        require(valid.fullTermYieldAsset == expectedYield, "canonical full-term Yield at boundary");
+
+        vm.expectRevert(YieldOrders.InvalidInput.selector);
+        protocol.previewUse(lowTick, principal + 1);
+        vm.prank(TAKER);
+        vm.expectRevert(YieldOrders.InvalidInput.selector);
+        protocol.use(lowTick, principal + 1, type(uint256).max, block.timestamp, address(0));
+        require(protocol.nextPositionId() == 1, "rejected Use creates no Position");
+
+        vm.prank(TAKER);
+        uint256 positionId = protocol.use(lowTick, principal, expectedYield, block.timestamp, address(0));
+        require(protocol.getPosition(positionId).fullTermYieldAsset == expectedYield, "frozen boundary Yield");
+        YieldOrders.RepayPreview memory repayQuote = protocol.previewRepay(positionId);
+        require(repayQuote.totalAssetIn <= type(uint256).max, "same-timestamp Repay representable");
+        vm.roll(block.number + 1);
+        vm.prank(PROVIDER);
+        YieldOrders.WithdrawPreview memory exit = protocol.withdraw(lowTick, type(uint256).max);
+        require(exit.availableAssetOut == type(uint256).max - principal, "remaining Asset released");
+        vm.prank(PROVIDER);
+        hugeAsset.transfer(TAKER, exit.availableAssetOut);
+        vm.prank(TAKER);
+        protocol.repay(positionId, repayQuote.grossYieldAsset);
+        require(protocol.getPosition(positionId).status == YieldOrders.Status.REPAID, "boundary Use can Repay");
+    }
+
+    function testExtremeSwapDoesNotRequireRepayCapacity() public {
+        (, MockERC20 tinyQuote, uint256 lowTick) = _setupRepayCapacityMarket();
+        uint256 principal = type(uint256).max;
+        YieldOrders.SwapPreview memory swapQuote = protocol.previewSwap(lowTick, principal);
+        require(swapQuote.referenceFullTermYieldAsset > type(uint256).max - principal, "Repay would overflow");
+        vm.expectRevert(YieldOrders.InvalidInput.selector);
+        protocol.previewUse(lowTick, principal);
+        vm.prank(TAKER);
+        vm.expectRevert(YieldOrders.InvalidInput.selector);
+        protocol.use(lowTick, principal, type(uint256).max, block.timestamp, address(0));
+
+        vm.prank(TAKER);
+        YieldOrders.SwapPreview memory received = protocol.swap(
+            lowTick,
+            principal,
+            swapQuote.quotePrincipal,
+            block.timestamp,
+            address(0)
+        );
+        require(received.quotePrincipal == swapQuote.quotePrincipal, "extreme Swap still succeeds");
+        require(tinyQuote.balanceOf(FEE_TO) == swapQuote.swapFee, "Swap fee still paid");
+        require(protocol.nextPositionId() == 1, "Swap creates no Position");
+    }
+
     function _checkWithdrawFraction(uint256 shares) internal {
         _supply();
         vm.prank(TAKER);

@@ -13,7 +13,14 @@ import {
 import manifest from "../deployments/config.json" with { type: "json" };
 import protocolAbiJson from "../abi/YieldOrders.json" with { type: "json" };
 import type { YieldOrders$Type } from "../artifacts/contracts/YieldOrders.sol/artifacts.js";
-import { CREATE_X_ADDRESS, guardSalt, predict, readArtifact } from "../scripts/deployment.js";
+import {
+  assertManifest,
+  CREATE_X_ADDRESS,
+  guardSalt,
+  predict,
+  readArtifact,
+  type DeploymentManifest,
+} from "../scripts/deployment.js";
 import { feeOnTransferTokenAbi, mockERC20Abi, reentrantTokenAbi } from "./abi/mocks.js";
 
 const yieldOrdersAbi = protocolAbiJson as unknown as YieldOrders$Type["abi"];
@@ -219,7 +226,9 @@ describe("yld.cx integration", async () => {
     });
     await networkHelpers.time.increase(DAY);
 
-    // Both previews include the Close that the corresponding write will perform first.
+    // This view accrues stored growth only; previewCollect includes the pending one-step Close.
+    const stored = await market.read.getEarnPosition([supplier.account.address, tickId]);
+    assert.equal(stored.claimableSwapQuote, 0n);
     const claim = await market.read.previewCollect([tickId, supplier.account.address]);
     assert.ok(claim.swapQuote > 0n);
     assert.equal(await market.read.previewSupply([tickId, 75n * E]), 100n * E);
@@ -602,6 +611,7 @@ describe("yld.cx integration", async () => {
     const artifact = await readArtifact();
     assert.deepEqual(yieldOrdersAbi, artifact.abi);
     const result = predict(artifact, manifest.feeTo as `0x${string}`, manifest.rawSalt as `0x${string}`);
+    assertManifest(manifest as DeploymentManifest, result);
     assert.equal(result.address, manifest.address);
     assert.equal(result.guardedSalt, guardSalt(manifest.rawSalt as `0x${string}`));
     assert.ok(result.address.toLowerCase().startsWith("0x0000"));

@@ -397,6 +397,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.providerSwapProceeds = q.quotePrincipal - q.swapFee;
     }
 
+    function _checkRepayCapacity(uint256 assetAmount, uint256 fullTermYieldAsset) internal pure {
+        if (fullTermYieldAsset > type(uint256).max - assetAmount) revert InvalidInput();
+    }
+
     function _reconcileLiability(address token, uint256 previous, uint256 current) internal {
         uint256 total = tokenLiability[token];
         total = current >= previous ? total + (current - previous) : total - (previous - current);
@@ -642,6 +646,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _settleOne(id, t);
         if (block.timestamp > deadline) revert Expired();
         SwapPreview memory q = _swapPreview(t, assetAmount);
+        _checkRepayCapacity(assetAmount, q.referenceFullTermYieldAsset);
         if (q.referenceFullTermYieldAsset > maxFullTermYieldAsset) revert Slippage();
         uint256 maturity = block.timestamp + uint256(t.durationDays) * 1 days;
         positionId = nextPositionId;
@@ -1034,6 +1039,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _requireTick(id);
         Tick memory t = _projectTick(id, false).tick;
         SwapPreview memory s = _swapPreview(t, amount);
+        _checkRepayCapacity(amount, s.referenceFullTermYieldAsset);
         uint256 wa = t.workingSupply - t.exitWorking;
         uint256 ca = t.availableSupply + wa;
         q.matchAmount = amount;

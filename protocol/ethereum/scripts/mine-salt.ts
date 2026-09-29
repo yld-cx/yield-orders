@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { getAddress, getCreate2Address, keccak256, zeroAddress } from "viem";
-import { TEST_FEE_TO, YLD_FEE_TO } from "../hardhat.config.js";
+import { YLD_FEE_TO } from "../hardhat.config.js";
 import {
   candidateSalt,
   CREATE_X_ADDRESS,
@@ -9,13 +9,16 @@ import {
   NETWORKS,
   predict,
   readArtifact,
+  readManifest,
 } from "./deployment.js";
 
 const artifact = await readArtifact();
-const feeTo = getAddress(YLD_FEE_TO);
+const currentManifest = await readManifest();
+const { productionReady, saltNamespace } = currentManifest;
+if (productionReady) throw new Error("Set productionReady to false before mining a new deployment salt");
+if (!saltNamespace.trim()) throw new Error("Deployment saltNamespace cannot be empty");
+const feeTo = getAddress(YLD_FEE_TO ?? currentManifest.feeTo);
 if (feeTo === zeroAddress) throw new Error("YLD_FEE_TO cannot be zero");
-const productionReady = feeTo !== TEST_FEE_TO;
-const saltNamespace = productionReady ? "yld.cx-v0.1-production" : "yld.cx-v0.1-test";
 const creationCodeHash = keccak256(creationCode(artifact, feeTo));
 let found = false;
 for (let nonce = 0n; nonce < 2_000_000n; ++nonce) {
