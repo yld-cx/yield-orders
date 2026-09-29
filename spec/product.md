@@ -8,6 +8,9 @@
 
 # 1. Product summary
 
+> [yld.cx](https://yld.cx) — liquidity rental markets. \
+>  **provide** or **rent** tokens at your price.
+
 yld.cx presents Yield Orders as a trading primitive, not as lending.
 
 A supplier posts liquidity at a predefined price. A taker can consume active liquidity in two ways:
