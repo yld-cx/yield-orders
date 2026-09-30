@@ -1,0 +1,70 @@
+{
+  "name": "@yld-cx/ethereum-protocol",
+  "version": "0.1.0",
+  "description": "yld.cx — Ethereum / EVM L2s Yield Orders Protocol",
+  "keywords": [
+    "ethereum",
+    "evm",
+    "defi",
+    "yield-orders"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yld-cx/yield-orders.git",
+    "directory": "protocol/ethereum"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./abi/YieldOrders.json",
+    "./abi/*": "./abi/*",
+    "./contracts/*": "./contracts/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "README.md",
+    "abi/YieldOrders.json",
+    "contracts/YieldOrders.sol",
+    "contracts/libraries/TickMath.sol"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "hardhat build && npm run abi:export",
+    "build:production": "hardhat build --build-profile production && npm run abi:export",
+    "test": "hardhat test",
+    "test:solidity": "hardhat test solidity",
+    "test:nodejs": "hardhat test nodejs",
+    "test:fork:ethereum": "hardhat --build-profile production --network ethereumFork test nodejs integration/CreateXFork.ts",
+    "test:fork:base": "hardhat --build-profile production --network baseFork test nodejs integration/CreateXFork.ts",
+    "test:fork:robinhood": "hardhat --build-profile production --network robinhoodFork test nodejs integration/CreateXFork.ts",
+    "typecheck": "hardhat build && tsc --noEmit",
+    "format": "prettier --write \"**/*.{sol,ts,js,json,md}\"",
+    "abi:export": "node scripts/export-abi.mjs",
+    "salt:mine": "hardhat --build-profile production run scripts/mine-salt.ts",
+    "deploy:check": "YLD_CHECK_ONLY=true hardhat --build-profile production run scripts/deploy.ts",
+    "deploy:ethereum": "YLD_NETWORK=ethereum hardhat --build-profile production --network ethereum run scripts/deploy.ts",
+    "deploy:base": "YLD_NETWORK=base hardhat --build-profile production --network base run scripts/deploy.ts",
+    "deploy:robinhood": "YLD_NETWORK=robinhood hardhat --build-profile production --network robinhood run scripts/deploy.ts",
+    "verify:ethereum": "YLD_NETWORK=ethereum hardhat --build-profile production --network ethereum run scripts/verify.ts",
+    "verify:base": "YLD_NETWORK=base hardhat --build-profile production --network base run scripts/verify.ts",
+    "verify:robinhood": "YLD_NETWORK=robinhood hardhat --build-profile production --network robinhood run scripts/verify.ts",
+    "prepack": "npm run build:production"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.7.0"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
+    "@nomicfoundation/hardhat-verify": "^3.0.22",
+    "@types/node": "^22.20.1",
+    "hardhat": "^3.12.0",
+    "prettier": "^3.9.6",
+    "prettier-plugin-solidity": "^2.4.0",
+    "typescript": "~6.0.3",
+    "viem": "^2.55.11"
+  }
+}
