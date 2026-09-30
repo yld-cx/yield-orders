@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, encodeDeployData, getCreate2Address, keccak256, type Address, type Hex } from "viem";
-import { BASE_RPC_URL, ETHEREUM_RPC_URL, ROBINHOOD_RPC_URL, TEST_FEE_TO } from "../hardhat.config.js";
+import { BASE_RPC_URL, ETHEREUM_RPC_URL, ROBINHOOD_RPC_URL } from "../hardhat.config.js";
 
 export const CREATE_X_ADDRESS = "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed" as const;
 export const CREATE_X_RUNTIME_HASH = "0xbd8a7ea8cfca7b4e5f5041d7d4b17bc317c5ce42cfbc42066a00cf26b43eb53f" as const;
@@ -12,7 +12,6 @@ export const NETWORKS = {
 } as const;
 
 export type DeploymentManifest = {
-  productionReady: boolean;
   feeTo: Address;
   saltNamespace: string;
   rawSalt: Hex;
@@ -92,8 +91,6 @@ export function predict(
 }
 
 export function assertManifest(manifest: DeploymentManifest, prediction: ReturnType<typeof predict>): void {
-  if (manifest.productionReady && manifest.feeTo.toLowerCase() === TEST_FEE_TO.toLowerCase())
-    throw new Error("Temporary FEE_TO cannot be used for production deployment");
   if (!prediction.address.toLowerCase().startsWith("0x0000"))
     throw new Error("Protocol address must start with 0x0000");
   for (const [name, config] of Object.entries(NETWORKS)) {

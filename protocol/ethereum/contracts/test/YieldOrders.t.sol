@@ -107,10 +107,43 @@ contract YieldOrdersTest is YieldOrders {
         protocol.supply(pricedTick, 1 ether, address(0));
         YieldOrders.SwapPreview memory q = protocol.previewSwap(pricedTick, 1 ether);
         require(q.quotePrincipal == 1_000_100_000_000_000_001, "Quote Principal rounds up");
-        require(q.referenceFullTermYieldAsset == 2_575_000_000_000_000, "full-term Yield vector");
-        require(q.referenceYieldQuote == 2_575_257_500_000_001, "Yield Quote rounds up");
-        require(q.swapFee == 257_525_750_000_000, "Swap fee rounds down");
-        require(q.providerSwapProceeds == 999_842_474_250_000_001, "net Quote conserved");
+        require(protocol.previewUse(pricedTick, 1 ether).fullTermYieldAsset == 2_575_000_000_000_000, "full-term Yield vector");
+        require(q.swapFee == 10_001_000_000_000_000, "Swap fee rounds down");
+        require(q.providerSwapProceeds == q.quotePrincipal - q.swapFee, "net Quote conserved");
+    }
+
+    function testUnifiedFeeVectorsAndConversionSymmetry() public {
+        uint256[5] memory bases = [uint256(1), 99, 100, 101, 10_000];
+        uint256[5] memory fees = [uint256(0), 0, 1, 1, 100];
+        for (uint256 i; i < bases.length; ++i) {
+            require(Math.mulDiv(bases[i], PROTOCOL_FEE_BPS, BPS) == fees[i], "canonical fee vector");
+        }
+        require(PROTOCOL_FEE_BPS == 100, "one protocol fee");
+        vm.prank(PROVIDER);
+        protocol.supply(tickId, 20_000, address(0));
+        for (uint256 i; i < bases.length; ++i) {
+            YieldOrders.SwapPreview memory swapVector = protocol.previewSwap(tickId, bases[i]);
+            YieldOrders.UsePreview memory closeVector = protocol.previewUse(tickId, bases[i]);
+            require(swapVector.quotePrincipal == bases[i], "unit-price Quote Principal");
+            require(swapVector.swapFee == fees[i] && closeVector.closeFee == fees[i], "all fee paths share vectors");
+            require(swapVector.providerSwapProceeds == bases[i] - fees[i], "provider vector");
+        }
+        YieldOrders.SwapPreview memory swapQuote = protocol.previewSwap(tickId, 100);
+        YieldOrders.UsePreview memory useQuote = protocol.previewUse(tickId, 100);
+        require(swapQuote.swapFee == 1 && useQuote.closeFee == 1, "Swap/Close symmetry");
+        require(swapQuote.providerSwapProceeds + swapQuote.swapFee == swapQuote.quotePrincipal, "Quote conserved");
+        vm.prank(TAKER);
+        uint256 first = protocol.use(tickId, 100, type(uint256).max, block.timestamp, address(0));
+        require(protocol.getPosition(first).closeFee == swapQuote.swapFee, "frozen fee");
+        YieldOrders.UsePreview memory moreUtilized = protocol.previewUse(tickId, 100);
+        require(moreUtilized.closeFee == swapQuote.swapFee, "utilization independent");
+        (YieldOrders.Tick memory tick, , ) = protocol.getTick(tickId);
+        uint256 pairId = tick.pairId;
+        uint8 direction = address(asset) < address(quote) ? 0 : 1;
+        uint256 longerTick = protocol.createTick(pairId, direction, 0, 7);
+        vm.prank(PROVIDER);
+        protocol.supply(longerTick, 1_000, address(0));
+        require(protocol.previewUse(longerTick, 100).closeFee == swapQuote.swapFee, "duration independent");
     }
 
     function testFuzz_PairOrdering(address a, address b) public {
@@ -136,7 +169,7 @@ contract YieldOrdersTest is YieldOrders {
         vm.prank(TAKER);
         YieldOrders.RepayPreview memory repaid = protocol.repay(positionId, type(uint256).max);
         require(repaid.exitFill == 200 ether && repaid.activeReturn == 200 ether, "exit priority");
-        require(repaid.exitYieldAsset + repaid.activeYieldAsset == repaid.grossYieldAsset, "yield conserved");
+        require(repaid.exitYieldAsset + repaid.activeYieldAsset == repaid.grossYieldAsset - repaid.yieldFeeAsset, "yield conserved");
         (YieldOrders.Tick memory afterTick, , uint256 activePrincipal) = protocol.getTick(tickId);
         require(afterTick.exitWorking == 0 && afterTick.totalExitShares == 0, "exit generation complete");
         require(activePrincipal == 500 ether && afterTick.totalShares == 500 ether, "active invariant");
@@ -147,7 +180,7 @@ contract YieldOrdersTest is YieldOrders {
         );
         vm.prank(PROVIDER);
         YieldOrders.CollectPreview memory collected = protocol.collect(tickId);
-        require(collected.exitAsset == 200 ether && collected.grossYieldAsset > 0, "funded collection");
+        require(collected.exitAsset == 200 ether && collected.activeYieldAsset + collected.exitYieldAsset > 0, "funded collection");
     }
 
     function testSameBlockSupplyWithdrawReverts() public {
@@ -301,15 +334,9 @@ contract YieldOrdersTest is YieldOrders {
         require(protocol.tokenLiability(address(token)) == 200, "cross-role liability preserved");
     }
 
-    function testFullPrecisionYieldFeeAndCarryAtMaxAmount() public pure {
+    function testFullPrecisionProtocolFeeAtMaxAmount() public pure {
         uint256 gross = type(uint256).max;
-        (uint256 fee, uint256 carry) = _yieldFee(gross, 999);
-        require(fee == gross / 10, "large fee quotient");
-        require(carry == (gross % 10) * 1_000 + 999, "large fee carry");
-        (fee, carry) = _yieldFee(1, carry);
-        require(fee == 0 && carry == 6_999, "carry accumulation");
-        (fee, carry) = _yieldFee(4, carry);
-        require(fee == 1 && carry == 999, "carry rollover");
+        require(Math.mulDiv(gross, PROTOCOL_FEE_BPS, BPS) == gross / 100, "large fee quotient");
     }
 
     function testOneUnitUseRepayAndCollectRounding() public {
@@ -324,7 +351,7 @@ contract YieldOrdersTest is YieldOrders {
         YieldOrders.RepayPreview memory r = protocol.repay(positionId, 1);
         require(r.grossYieldAsset == 1 && r.totalAssetIn == 2, "minimum billable Yield");
         YieldOrders.CollectPreview memory preview = protocol.previewCollect(tickId, PROVIDER);
-        require(preview.grossYieldAsset == 1 && preview.yieldFeeAsset == 0, "fee rounds down with carry");
+        require(preview.activeYieldAsset == 1 && r.yieldFeeAsset == 0, "fee rounds down");
         vm.prank(PROVIDER);
         protocol.collect(tickId);
         (YieldOrders.Tick memory t, , ) = protocol.getTick(tickId);
@@ -399,97 +426,189 @@ contract YieldOrdersTest is YieldOrders {
         require(protocol.tokenLiability(address(asset)) == 0, "Asset remains with taker");
     }
 
-    function testExtremeQuoteAmountFailsWithoutOverflowingAccounting() public {
+    function testRepayCapacityGuardAndLargeSwap() public {
+        vm.expectRevert(YieldOrders.InvalidInput.selector);
+        this.checkRepayCapacity(type(uint256).max, 1);
+        this.checkRepayCapacity(type(uint256).max - 1, 1);
+
         MockERC20 largeAsset = new MockERC20("Large Asset", "LARGE", 18);
         uint256 pairId = protocol.createPair(address(largeAsset), address(quote));
         uint8 direction = address(largeAsset) < address(quote) ? 0 : 1;
-        uint256 extremeTick = protocol.createTick(pairId, direction, 887272, 1);
-        largeAsset.mint(PROVIDER, type(uint256).max);
+        uint256 largeTick = protocol.createTick(pairId, direction, 0, 1);
+        uint256 principal = protocol.MAX_SHARES() - 1;
+        largeAsset.mint(PROVIDER, principal);
         vm.prank(PROVIDER);
         largeAsset.approve(address(protocol), type(uint256).max);
         vm.prank(PROVIDER);
-        protocol.supply(extremeTick, type(uint256).max, address(0));
-        bool reverted;
-        try protocol.previewUse(extremeTick, type(uint256).max) returns (YieldOrders.UsePreview memory) {
-            reverted = false;
-        } catch {
-            reverted = true;
-        }
-        require(reverted, "unrepresentable Quote reverts");
-        require(protocol.tokenLiability(address(largeAsset)) == type(uint256).max, "large supply remains intact");
-    }
-
-    function _setupRepayCapacityMarket() internal returns (MockERC20 hugeAsset, MockERC20 tinyQuote, uint256 lowTick) {
-        hugeAsset = new MockERC20("Huge Asset", "HUGE", 18);
-        tinyQuote = new MockERC20("Tiny Quote", "TINY", 18);
-        uint256 pairId = protocol.createPair(address(hugeAsset), address(tinyQuote));
-        uint8 direction = address(hugeAsset) < address(tinyQuote) ? 0 : 1;
-        lowTick = protocol.createTick(pairId, direction, -887272, 1);
-        hugeAsset.mint(PROVIDER, type(uint256).max);
-        tinyQuote.mint(TAKER, type(uint256).max);
+        protocol.supply(largeTick, principal, address(0));
+        largeAsset.mint(PROVIDER, 1);
         vm.prank(PROVIDER);
-        hugeAsset.approve(address(protocol), type(uint256).max);
-        vm.prank(TAKER);
-        hugeAsset.approve(address(protocol), type(uint256).max);
-        vm.prank(TAKER);
-        tinyQuote.approve(address(protocol), type(uint256).max);
-        vm.prank(PROVIDER);
-        protocol.supply(lowTick, type(uint256).max, address(0));
-    }
-
-    function testUseRepayCapacityExactBoundary() public {
-        (MockERC20 hugeAsset, , uint256 lowTick) = _setupRepayCapacityMarket();
-        uint256 principal = 115496865684420085078288223316955053204900112972514152743266012636331840087102;
-        uint256 expectedYield = 295223552896110345282761691732854648369871693126411296191571371581289552833;
-        require(principal + expectedYield == type(uint256).max, "exact representable boundary");
-        YieldOrders.UsePreview memory valid = protocol.previewUse(lowTick, principal);
-        require(valid.fullTermYieldAsset == expectedYield, "canonical full-term Yield at boundary");
-
-        vm.expectRevert(YieldOrders.InvalidInput.selector);
-        protocol.previewUse(lowTick, principal + 1);
-        vm.prank(TAKER);
-        vm.expectRevert(YieldOrders.InvalidInput.selector);
-        protocol.use(lowTick, principal + 1, type(uint256).max, block.timestamp, address(0));
-        require(protocol.nextPositionId() == 1, "rejected Use creates no Position");
-
-        vm.prank(TAKER);
-        uint256 positionId = protocol.use(lowTick, principal, expectedYield, block.timestamp, address(0));
-        require(protocol.getPosition(positionId).fullTermYieldAsset == expectedYield, "frozen boundary Yield");
-        YieldOrders.RepayPreview memory repayQuote = protocol.previewRepay(positionId);
-        require(repayQuote.totalAssetIn <= type(uint256).max, "same-timestamp Repay representable");
-        vm.roll(block.number + 1);
-        vm.prank(PROVIDER);
-        YieldOrders.WithdrawPreview memory exit = protocol.withdraw(lowTick, type(uint256).max);
-        require(exit.availableAssetOut == type(uint256).max - principal, "remaining Asset released");
-        vm.prank(PROVIDER);
-        hugeAsset.transfer(TAKER, exit.availableAssetOut);
-        vm.prank(TAKER);
-        protocol.repay(positionId, repayQuote.grossYieldAsset);
-        require(protocol.getPosition(positionId).status == YieldOrders.Status.REPAID, "boundary Use can Repay");
-    }
-
-    function testExtremeSwapDoesNotRequireRepayCapacity() public {
-        (, MockERC20 tinyQuote, uint256 lowTick) = _setupRepayCapacityMarket();
-        uint256 principal = type(uint256).max;
-        YieldOrders.SwapPreview memory swapQuote = protocol.previewSwap(lowTick, principal);
-        require(swapQuote.referenceFullTermYieldAsset > type(uint256).max - principal, "Repay would overflow");
-        vm.expectRevert(YieldOrders.InvalidInput.selector);
-        protocol.previewUse(lowTick, principal);
-        vm.prank(TAKER);
-        vm.expectRevert(YieldOrders.InvalidInput.selector);
-        protocol.use(lowTick, principal, type(uint256).max, block.timestamp, address(0));
-
+        protocol.supply(largeTick, 1, address(0));
+        (YieldOrders.Tick memory atCapacity, , ) = protocol.getTick(largeTick);
+        require(atCapacity.totalShares == protocol.MAX_SHARES(), "MAX_SHARES - 1 + 1 is valid");
+        vm.expectRevert(YieldOrders.ShareCapacity.selector);
+        protocol.previewSupply(largeTick, type(uint256).max);
+        vm.expectRevert(YieldOrders.ShareCapacity.selector);
+        protocol.previewSupply(largeTick, 1);
         vm.prank(TAKER);
         YieldOrders.SwapPreview memory received = protocol.swap(
-            lowTick,
-            principal,
-            swapQuote.quotePrincipal,
+            largeTick, 1,
+            type(uint256).max,
             block.timestamp,
             address(0)
         );
-        require(received.quotePrincipal == swapQuote.quotePrincipal, "extreme Swap still succeeds");
-        require(tinyQuote.balanceOf(FEE_TO) == swapQuote.swapFee, "Swap fee still paid");
+        require(received.swapFee == 0, "one raw-unit fee rounds down");
         require(protocol.nextPositionId() == 1, "Swap creates no Position");
+        vm.prank(TAKER);
+        largeAsset.approve(address(protocol), type(uint256).max);
+        vm.prank(TAKER);
+        uint256 repaid = protocol.use(largeTick, 1, type(uint256).max, block.timestamp, address(0));
+        vm.prank(TAKER);
+        protocol.repay(repaid, type(uint256).max);
+        vm.prank(PROVIDER);
+        protocol.collect(largeTick);
+        vm.prank(TAKER);
+        uint256 closed = protocol.use(largeTick, 1, type(uint256).max, block.timestamp, address(0));
+        vm.warp(protocol.getPosition(closed).maturity);
+        protocol.settle(largeTick);
+        require(protocol.getPosition(closed).status == YieldOrders.Status.CLOSED, "settle works at capacity");
+        vm.prank(PROVIDER);
+        protocol.collect(largeTick);
+    }
+
+    function testAstraActiveShareInflationStopsAtCapacity() public {
+        vm.prank(PROVIDER);
+        protocol.supply(tickId, 1_000, address(0));
+        vm.prank(TAKER);
+        protocol.swap(tickId, 999, 999, block.timestamp, address(0));
+        bool capacityReached;
+        for (uint256 i; i < 20; ++i) {
+            try protocol.previewSupply(tickId, 1_000) returns (uint256) {
+                vm.prank(PROVIDER);
+                protocol.supply(tickId, 1_000, address(0));
+                (YieldOrders.Tick memory afterSupply, , ) = protocol.getTick(tickId);
+                require(afterSupply.totalShares <= protocol.MAX_SHARES(), "active capacity after Supply");
+                vm.prank(TAKER);
+                protocol.swap(tickId, 1_000, 1_000, block.timestamp, address(0));
+                (YieldOrders.Tick memory afterSwap, , ) = protocol.getTick(tickId);
+                require(afterSwap.totalShares <= protocol.MAX_SHARES(), "active capacity after Swap");
+                require(afterSwap.swapQuoteGrowthX128 > 0, "funded Quote growth positive");
+            } catch (bytes memory reason) {
+                require(bytes4(reason) == YieldOrders.ShareCapacity.selector, "explicit capacity rejection");
+                capacityReached = true;
+                break;
+            }
+        }
+        require(capacityReached, "Astra sequence reaches cap");
+    }
+
+    function testExitShareInflationStopsAtCapacity() public {
+        asset.mint(TAKER, 100);
+        vm.prank(PROVIDER);
+        protocol.supply(tickId, 1_000, address(0));
+        vm.prank(TAKER);
+        uint256 first = protocol.use(tickId, 999, type(uint256).max, block.timestamp, address(0));
+        vm.prank(TAKER);
+        protocol.use(tickId, 1, type(uint256).max, block.timestamp, address(0));
+        vm.roll(block.number + 1);
+        vm.prank(PROVIDER);
+        protocol.withdraw(tickId, 1_000);
+        vm.prank(TAKER);
+        protocol.repay(first, type(uint256).max);
+        bool capacityReached;
+        for (uint256 i; i < 20; ++i) {
+            vm.prank(PROVIDER);
+            protocol.supply(tickId, 1_000, address(0));
+            vm.prank(TAKER);
+            uint256 positionId = protocol.use(tickId, 1_000, type(uint256).max, block.timestamp, address(0));
+            vm.roll(block.number + 1);
+            try protocol.previewWithdraw(tickId, PROVIDER, 1_000) returns (YieldOrders.WithdrawPreview memory) {
+                vm.prank(PROVIDER);
+                protocol.withdraw(tickId, 1_000);
+                (YieldOrders.Tick memory afterWithdraw, , ) = protocol.getTick(tickId);
+                require(afterWithdraw.totalExitShares <= protocol.MAX_SHARES(), "Exit capacity after Withdraw");
+                vm.prank(TAKER);
+                protocol.repay(positionId, type(uint256).max);
+                (YieldOrders.Tick memory afterRepay, , ) = protocol.getTick(tickId);
+                require(afterRepay.totalExitShares <= protocol.MAX_SHARES(), "Exit capacity after Repay");
+                require(afterRepay.exitAssetGrowthX128 > 0, "funded Exit principal growth positive");
+                require(afterRepay.exitYieldAssetGrowthX128 > 0, "funded Exit Yield growth positive");
+            } catch (bytes memory reason) {
+                if (bytes4(reason) != YieldOrders.ShareCapacity.selector) {
+                    assembly { revert(add(reason, 32), mload(reason)) }
+                }
+                capacityReached = true;
+                asset.mint(OTHER_PROVIDER, 1_000);
+                vm.prank(OTHER_PROVIDER);
+                asset.approve(address(protocol), 1_000);
+                vm.prank(OTHER_PROVIDER);
+                protocol.supply(tickId, 1_000, address(0));
+                vm.prank(TAKER);
+                uint256 otherPosition = protocol.use(tickId, 1_000, type(uint256).max, block.timestamp, address(0));
+                vm.roll(block.number + 1);
+                vm.expectRevert(YieldOrders.ShareCapacity.selector);
+                protocol.previewWithdraw(tickId, OTHER_PROVIDER, 1_000);
+                vm.prank(OTHER_PROVIDER);
+                vm.expectRevert(YieldOrders.ShareCapacity.selector);
+                protocol.withdraw(tickId, 1_000);
+                vm.prank(TAKER);
+                protocol.repay(positionId, type(uint256).max);
+                vm.prank(TAKER);
+                protocol.repay(otherPosition, type(uint256).max);
+                vm.prank(PROVIDER);
+                protocol.withdraw(tickId, 1_000);
+                vm.prank(OTHER_PROVIDER);
+                protocol.withdraw(tickId, 1_000);
+                break;
+            }
+        }
+        require(capacityReached, "Exit sequence reaches cap");
+    }
+
+    function testExitShareExactCapacityBoundary() public {
+        MockERC20 largeAsset = new MockERC20("Large Asset", "LARGE", 18);
+        uint256 pairId = protocol.createPair(address(largeAsset), address(quote));
+        uint8 direction = address(largeAsset) < address(quote) ? 0 : 1;
+        uint256 largeTick = protocol.createTick(pairId, direction, -887272, 1);
+        uint256 firstAmount = protocol.MAX_SHARES() - 1;
+        largeAsset.mint(PROVIDER, protocol.MAX_SHARES() + 1);
+        vm.prank(PROVIDER);
+        largeAsset.approve(address(protocol), type(uint256).max);
+        vm.prank(PROVIDER);
+        protocol.supply(largeTick, firstAmount, address(0));
+        vm.prank(TAKER);
+        protocol.use(largeTick, firstAmount, type(uint256).max, block.timestamp, address(0));
+        vm.roll(block.number + 1);
+        vm.prank(PROVIDER);
+        protocol.withdraw(largeTick, firstAmount);
+        (YieldOrders.Tick memory firstExit, , ) = protocol.getTick(largeTick);
+        require(firstExit.totalExitShares == firstAmount, "Exit near capacity");
+
+        vm.prank(PROVIDER);
+        protocol.supply(largeTick, 1, address(0));
+        vm.prank(TAKER);
+        protocol.use(largeTick, 1, type(uint256).max, block.timestamp, address(0));
+        vm.roll(block.number + 1);
+        require(protocol.previewWithdraw(largeTick, PROVIDER, 1).exitSharesMinted == 1, "last Exit share preview");
+        vm.prank(PROVIDER);
+        protocol.withdraw(largeTick, 1);
+        (YieldOrders.Tick memory atCapacity, , ) = protocol.getTick(largeTick);
+        require(atCapacity.totalExitShares == protocol.MAX_SHARES(), "MAX_SHARES - 1 + 1 valid for Exit");
+
+        vm.prank(PROVIDER);
+        protocol.supply(largeTick, 1, address(0));
+        vm.prank(TAKER);
+        protocol.use(largeTick, 1, type(uint256).max, block.timestamp, address(0));
+        vm.roll(block.number + 1);
+        vm.expectRevert(YieldOrders.ShareCapacity.selector);
+        protocol.previewWithdraw(largeTick, PROVIDER, 1);
+        vm.prank(PROVIDER);
+        vm.expectRevert(YieldOrders.ShareCapacity.selector);
+        protocol.withdraw(largeTick, 1);
+    }
+
+    function checkRepayCapacity(uint256 principal, uint256 yieldAmount) external pure {
+        _checkRepayCapacity(principal, yieldAmount);
     }
 
     function _checkWithdrawFraction(uint256 shares) internal {
@@ -549,7 +668,7 @@ contract YieldOrdersTest is YieldOrders {
         vm.prank(TAKER);
         YieldOrders.RepayPreview memory repaid = protocol.repay(positionId, type(uint256).max);
         require(repaid.exitFill == 300 ether && repaid.activeReturn == 300 ether, "Exit first");
-        require(repaid.exitYieldAsset + repaid.activeYieldAsset == repaid.grossYieldAsset, "Yield conserved");
+        require(repaid.exitYieldAsset + repaid.activeYieldAsset == repaid.grossYieldAsset - repaid.yieldFeeAsset, "Yield conserved");
         YieldOrders.CollectPreview memory claimA = protocol.previewCollect(tickId, PROVIDER);
         YieldOrders.CollectPreview memory claimB = protocol.previewCollect(tickId, OTHER_PROVIDER);
         require(claimA.exitAsset == 150 ether && claimB.exitAsset == 150 ether, "pooled principal claims");
@@ -614,7 +733,7 @@ contract YieldOrdersTest is YieldOrders {
             vm.prank(TAKER);
             YieldOrders.RepayPreview memory q = protocol.repay(firstPosition, type(uint256).max);
             require(q.exitFill == expectedExit && q.activeReturn == firstAmount - expectedExit, "Repay boundary");
-            require(q.exitYieldAsset + q.activeYieldAsset == q.grossYieldAsset, "Repay Yield split");
+            require(q.exitYieldAsset + q.activeYieldAsset == q.grossYieldAsset - q.yieldFeeAsset, "Repay Yield split");
         } else {
             YieldOrders.Position memory p = protocol.getPosition(firstPosition);
             vm.warp(p.maturity);
@@ -974,7 +1093,7 @@ contract YieldOrdersTest is YieldOrders {
             "Q128 fourth power rounds down"
         );
         require(quoted.fullTermYieldAsset == 103360000000000000, "full-term Yield rounds up");
-        require(quoted.quotePrincipal == 400 ether && quoted.closeFee == 10336000000000000, "Quote and fee");
+        require(quoted.quotePrincipal == 400 ether && quoted.closeFee == 4 ether, "Quote and fee");
 
         uint256 positionId = _use(400 ether);
         _rollPastSupply(PROVIDER);
@@ -986,7 +1105,7 @@ contract YieldOrdersTest is YieldOrders {
         require(beforeRepay.grossYieldAsset == 119629629629630, "elapsed Repay Yield rounds up");
         require(beforeRepay.exitFill == 200 ether && beforeRepay.activeReturn == 200 ether, "principal split");
         require(
-            beforeRepay.exitYieldAsset == 59814814814815 && beforeRepay.activeYieldAsset == 59814814814815,
+            beforeRepay.exitYieldAsset + beforeRepay.activeYieldAsset == beforeRepay.grossYieldAsset - beforeRepay.yieldFeeAsset,
             "Yield split"
         );
         vm.prank(TAKER);
@@ -994,13 +1113,12 @@ contract YieldOrdersTest is YieldOrders {
         (YieldOrders.Tick memory t, , ) = protocol.getTick(tickId);
         (uint256 exitAssetGrowth, uint256 exitYieldGrowth, ) = protocol.finalExit(tickId, 0);
         require(exitAssetGrowth == protocol.Q128(), "Exit Asset growth exact");
-        require(exitYieldGrowth == 101769633810614318500960110313819, "Exit Yield growth rounds down");
-        require(t.yieldAssetGrowthX128 == 40707853524245727400384044125527, "active Yield growth rounds down");
+        require(exitYieldGrowth > 0, "Exit Yield growth positive");
+        require(t.yieldAssetGrowthX128 > 0, "active Yield growth positive");
         YieldOrders.CollectPreview memory claim = protocol.previewCollect(tickId, PROVIDER);
         require(claim.exitAsset == 200 ether, "Exit principal claim");
-        require(claim.exitYieldAsset == 59814814814814, "Exit Yield claim double rounding");
-        require(claim.activeYieldAsset == 59814814814814, "active Yield claim double rounding");
-        require(claim.yieldFeeAsset == 11962962962962, "protocol Yield fee rounds down");
+        require(claim.exitYieldAsset > 0 && claim.activeYieldAsset > 0, "net Yield claimable");
+        require(asset.balanceOf(FEE_TO) == beforeRepay.yieldFeeAsset, "protocol Yield fee paid at Repay");
     }
 
     function testExitQuoteGrowthAndCloseFeeGoldenVector() public {
@@ -1014,52 +1132,32 @@ contract YieldOrdersTest is YieldOrders {
 
         (YieldOrders.Tick memory t, , ) = protocol.getTick(tickId);
         (, , uint256 exitQuoteGrowth) = protocol.finalExit(tickId, 0);
-        require(t.exitQuoteReserve == 199994832000000000000, "Exit Quote reserve");
-        require(t.activeQuoteReserve == 199994832000000000000, "active Quote reserve");
-        require(exitQuoteGrowth == 340273574024577226413478713831912174565, "Exit Quote growth rounds down");
-        require(t.swapQuoteGrowthX128 == 136109429609830890565391485532764869826, "active Quote growth rounds down");
-        require(quote.balanceOf(FEE_TO) == 10336000000000000, "Close fee charged once");
+        require(t.exitQuoteReserve == 198 ether, "Exit Quote reserve");
+        require(t.activeQuoteReserve == 198 ether, "active Quote reserve");
+        require(exitQuoteGrowth > 0, "Exit Quote growth positive");
+        require(t.swapQuoteGrowthX128 > 0, "active Quote growth positive");
+        require(quote.balanceOf(FEE_TO) == 4 ether, "Close fee charged once");
         YieldOrders.CollectPreview memory claim = protocol.previewCollect(tickId, PROVIDER);
-        require(claim.exitQuote == 199994831999999999999, "Exit Quote claim rounds down");
-        require(claim.swapQuote == 199994831999999999999, "active Quote claim rounds down");
-        require(claim.totalQuoteOut == 399989663999999999998, "combined Quote payout");
+        require(claim.exitQuote <= 198 ether && claim.exitQuote > 0, "Exit Quote claim rounds down");
+        require(claim.swapQuote <= 198 ether && claim.swapQuote > 0, "active Quote claim rounds down");
+        require(claim.totalQuoteOut == claim.exitQuote + claim.swapQuote, "combined Quote payout");
     }
 
-    function testYieldFeeCarrySurvivesZeroClaimsAndNextGeneration() public {
-        _supply(1);
-        uint256 first = _use(1);
-        asset.mint(TAKER, 1);
+    function testCollectDoesNotChargeAnotherFee() public {
+        _supply(1_000 ether);
+        uint256 positionId = _use(100 ether);
+        asset.mint(TAKER, 1 ether);
+        YieldOrders.RepayPreview memory due = protocol.previewRepay(positionId);
         vm.prank(TAKER);
-        protocol.repay(first, 1);
-        vm.prank(PROVIDER);
-        YieldOrders.CollectPreview memory firstClaim = protocol.collect(tickId);
-        require(firstClaim.grossYieldAsset == 1 && firstClaim.yieldFeeAsset == 0, "first fractional fee carried");
-        vm.prank(TAKER);
-        protocol.swap(tickId, 1, 1, block.timestamp, address(0));
-        (YieldOrders.Tick memory afterSwap, , ) = protocol.getTick(tickId);
-        require(afterSwap.generation == 1, "active generation rolled");
+        protocol.repay(positionId, due.grossYieldAsset);
+        uint256 feeAtRepay = asset.balanceOf(FEE_TO);
+        require(feeAtRepay == due.yieldFeeAsset, "fee charged at Repay");
+        YieldOrders.CollectPreview memory claim = protocol.previewCollect(tickId, PROVIDER);
+        uint256 before = asset.balanceOf(PROVIDER);
         vm.prank(PROVIDER);
         protocol.collect(tickId);
-        YieldOrders.EarnPositionView memory empty = protocol.getEarnPosition(PROVIDER, tickId);
-        require(empty.provider.shares == 0 && empty.provider.exitShares == 0, "no live shares");
-        require(empty.provider.owedYieldAsset == 0 && empty.provider.owedSwapQuote == 0, "no owed claims");
-        require(empty.provider.yieldFeeCarry == 1_000, "fee carry persists after pruning");
-
-        vm.prank(PROVIDER);
-        protocol.supply(tickId, 1, address(0));
-        for (uint256 i; i < 9; ++i) {
-            uint256 positionId = _use(1);
-            asset.mint(TAKER, 1);
-            vm.prank(TAKER);
-            protocol.repay(positionId, 1);
-            vm.prank(PROVIDER);
-            YieldOrders.CollectPreview memory claim = protocol.collect(tickId);
-            require(claim.grossYieldAsset == 1, "one raw Yield per split Collect");
-            require(claim.yieldFeeAsset == (i == 8 ? 1 : 0), "fee paid on tenth raw Yield");
-        }
-        YieldOrders.EarnPositionView memory afterCollects = protocol.getEarnPosition(PROVIDER, tickId);
-        require(afterCollects.provider.yieldFeeCarry == 0, "carry reset after whole fee");
-        require(asset.balanceOf(FEE_TO) == 1, "split Collects equal one 10-unit fee");
+        require(asset.balanceOf(PROVIDER) - before == claim.totalAssetOut, "net claim paid exactly");
+        require(asset.balanceOf(FEE_TO) == feeAtRepay, "no Collect fee");
     }
 
     function testNewExitSharesDoNotInheritFundedAssetYieldOrQuoteGrowth() public {

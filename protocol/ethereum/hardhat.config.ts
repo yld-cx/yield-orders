@@ -6,8 +6,7 @@ export const BASE_RPC_URL = process.env.BASE_RPC_URL || "https://mainnet.base.or
 export const ROBINHOOD_RPC_URL = process.env.ROBINHOOD_RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
 export const TEST_FEE_TO = "0x000000000000000000000000000000000000dEaD" as const;
 export const YLD_FEE_TO = process.env.YLD_FEE_TO;
-export const YLD_DEPLOYER = process.env.YLD_DEPLOYER;
-export const YLD_DEPLOYER_CONFIG = configVariable("YLD_DEPLOYER");
+export const YLD_DEPLOYER = configVariable("YLD_DEPLOYER");
 export const YLD_NETWORK = process.env.YLD_NETWORK;
 export const YLD_CHECK_ONLY = process.env.YLD_CHECK_ONLY === "true";
 export const ETHERSCAN_API_KEY = configVariable("ETHERSCAN_API_KEY");
@@ -49,21 +48,21 @@ export default defineConfig({
       chainType: "l1",
       chainId: 1,
       url: ETHEREUM_RPC_URL,
-      accounts: [YLD_DEPLOYER_CONFIG],
+      accounts: [YLD_DEPLOYER],
     },
     base: {
       type: "http",
       chainType: "op",
       chainId: 8453,
       url: BASE_RPC_URL,
-      accounts: [YLD_DEPLOYER_CONFIG],
+      accounts: [YLD_DEPLOYER],
     },
     robinhood: {
       type: "http",
       chainType: "generic",
       chainId: 4663,
       url: ROBINHOOD_RPC_URL,
-      accounts: [YLD_DEPLOYER_CONFIG],
+      accounts: [YLD_DEPLOYER],
     },
     ethereumFork: {
       type: "edr-simulated",

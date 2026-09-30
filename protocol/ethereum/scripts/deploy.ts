@@ -9,7 +9,8 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { YLD_CHECK_ONLY, YLD_DEPLOYER, YLD_NETWORK } from "../hardhat.config.js";
+import hre from "hardhat";
+import { TEST_FEE_TO, YLD_CHECK_ONLY, YLD_NETWORK } from "../hardhat.config.js";
 import {
   assertManifest,
   CREATE_X_ABI,
@@ -61,14 +62,15 @@ for (const [name, network] of Object.entries(NETWORKS)) {
 }
 
 if (YLD_CHECK_ONLY) process.exit(0);
-if (!manifest.productionReady)
-  throw new Error(
-    "Production deployment is disabled: replace temporary FEE_TO and re-mine/pin the salt and bytecode hashes",
-  );
+if (manifest.feeTo.toLowerCase() === TEST_FEE_TO.toLowerCase())
+  throw new Error("Temporary FEE_TO cannot be used for production deployment");
 const target = YLD_NETWORK as keyof typeof NETWORKS | undefined;
 if (!target || !(target in NETWORKS)) throw new Error("Set YLD_NETWORK to ethereum, base, or robinhood");
-const key = YLD_DEPLOYER as Hex | undefined;
-if (!key) throw new Error("YLD_DEPLOYER is required");
+const accounts = hre.config.networks[target].accounts;
+const firstAccount = Array.isArray(accounts) ? accounts[0] : undefined;
+if (!firstAccount || !("_type" in firstAccount) || firstAccount._type !== "ResolvedConfigurationVariable")
+  throw new Error("YLD_DEPLOYER is required");
+const key = (await firstAccount.getHexString()) as Hex;
 const { chain, publicClient } = clients[target];
 const account = privateKeyToAccount(key);
 if (getAddress(`0x${manifest.rawSalt.slice(2, 42)}`) === account.address)

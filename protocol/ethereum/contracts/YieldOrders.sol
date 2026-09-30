@@ -14,7 +14,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
 
     uint256 public constant BPS = 10_000;
     uint256 public constant Q128 = 1 << 128;
-    uint256 public constant FEE_BPS = 1_000;
+    uint256 public constant PROTOCOL_FEE_BPS = 100;
+    uint256 public constant MAX_SHARES = type(uint128).max;
     uint256 public constant MIN_DAILY_BPS = 1;
     uint256 public constant MAX_DAILY_BPS = 100;
     uint256 public constant CURVE_EXPONENT = 3;
@@ -32,6 +33,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     error Cooldown();
     error UnsupportedToken();
     error Invariant();
+    error ShareCapacity();
 
     struct Pair {
         address token0;
@@ -74,7 +76,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 swapQuoteGrowthLastX128;
         uint256 owedYieldAsset;
         uint256 owedSwapQuote;
-        uint256 yieldFeeCarry;
         uint256 lastSupplyBlock;
         uint256 exitShares;
         uint64 exitGeneration;
@@ -125,7 +126,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 activeWorkingShareBefore;
         uint256 activeWorkingShareAfter;
         uint256 fullTermYieldAsset;
-        uint256 referenceYieldQuote;
         uint256 closeFee;
         uint256 dailyRateX128;
         uint256 termRateX128;
@@ -143,6 +143,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     struct RepayPreview {
         uint256 assetPrincipal;
         uint256 grossYieldAsset;
+        uint256 yieldFeeAsset;
         uint256 totalAssetIn;
         uint256 exitFill;
         uint256 activeReturn;
@@ -153,8 +154,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     struct SwapPreview {
         uint256 assetAmount;
         uint256 quotePrincipal;
-        uint256 referenceFullTermYieldAsset;
-        uint256 referenceYieldQuote;
         uint256 swapFee;
         uint256 providerSwapProceeds;
     }
@@ -162,9 +161,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 exitAsset;
         uint256 activeYieldAsset;
         uint256 exitYieldAsset;
-        uint256 grossYieldAsset;
-        uint256 yieldFeeAsset;
-        uint256 netYieldAsset;
         uint256 exitQuote;
         uint256 swapQuote;
         uint256 totalAssetOut;
@@ -226,9 +222,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 indexed tickId,
         address indexed supplier,
         uint256 exitAsset,
-        uint256 grossYieldAsset,
-        uint256 yieldFeeAsset,
-        uint256 netYieldAsset,
+        uint256 activeYieldAsset,
+        uint256 exitYieldAsset,
         uint256 exitQuote,
         uint256 swapQuote,
         uint256 totalAssetOut,
@@ -255,6 +250,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 assetAmount,
         uint256 quotePrincipal,
         uint256 grossYieldAsset,
+        uint256 yieldFeeAsset,
         uint256 exitFill,
         uint256 activeReturn,
         uint256 exitYieldAsset,
@@ -279,8 +275,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         address indexed taker,
         uint256 assetAmount,
         uint256 quotePrincipal,
-        uint256 referenceFullTermYieldAsset,
-        uint256 referenceYieldQuote,
         uint256 swapFee,
         uint256 providerSwapProceeds,
         address referrer
@@ -387,14 +381,27 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     }
 
     function _swapPreview(Tick memory t, uint256 x) internal pure returns (SwapPreview memory q) {
+        if (x == 0 || x > t.availableSupply || t.totalShares == 0) revert InsufficientLiquidity();
         q.assetAmount = x;
         q.quotePrincipal = _quote(t, x);
         if (q.quotePrincipal == 0) revert InvalidInput();
-        q.referenceFullTermYieldAsset = _fullTermYield(t, x);
-        q.referenceYieldQuote = _quote(t, q.referenceFullTermYieldAsset);
-        q.swapFee = Math.mulDiv(q.referenceYieldQuote, FEE_BPS, BPS);
-        if (q.swapFee > q.quotePrincipal) revert InvalidInput();
+        q.swapFee = Math.mulDiv(q.quotePrincipal, PROTOCOL_FEE_BPS, BPS);
         q.providerSwapProceeds = q.quotePrincipal - q.swapFee;
+    }
+
+    function _checkShareCapacity(uint256 minted, uint256 current) internal pure {
+        if (minted == 0 || current > MAX_SHARES || minted > MAX_SHARES - current) revert ShareCapacity();
+    }
+
+    function _checkMintInput(uint256 amount, uint256 current) internal pure {
+        if (current > MAX_SHARES || amount > MAX_SHARES - current) revert ShareCapacity();
+    }
+
+    function _growth(uint256 amount, uint256 shares) internal pure returns (uint256 increment) {
+        if (amount == 0) return 0;
+        if (shares == 0 || shares > MAX_SHARES) revert Invariant();
+        increment = Math.mulDiv(amount, Q128, shares);
+        if (increment == 0) revert Invariant();
     }
 
     function _checkRepayCapacity(uint256 assetAmount, uint256 fullTermYieldAsset) internal pure {
@@ -579,8 +586,9 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         Provider storage p = _providers[id][msg.sender];
         uint256 ca = _activePrincipal(t);
         if ((ca == 0) != (t.totalShares == 0)) revert Invariant();
+        _checkMintInput(assetAmount, t.totalShares);
         minted = ca == 0 ? assetAmount : Math.mulDiv(assetAmount, t.totalShares, ca);
-        if (minted == 0) revert InvalidInput();
+        _checkShareCapacity(minted, t.totalShares);
         _pull(IERC20(t.asset), msg.sender, assetAmount);
         t.availableSupply += assetAmount;
         t.totalShares += minted;
@@ -608,9 +616,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.workingToExit = q.principalClaim - q.availableAssetOut;
         if (q.workingToExit > t.workingSupply - t.exitWorking) revert Invariant();
         if (q.workingToExit != 0) {
+            _checkMintInput(q.workingToExit, t.totalExitShares);
             q.exitSharesMinted =
                 t.exitWorking == 0 ? q.workingToExit : Math.mulDiv(q.workingToExit, t.totalExitShares, t.exitWorking);
-            if (q.exitSharesMinted == 0) revert Invariant();
+            _checkShareCapacity(q.exitSharesMinted, t.totalExitShares);
             t.exitWorking += q.workingToExit;
             t.totalExitShares += q.exitSharesMinted;
             p.exitShares += q.exitSharesMinted;
@@ -646,8 +655,9 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _settleOne(id, t);
         if (block.timestamp > deadline) revert Expired();
         SwapPreview memory q = _swapPreview(t, assetAmount);
-        _checkRepayCapacity(assetAmount, q.referenceFullTermYieldAsset);
-        if (q.referenceFullTermYieldAsset > maxFullTermYieldAsset) revert Slippage();
+        uint256 fullTermYieldAsset = _fullTermYield(t, assetAmount);
+        _checkRepayCapacity(assetAmount, fullTermYieldAsset);
+        if (fullTermYieldAsset > maxFullTermYieldAsset) revert Slippage();
         uint256 maturity = block.timestamp + uint256(t.durationDays) * 1 days;
         positionId = nextPositionId;
         nextPositionId = positionId + 1;
@@ -660,7 +670,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             msg.sender,
             assetAmount,
             q.quotePrincipal,
-            q.referenceFullTermYieldAsset,
+            fullTermYieldAsset,
             q.swapFee,
             block.timestamp,
             maturity,
@@ -682,7 +692,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             msg.sender,
             assetAmount,
             q.quotePrincipal,
-            q.referenceFullTermYieldAsset,
+            fullTermYieldAsset,
             q.swapFee,
             block.timestamp,
             maturity,
@@ -701,11 +711,13 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             Math.Rounding.Ceil
         );
         if (q.grossYieldAsset == 0 || q.grossYieldAsset > p.fullTermYieldAsset) revert Invariant();
+        q.yieldFeeAsset = Math.mulDiv(q.grossYieldAsset, PROTOCOL_FEE_BPS, BPS);
         q.totalAssetIn = q.assetPrincipal + q.grossYieldAsset;
         q.exitFill = Math.min(p.assetAmount, t.exitWorking);
         q.activeReturn = p.assetAmount - q.exitFill;
-        q.exitYieldAsset = Math.mulDiv(q.grossYieldAsset, q.exitFill, p.assetAmount);
-        q.activeYieldAsset = q.grossYieldAsset - q.exitYieldAsset;
+        uint256 netYieldAsset = q.grossYieldAsset - q.yieldFeeAsset;
+        q.exitYieldAsset = Math.mulDiv(netYieldAsset, q.exitFill, p.assetAmount);
+        q.activeYieldAsset = netYieldAsset - q.exitYieldAsset;
         q.quotePrincipalUnlocked = p.quotePrincipal;
     }
 
@@ -722,22 +734,23 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         t.exitWorking -= q.exitFill;
         t.availableSupply += q.activeReturn;
         t.exitAssetReserve += q.exitFill;
-        t.yieldAssetReserve += q.grossYieldAsset;
+        t.yieldAssetReserve += q.grossYieldAsset - q.yieldFeeAsset;
         t.quoteEscrow -= p.quotePrincipal;
         if (q.exitFill != 0) {
             if (t.totalExitShares == 0) revert Invariant();
-            t.exitAssetGrowthX128 += Math.mulDiv(q.exitFill, Q128, t.totalExitShares);
+            t.exitAssetGrowthX128 += _growth(q.exitFill, t.totalExitShares);
         }
-        if (q.exitYieldAsset != 0) t.exitYieldAssetGrowthX128 += Math.mulDiv(q.exitYieldAsset, Q128, t.totalExitShares);
+        if (q.exitYieldAsset != 0) t.exitYieldAssetGrowthX128 += _growth(q.exitYieldAsset, t.totalExitShares);
         if (q.activeYieldAsset != 0) {
             if (t.totalShares == 0) revert Invariant();
-            t.yieldAssetGrowthX128 += Math.mulDiv(q.activeYieldAsset, Q128, t.totalShares);
+            t.yieldAssetGrowthX128 += _growth(q.activeYieldAsset, t.totalShares);
         }
         p.status = Status.REPAID;
         _removeActive(positionId, p.user);
         if (p.tickSeq == t.settleCursor) t.settleCursor += 1;
         _finalizeExit(p.tickId, t);
         _finalizeActive(p.tickId, t);
+        _push(IERC20(t.asset), FEE_TO, q.yieldFeeAsset);
         _push(IERC20(t.quote), msg.sender, p.quotePrincipal);
         _checkAsset(p.tickId, t);
         _checkQuote(p.tickId, t);
@@ -749,6 +762,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             p.assetAmount,
             p.quotePrincipal,
             q.grossYieldAsset,
+            q.yieldFeeAsset,
             q.exitFill,
             q.activeReturn,
             q.exitYieldAsset,
@@ -769,11 +783,11 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         t.activeQuoteReserve += activeQuote;
         if (exitQuote != 0) {
             if (t.totalExitShares == 0) revert Invariant();
-            t.exitQuoteGrowthX128 += Math.mulDiv(exitQuote, Q128, t.totalExitShares);
+            t.exitQuoteGrowthX128 += _growth(exitQuote, t.totalExitShares);
         }
         if (activeQuote != 0) {
             if (t.totalShares == 0) revert Invariant();
-            t.swapQuoteGrowthX128 += Math.mulDiv(activeQuote, Q128, t.totalShares);
+            t.swapQuoteGrowthX128 += _growth(activeQuote, t.totalShares);
         }
         p.status = Status.CLOSED;
         _removeActive(positionId, p.user);
@@ -822,7 +836,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _pull(IERC20(t.quote), msg.sender, q.quotePrincipal);
         t.availableSupply -= assetAmount;
         t.activeQuoteReserve += q.providerSwapProceeds;
-        t.swapQuoteGrowthX128 += Math.mulDiv(q.providerSwapProceeds, Q128, t.totalShares);
+        t.swapQuoteGrowthX128 += _growth(q.providerSwapProceeds, t.totalShares);
         _finalizeActive(id, t);
         _push(IERC20(t.asset), msg.sender, assetAmount);
         _push(IERC20(t.quote), FEE_TO, q.swapFee);
@@ -833,30 +847,19 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             msg.sender,
             assetAmount,
             q.quotePrincipal,
-            q.referenceFullTermYieldAsset,
-            q.referenceYieldQuote,
             q.swapFee,
             q.providerSwapProceeds,
             referrer
         );
     }
 
-    function _yieldFee(uint256 gross, uint256 carry) internal pure returns (uint256 fee, uint256 nextCarry) {
-        uint256 remainderWithCarry = mulmod(gross, FEE_BPS, BPS) + carry;
-        fee = Math.mulDiv(gross, FEE_BPS, BPS) + remainderWithCarry / BPS;
-        nextCarry = remainderWithCarry % BPS;
-    }
-
     function _collectPreview(Provider memory p) internal pure returns (CollectPreview memory q) {
         q.exitAsset = p.owedExitAsset;
         q.activeYieldAsset = p.owedYieldAsset;
         q.exitYieldAsset = p.owedExitYieldAsset;
-        q.grossYieldAsset = q.activeYieldAsset + q.exitYieldAsset;
-        (q.yieldFeeAsset, ) = _yieldFee(q.grossYieldAsset, p.yieldFeeCarry);
-        q.netYieldAsset = q.grossYieldAsset - q.yieldFeeAsset;
         q.exitQuote = p.owedExitQuote;
         q.swapQuote = p.owedSwapQuote;
-        q.totalAssetOut = q.exitAsset + q.netYieldAsset;
+        q.totalAssetOut = q.exitAsset + q.activeYieldAsset + q.exitYieldAsset;
         q.totalQuoteOut = q.exitQuote + q.swapQuote;
     }
 
@@ -866,9 +869,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _sync(id, msg.sender);
         Provider storage p = _providers[id][msg.sender];
         q = _collectPreview(p);
-        (, p.yieldFeeCarry) = _yieldFee(q.grossYieldAsset, p.yieldFeeCarry);
         t.exitAssetReserve -= q.exitAsset;
-        t.yieldAssetReserve -= q.grossYieldAsset;
+        t.yieldAssetReserve -= q.activeYieldAsset + q.exitYieldAsset;
         t.exitQuoteReserve -= q.exitQuote;
         t.activeQuoteReserve -= q.swapQuote;
         p.owedExitAsset = 0;
@@ -878,7 +880,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         p.owedSwapQuote = 0;
         _pruneEarn(msg.sender, id);
         _push(IERC20(t.asset), msg.sender, q.totalAssetOut);
-        _push(IERC20(t.asset), FEE_TO, q.yieldFeeAsset);
         _push(IERC20(t.quote), msg.sender, q.totalQuoteOut);
         _checkAsset(id, t);
         _checkQuote(id, t);
@@ -886,9 +887,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             id,
             msg.sender,
             q.exitAsset,
-            q.grossYieldAsset,
-            q.yieldFeeAsset,
-            q.netYieldAsset,
+            q.activeYieldAsset,
+            q.exitYieldAsset,
             q.exitQuote,
             q.swapQuote,
             q.totalAssetOut,
@@ -916,8 +916,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         t.quoteEscrow -= p.quotePrincipal;
         t.exitQuoteReserve += exitQuote;
         t.activeQuoteReserve += activeQuote;
-        if (exitQuote != 0) t.exitQuoteGrowthX128 += Math.mulDiv(exitQuote, Q128, t.totalExitShares);
-        if (activeQuote != 0) t.swapQuoteGrowthX128 += Math.mulDiv(activeQuote, Q128, t.totalShares);
+        if (exitQuote != 0) t.exitQuoteGrowthX128 += _growth(exitQuote, t.totalExitShares);
+        if (activeQuote != 0) t.swapQuoteGrowthX128 += _growth(activeQuote, t.totalShares);
         if (t.exitWorking == 0 && t.totalExitShares != 0) {
             v.exitFinal = FinalExit(t.exitAssetGrowthX128, t.exitYieldAssetGrowthX128, t.exitQuoteGrowthX128);
             v.exitFinalized = true;
@@ -1004,8 +1004,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         Tick memory t = _projectTick(id, false).tick;
         if (assetAmount == 0) revert InvalidInput();
         uint256 ca = t.availableSupply + t.workingSupply - t.exitWorking;
+        if ((ca == 0) != (t.totalShares == 0)) revert Invariant();
+        _checkMintInput(assetAmount, t.totalShares);
         sharesMinted = ca == 0 ? assetAmount : Math.mulDiv(assetAmount, t.totalShares, ca);
-        if (sharesMinted == 0) revert InvalidInput();
+        _checkShareCapacity(sharesMinted, t.totalShares);
     }
 
     function previewWithdraw(
@@ -1025,12 +1027,14 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (q.principalClaim == 0 && sharesToWithdraw != p.shares) revert InvalidInput();
         q.availableAssetOut = Math.mulDiv(sharesToWithdraw, t.availableSupply, t.totalShares);
         q.workingToExit = q.principalClaim - q.availableAssetOut;
+        if (q.workingToExit != 0) _checkMintInput(q.workingToExit, t.totalExitShares);
         q.exitSharesMinted =
             q.workingToExit == 0
                 ? 0
                 : t.exitWorking == 0
                     ? q.workingToExit
                     : Math.mulDiv(q.workingToExit, t.totalExitShares, t.exitWorking);
+        if (q.workingToExit != 0) _checkShareCapacity(q.exitSharesMinted, t.totalExitShares);
         q.remainingActiveShares = p.shares - sharesToWithdraw;
         q.remainingExitShares = p.exitShares + q.exitSharesMinted;
     }
@@ -1039,15 +1043,15 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _requireTick(id);
         Tick memory t = _projectTick(id, false).tick;
         SwapPreview memory s = _swapPreview(t, amount);
-        _checkRepayCapacity(amount, s.referenceFullTermYieldAsset);
+        uint256 fullTermYieldAsset = _fullTermYield(t, amount);
+        _checkRepayCapacity(amount, fullTermYieldAsset);
         uint256 wa = t.workingSupply - t.exitWorking;
         uint256 ca = t.availableSupply + wa;
         q.matchAmount = amount;
         q.quotePrincipal = s.quotePrincipal;
         q.activeWorkingShareBefore = Math.mulDiv(wa, Q128, ca);
         q.activeWorkingShareAfter = Math.mulDiv(wa + amount, Q128, ca);
-        q.fullTermYieldAsset = s.referenceFullTermYieldAsset;
-        q.referenceYieldQuote = s.referenceYieldQuote;
+        q.fullTermYieldAsset = fullTermYieldAsset;
         q.closeFee = s.swapFee;
         uint256 u2 = Math.mulDiv(q.activeWorkingShareBefore, q.activeWorkingShareBefore, Q128);
         uint256 u3 = Math.mulDiv(u2, q.activeWorkingShareBefore, Q128);

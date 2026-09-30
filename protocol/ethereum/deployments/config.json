@@ -1,12 +1,11 @@
 {
-  "productionReady": false,
   "feeTo": "0x000000000000000000000000000000000000dEaD",
   "saltNamespace": "yld.cx-v0.1",
-  "rawSalt": "0x0ed81e684818fe502f2d8472acc7377bf9aa378682159471c6f218be884357cf",
-  "guardedSalt": "0xecdbdad670fd426224f97556409da34d6acbb13b3d0d0dc938da56818c123387",
-  "address": "0x0000f9781f6e88f4a5A9B9eFb8c6f9430f14e456",
-  "creationCodeHash": "0xd110e99fdbf39dab3f34dcc23bd39b35bad1aa76b179d466a5e797e03deb8082",
-  "runtimeCodeHash": "0x3159d44e9c3cf0a8561e45ffa3a37beed85da2303c79db70b7896d1d248dbd65",
+  "rawSalt": "0x4bf85cb84d9c959258bde9cdee990bbb6f797c0e5ee6bf02ca24a962ef4be55d",
+  "guardedSalt": "0xc7977639d7e3d357c61166c7dc274eb0f86538cf3b8b1329973f2789a8631017",
+  "address": "0x00000afC671B6Dd49691b346ae5431aFa1E74858",
+  "creationCodeHash": "0xb6ddacb5aac94dfc70a60a2f3b626ed03d29c63bb8d52d2deed68d7094aaab45",
+  "runtimeCodeHash": "0x0a602afdab688468e55848257bc54ac5555d0477e27f22a8f5f07d73e964502c",
   "compiler": "solc 0.8.36; cancun; optimizer 200; viaIR",
   "networks": {
     "ethereum": 1,

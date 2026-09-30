@@ -107,7 +107,6 @@ yieldAssetGrowthLastX128
 swapQuoteGrowthLastX128
 owedYieldAsset
 owedSwapQuote
-yieldFeeCarry       // remainder in BPS-denominator units, always < BPS
 lastSupplyBlock
 
 // Exit settlement pool
@@ -147,7 +146,7 @@ nextPositionSeq
 settleCursor
 ```
 
-`yieldAssetReserve` backs **gross, funded but uncollected Asset Yield claims** from both active and Exit growth domains.
+`yieldAssetReserve` backs **net, funded but uncollected Asset Yield claims** from both active and Exit growth domains. The 1% Yield fee is transferred to `FEE_TO` at Repay before provider Yield enters this reserve.
 
 The supplier action split is:
 
@@ -279,7 +278,7 @@ At Use:
 maturity = checked(openedAt + durationDays * 1 days)
 ```
 
-The protocol imposes no semantic maximum duration in v0.1 beyond integer/timestamp representability and the fee-solvency checks required by Use/Swap.
+The protocol imposes no semantic maximum duration in v0.1 beyond integer/timestamp and arithmetic representability.
 
 Price math is frozen and identical to Solana. `priceTick` represents **raw Quote units per raw Asset unit** for this directional Tick. Direction chooses Asset/Quote; it does not invert the tick automatically.
 
@@ -311,7 +310,8 @@ Reference v0.1 deployment constants:
 ```solidity
 uint256 constant BPS = 10_000;
 uint256 constant Q128 = 1 << 128;
-uint256 constant FEE_BPS = 1_000; // 10%
+uint256 constant PROTOCOL_FEE_BPS = 100; // 1%
+uint256 constant MAX_SHARES = type(uint128).max; // Q128 - 1
 address immutable FEE_TO;
 
 uint256 constant MIN_DAILY_BPS = 1;   // 0.01% / day
@@ -436,9 +436,8 @@ Quote Principal                    → round UP to Quote smallest units
 Q128 utilization / powers          → round DOWN at the exact steps above
 Full-Term Yield Asset              → round UP only at the final formula
 Repay accrued Yield Asset          → round UP after billable-time proration
-Reference Yield Quote              → round UP from Full-Term Yield Asset at Tick price
-Close/Swap protocol fee            → round DOWN
-Collect Yield fee                  → round DOWN with persistent BPS carry
+Swap/Close fee on Quote Principal  → round DOWN
+Repay fee on gross Asset Yield     → round DOWN once at Repay
 ```
 
 The implementation MUST use overflow-safe full-precision arithmetic and checked ceil division.
@@ -476,16 +475,17 @@ Close         → no Asset Yield payment
 
 Equivalent Uses traversing the same active Working Share path MUST produce the same theoretical full-term Yield subject only to the canonical deterministic integer-rounding bounds above.
 
-For Close/Immediate Swap fee calculation, convert the frozen/reference full-term Asset Yield into Quote at the canonical Tick price:
+The Yield curve prices Asset liquidity rental for Use. It does not determine protocol conversion fees. The single protocol fee is `floor(feeBase * PROTOCOL_FEE_BPS / BPS)`. The fee base is Quote Principal for Immediate Swap and Use→Close, or accrued gross Asset Yield for Use→Repay. Returned Asset principal and the Quote refund on Repay have no fee. A positive base below 100 raw units may have a zero fee; there is no minimum fee. Examples: `1→0`, `99→0`, `100→1`, `101→1`, `10_000→100`.
 
-\[
-ReferenceYieldQuote=
-\left\lceil
-FullTermYieldAsset \times priceX128 / 2^{128}
-\right\rceil
-\]
+Canonical outcomes:
 
-The reference conversion exists only for protocol fee calculation on the Swap outcome. It is not provider Yield.
+```text
+Use → Repay: 100% Asset principal to providers; gross Asset Yield split into 1% fee to FEE_TO and 99%+ net Yield to providers; 100% Quote Principal refunded to taker.
+Immediate Swap: Quote Principal split into 1% fee to FEE_TO and 99%+ proceeds to active providers.
+Use → Close: locked Quote Principal split into frozen 1% fee to FEE_TO and 99%+ proceeds to Exit/active providers.
+```
+
+`99%+` accounts for fee rounding down.
 
 # 7. Active share and Exit accounting
 
@@ -529,6 +529,7 @@ Requirements:
 assetIn > 0
 (S == 0) == (Ca == 0)
 sharesMinted > 0
+sharesMinted <= MAX_SHARES - totalShares
 ```
 
 Then:
@@ -650,7 +651,7 @@ Otherwise:
 exitSharesMinted=\left\lfloor workingToExit \times preTotalExitShares / preExitWorking \right\rfloor
 \]
 
-The invariant `preTotalExitShares >= preExitWorking > 0` implies `exitSharesMinted >= workingToExit > 0` for every non-zero `workingToExit`. The implementation MUST still assert `exitSharesMinted > 0` defensively.
+The invariant `preTotalExitShares >= preExitWorking > 0` implies `exitSharesMinted >= workingToExit > 0` for every non-zero `workingToExit`. The implementation MUST still assert `exitSharesMinted > 0` and `exitSharesMinted <= MAX_SHARES - totalExitShares` defensively. `previewWithdraw` and `withdraw` apply the same explicit capacity check.
 
 Then:
 
@@ -801,8 +802,7 @@ Compute:
 
 ```text
 FullTermYieldAsset = canonical active-liquidity Yield quote from §6
-ReferenceYieldQuote = ceil(FullTermYieldAsset * priceX128 / 2^128)
-CloseFee = floor(ReferenceYieldQuote * FEE_BPS / BPS)
+CloseFee = floor(QuotePrincipal * PROTOCOL_FEE_BPS / BPS)
 ```
 
 Require:
@@ -909,17 +909,19 @@ exitFill = min(x, exitWorking)
 activeReturn = x - exitFill
 ```
 
-Split gross Asset Yield using the same principal resolution ratio:
+Charge the protocol fee once on gross Yield, then split provider net Yield using the same principal resolution ratio:
 
 ```text
-exitYieldAsset = floor(grossYieldAsset * exitFill / x)
-activeYieldAsset = grossYieldAsset - exitYieldAsset
+yieldFeeAsset = floor(grossYieldAsset * PROTOCOL_FEE_BPS / BPS)
+netYieldAsset = grossYieldAsset - yieldFeeAsset
+exitYieldAsset = floor(netYieldAsset * exitFill / x)
+activeYieldAsset = netYieldAsset - exitYieldAsset
 ```
 
 This exact remainder rule guarantees:
 
 ```text
-exitYieldAsset + activeYieldAsset == grossYieldAsset
+exitYieldAsset + activeYieldAsset == netYieldAsset
 ```
 
 Execution:
@@ -940,8 +942,10 @@ if exitFill > 0:
     exitAssetReserve += exitFill
     exitAssetGrowthX128 += exitFill * Q128 / totalExitShares
 
-if grossYieldAsset > 0:
-    yieldAssetReserve += grossYieldAsset
+if netYieldAsset > 0:
+    yieldAssetReserve += netYieldAsset
+
+yieldFeeAsset → FEE_TO in Asset at Repay
 
 if exitYieldAsset > 0:
     exitYieldAssetGrowthX128 += exitYieldAsset * Q128 / totalExitShares
@@ -958,7 +962,7 @@ activeYieldAsset > 0                → totalShares > 0
 totalShares == 0                    → activeReturn == 0 and activeYieldAsset == 0
 ```
 
-Repay itself takes no immediate protocol fee. Gross Asset Yield remains funded in `yieldAssetReserve`; the Yield protocol fee is assessed when the provider Collects.
+Repay transfers `yieldFeeAsset` directly to immutable `FEE_TO`. Only net Asset Yield enters provider growth and `yieldAssetReserve`. The full Quote Principal returns to the taker without a fee; Asset principal returns to provider accounting without a fee.
 
 Thus a Repay may pay Yield to Exit shares even when the repaid Position opened after the Exit was created. Exit is priority on pooled resolution flow, not tagged inventory.
 
@@ -989,7 +993,7 @@ Before Close-specific checks, apply the settlement hook in §15.2 unless the req
 
 Close is the predefined **Swap outcome**. The Use user keeps the Asset. No Asset Yield is owed on Close.
 
-The Position stores the `closeFee` frozen at Use opening from its full-term reference Yield. Require:
+The Position stores the `closeFee` frozen at Use opening from Quote Principal. Require:
 
 ```text
 closeFee <= quotePrincipal
@@ -1077,23 +1081,14 @@ QuotePrincipal <= maxQuoteIn
 
 Immediate Swap creates no Term Position and no Working state. It consumes only **active Available** liquidity; Exit Working is untouched.
 
-For fee calculation only, compute the **Reference Full-Term Yield Asset** using the same active-liquidity Yield pricing function an equivalent Use would apply to the same Tick and amount.
-
-Then:
+The fee is independent of Yield pricing, utilization and duration:
 
 ```text
-ReferenceYieldQuote =
-    ceil(ReferenceFullTermYieldAsset * priceX128 / 2^128)
-
-SwapFee =
-    floor(ReferenceYieldQuote * FEE_BPS / BPS)
+SwapFee = floor(QuotePrincipal * PROTOCOL_FEE_BPS / BPS)
+ProviderSwapProceeds = QuotePrincipal - SwapFee
 ```
 
-Require:
-
-```text
-SwapFee <= QuotePrincipal
-```
+This matches the frozen Close fee for the same Quote Principal. The taker pays exactly Quote Principal, subject to the existing `maxQuoteIn` bound.
 
 Execution:
 
@@ -1141,55 +1136,17 @@ activeYieldAsset = owedYieldAsset
 swapQuote = owedSwapQuote
 exitQuote = owedExitQuote
 
-grossYieldAsset = exitYieldAsset + activeYieldAsset
+totalAssetOut = exitAsset + exitYieldAsset + activeYieldAsset
+totalQuoteOut = exitQuote + swapQuote
 ```
 
-Provider Yield protocol fee is **collection-frequency invariant**. Each provider × Tick keeps `yieldFeeCarry`, initialized to `0` and constrained to `0 <= yieldFeeCarry < BPS`.
-
-```text
-feeNumerator = grossYieldAsset * FEE_BPS + yieldFeeCarry
-YieldFeeAsset = floor(feeNumerator / BPS)
-yieldFeeCarry = feeNumerator % BPS
-```
-
-The multiplication/addition MUST use checked full-precision arithmetic. Splitting the same cumulative gross Asset Yield across multiple `collect()` calls MUST produce exactly the same cumulative fee as one collection:
-
-```text
-cumulative Yield fee = floor(cumulative gross Yield * FEE_BPS / BPS)
-```
-
-Then:
-
-```text
-NetYieldAsset = grossYieldAsset - YieldFeeAsset
-
-(exitAsset + NetYieldAsset) Asset → supplier
-YieldFeeAsset Asset → FEE_TO
-
-(exitQuote + swapQuote) Quote → supplier
-```
-
-Accounting:
-
-```text
-exitAssetReserve -= exitAsset
-yieldAssetReserve -= grossYieldAsset
-exitQuoteReserve -= exitQuote
-
-owedExitAsset = 0
-owedExitYieldAsset = 0
-owedYieldAsset = 0
-owedExitQuote = 0
-owedSwapQuote = 0
-```
-
-Exit Quote and active Swap/Close Quote are not charged again because Close/Swap already paid their protocol fee when realized. Only Yield is charged at collection, and that fee is denominated in **Asset** because Yield itself is denominated in Asset.
+All Yield claims are already net of the 1% fee charged once at Repay. Collect transfers `totalAssetOut` Asset and `totalQuoteOut` Quote to the supplier, without calculating or charging another fee. It clears the corresponding owed balances and decreases each reserve by the transferred amount. Partial Collect timing cannot change protocol fees.
 
 Collect may therefore transfer both Tick tokens in one transaction. Any zero component is skipped.
 
 Collect does **not** require Exit to be fully resolved. Exit shares may remain while `exitWorking > 0`; future Repay/Close growth can be collected later.
 
-`collect()` is supplier-authorized in v0.1; it is not permissionless and never pays a caller other than the supplier whose ProviderPosition is being collected. `yieldFeeCarry` is protocol accounting, not a supplier claim; it persists across periods with zero shares/claims and MUST NOT be reset by leaving and later re-entering the Tick.
+`collect()` is supplier-authorized in v0.1; it is not permissionless and never pays a caller other than the supplier whose ProviderPosition is being collected.
 
 A supplier may Withdraw before Collect without losing funded economics because all active/Exit growth is synchronized before active shares are burned or new Exit shares are minted.
 
@@ -1509,7 +1466,7 @@ Withdrawn(
 Collected(
   tickId, supplier,
   exitAsset,
-  grossYieldAsset, yieldFeeAsset, netYieldAsset,
+  activeYieldAsset, exitYieldAsset,
   exitQuote, swapQuote,
   totalAssetOut, totalQuoteOut
 )
@@ -1524,7 +1481,7 @@ UseOpened(
 TermRepaid(
   positionId, tickId, tickSeq, user,
   assetAmount, quotePrincipal,
-  grossYieldAsset,
+  grossYieldAsset, yieldFeeAsset,
   exitFill, activeReturn,
   exitYieldAsset, activeYieldAsset
 )
@@ -1539,8 +1496,6 @@ TermClosed(
 ImmediateSwap(
   tickId, taker,
   assetAmount, quotePrincipal,
-  referenceFullTermYieldAsset,
-  referenceYieldQuote,
   swapFee, providerSwapProceeds,
   referrer
 )
@@ -1627,7 +1582,6 @@ quotePrincipal
 activeWorkingShareBefore
 activeWorkingShareAfter
 fullTermYieldAsset
-referenceYieldQuote
 closeFee
 dailyRate
 termRate
@@ -1639,6 +1593,7 @@ maturity
 ```text
 assetPrincipal
 grossYieldAsset
+yieldFeeAsset
 totalAssetIn
 exitFill
 activeReturn
@@ -1652,8 +1607,6 @@ quotePrincipalUnlocked
 ```text
 assetAmount
 quotePrincipal
-referenceFullTermYieldAsset
-referenceYieldQuote
 swapFee
 providerSwapProceeds
 ```
@@ -1664,9 +1617,6 @@ providerSwapProceeds
 exitAsset
 activeYieldAsset
 exitYieldAsset
-grossYieldAsset
-yieldFeeAsset
-netYieldAsset
 
 exitQuote
 swapQuote
@@ -1691,18 +1641,16 @@ Exit shares minted into live Exit pool  → round DOWN
 Quote Principal required                → round UP
 Full-Term Yield Asset                   → round UP
 Repay billable-time Yield Asset         → round UP
-Reference Yield Quote                   → round UP
 
-Repay gross Yield allocated to Exit     → round DOWN
-Repay gross Yield residual to active    → exact remainder
+Repay net Yield allocated to Exit       → round DOWN
+Repay net Yield residual to active      → exact remainder
 
 Close net Quote allocated to Exit       → round DOWN
 Close net Quote residual to active      → exact remainder
 
 Active/Exit growth increments            → round DOWN
 Provider accrued claims                  → round DOWN
-Close/Swap protocol fee                  → round DOWN, fee <= source amount
-Collect Yield fee                         → round DOWN with persistent BPS carry
+Swap/Close/Yield protocol fee            → round DOWN on the canonical base
 ```
 
 All multiply/divide paths MUST use full-precision overflow-safe arithmetic. Round-up paths MUST use checked ceil division and MUST NOT overflow through `x + denominator - 1` style arithmetic.
@@ -1746,7 +1694,7 @@ Property/fuzz tests MUST prove at minimum:
 11. `0 < grossYieldAsset <= fullTermYieldAsset` for every successful Repay; same-timestamp Repay is billed as 1 second.
 12. Repay transfers Asset principal + accrued Asset Yield and unlocks the full Quote principal.
 13. Repay allocates `min(assetAmount, exitWorking)` of principal to Exit before active Available.
-14. Repay splits gross Asset Yield by the same principal resolution ratio; Exit + active Yield equals gross Yield exactly.
+14. Repay charges 1% on gross Asset Yield and splits the remaining net Yield by the principal resolution ratio; Exit + active Yield equals net Yield exactly.
 15. Exit shares may receive Repay Yield but receive no economics from new Use opening or Immediate Swap.
 16. Active shares receive no Exit principal/Quote growth.
 17. Close creates no Asset Yield and is the mutually exclusive Swap outcome.
@@ -1757,12 +1705,12 @@ Property/fuzz tests MUST prove at minimum:
 22. Exit is pooled priority settlement, not tagged Working: no Term Position is permanently assigned to an Exit claim.
 23. `exitWorking` grows only on Withdraw and shrinks only on Repay/Close. New Uses never increase an existing Exit claim; later Repay/Close may accelerate Exit.
 24. Asset custody always covers `availableSupply + exitAssetReserve + yieldAssetReserve`; Use/Swap may debit only `availableSupply`.
-25. `yieldAssetReserve` always covers funded but uncollected gross Asset Yield claims.
+25. `yieldAssetReserve` always covers funded but uncollected net Asset Yield claims.
 26. Quote escrow always covers every ACTIVE Position's Quote Principal.
 27. Quote proceeds custody always covers funded active/Exit Quote claims.
-28. Yield protocol fee is charged only on funded gross Asset Yield at Collect, uses persistent per-provider BPS carry so collection frequency cannot change the cumulative fee, and reaches only immutable `FEE_TO`.
-29. Close/Swap protocol fees are Quote-denominated reference fees derived from full-term Asset Yield and reach only immutable `FEE_TO`.
-30. `CloseFee <= QuotePrincipal` and `SwapFee <= QuotePrincipal` on every accepted path.
+28. Yield protocol fee is charged once on accrued gross Asset Yield at Repay and reaches only immutable `FEE_TO`; provider growth is net.
+29. Close/Swap protocol fees are 1% of Quote Principal and reach only immutable `FEE_TO`.
+30. Swap and Close each charge exactly `floor(QuotePrincipal * 100 / BPS)`, independent of Yield pricing; the remainder is provider Quote.
 31. Every position settles exactly once; Repay/Close maturity boundaries are strict.
 32. Per-Tick `tickSeq` is monotonic and uniquely maps to one permanent `positionId`.
 33. `settleCursor <= nextPositionSeq` always holds and never decreases.
@@ -1783,14 +1731,41 @@ Property/fuzz tests MUST prove at minimum:
 48. Nonstandard token behavior cannot silently create accounting deficits.
 49. Permanent Term Position history remains readable after settlement.
 50. No successful action can divide by zero or distribute growth with the corresponding share denominator equal to zero.
-51. Stored `priceX128` is canonical and all Asset↔Quote reference conversions use the frozen price formula.
+51. Stored `priceX128` is canonical and Quote Principal conversion uses the frozen price formula.
 52. Deterministic `tickId` derivation cannot vary once Pair identity/direction/price/duration are fixed.
 53. `nextPositionId` is monotonic, starts at 1, and successful Uses receive unique permanent EVM position IDs.
 54. The canonical Q128 Yield algorithm, including every intermediate round-down and final round-up, matches shared cross-chain golden vectors.
-55. Repeated Collect calls over the same cumulative gross Yield charge the same cumulative Yield fee as one Collect.
+55. Collect charges no additional fee; claim splits do not change the already charged Repay fee.
 56. A zero-principal Withdraw is possible only for Max/full-provider-share dust burn and cannot transfer Asset or create Exit Working.
+57. `MAX_SHARES` is an internal precision bound only; approaching it cannot create an indefinite admission DoS for otherwise-valid Supply or Withdraw.
+58. Any share normalization/compaction used to preserve precision is O(1), provider-loop-free, economically neutral within the canonical dust bounds, preserves accrued claims and generation isolation, and preserves Exit-first settlement priority.
+59. Repeated partial Swap/Close/Repay/Withdraw sequences cannot permanently poison a Tick or require unrelated suppliers to wait for an attacker-controlled Position to mature before Supply/Withdraw can make progress.
 
 # 24. Required implementation tests
+
+## Share capacity, recoverability, and cross-chain vectors
+
+`MAX_SHARES = Q128 - 1` bounds active and Exit shares after every successful transition. Supply and Withdraw reject a zero mint or a mint above remaining capacity, identically in previews and writes. With `fundedAmount >= 1` and `shareSupply <= MAX_SHARES`, `floor(fundedAmount * Q128 / shareSupply) >= 1`. Every positive active Yield/Quote and Exit Asset/Yield/Quote distribution asserts positive growth. Funded provider value must be solvent and claimable; token balance covering liability alone is insufficient.
+
+Live `totalShares >= activePrincipal` and `totalExitShares >= exitWorking`, so a Supply or Exit mint creates at least as many shares as input principal units. The implementation checks input units against remaining capacity before full-precision mint multiplication, then checks the computed shares. This gives an explicit capacity error even for very large inputs.
+
+Provider-level Q128 checkpoint floors can still leave deterministic dust. For one distribution shared by `n` positive-share providers, unclaimable dust is at most `min(fundedAmount, n)` raw units; the first bound is trivial and the second follows from fewer than one raw unit lost at each provider floor plus less than one unit at growth rounding. This bound does not justify an entire positive accumulator increment rounding to zero.
+
+`MAX_SHARES` is an internal precision-safety bound, not a user-facing admission limit. Capacity handling MUST preserve bounded progress for both active and Exit domains. An otherwise-valid Supply or Withdraw MUST NOT become indefinitely unavailable solely because internal share magnitude approaches `MAX_SHARES`.
+
+Any canonical normalization, compaction, or admission mechanism used to maintain the bound MUST be O(1), provider-loop-free, preserve proportional ownership and already-funded claims, preserve active/Exit generation isolation and Exit-first settlement priority, and maintain exact preview/write parity. Adversarial repeated partial-conversion and partial-resolution sequences MUST prove both recoverability and liveness: they may not strand funded value, permanently poison a Tick, or require waiting for an attacker-controlled Position to mature before unrelated suppliers can Supply or Withdraw.
+
+Matching EVM/Solana raw-unit vectors; the first column is Quote Principal for Swap/Close and gross Asset Yield for Repay:
+
+| Quote Principal / Gross Yield | Swap Fee | Provider Swap Quote | Close Fee | Provider Close Quote | Yield Fee | Provider Net Yield |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0 | 1 | 0 | 1 | 0 | 1 |
+| 99 | 0 | 99 | 0 | 99 | 0 | 99 |
+| 100 | 1 | 99 | 1 | 99 | 1 | 99 |
+| 101 | 1 | 100 | 1 | 100 | 1 | 100 |
+| 10,000 | 100 | 9,900 | 100 | 9,900 | 100 | 9,900 |
+
+Active and Exit domains accept `MAX_SHARES - 1 + 1 = MAX_SHARES` and reject any additional share mint.
 
 At minimum:
 
@@ -1846,7 +1821,7 @@ Repay amount < exitWorking → all principal + all Yield to Exit
 Repay amount == exitWorking → Exit generation finalization
 Repay amount > exitWorking → Exit first, excess principal/Yield to active
 Repay Yield split exact-remainder conservation
-Repay funds yieldAssetReserve exactly by grossYieldAsset
+Repay funds yieldAssetReserve exactly by grossYieldAsset - yieldFeeAsset
 Repay Exit principal reserve solvency
 Repay with totalShares == 0 implies activeReturn == 0 and activeYieldAsset == 0
 newer Use Repay may satisfy older Exit and route corresponding Yield to Exit
@@ -1861,9 +1836,8 @@ Close simultaneously exhausts Exit and active generations
 Close fee taken once before Exit/active net split
 Close with totalShares == 0 requires activeQuote == 0
 
-Immediate Swap reference full-term Asset Yield vectors
-Reference Yield Asset → Quote conversion round-up vectors
-Swap fee round-down vectors
+Immediate Swap fixed 1% Quote fee and small-unit round-down vectors
+Swap/Close fee symmetry regardless of Yield curve, duration or utilization
 Swap proceeds go only to active shares
 Swap maxQuoteIn bound
 
@@ -1874,10 +1848,9 @@ Collect mixed active + Exit Asset Yield
 Collect Exit Quote only
 Collect active Swap Quote only
 Collect mixed Asset + Quote
-Yield fee charged in Asset at Collect
+Yield fee charged in Asset at Repay; Collect charges no additional fee
 Quote proceeds receive no second fee
-Yield-fee carry: one large Collect == many split Collects for cumulative fee
-Yield-fee carry persists after active/Exit shares and owed claims return to zero
+Partial Collect and one Collect pay the same already-net provider claim
 Use/Swap cannot spend exitAssetReserve or yieldAssetReserve even when contract Asset balance is sufficient
 Collect before Exit fully resolves; remaining Exit shares continue resolving
 Collect after stale active generation
@@ -1997,4 +1970,3 @@ Active shares and Exit shares are separate internal accounting domains. Exit is 
 Exit is pooled rather than tagged to specific Term Positions. Later Withdraws may join the same live Exit generation, so v0.1 does not promise an individual Exit completion timestamp or provider-specific position assignment.
 
 > **Asset moves. Quote locks.**
-

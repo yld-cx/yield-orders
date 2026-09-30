@@ -14,10 +14,9 @@ import {
 
 const artifact = await readArtifact();
 const currentManifest = await readManifest();
-const { productionReady, saltNamespace } = currentManifest;
-if (productionReady) throw new Error("Set productionReady to false before mining a new deployment salt");
+const { saltNamespace } = currentManifest;
 if (!saltNamespace.trim()) throw new Error("Deployment saltNamespace cannot be empty");
-const feeTo = getAddress(YLD_FEE_TO ?? currentManifest.feeTo);
+const feeTo = getAddress(YLD_FEE_TO || currentManifest.feeTo);
 if (feeTo === zeroAddress) throw new Error("YLD_FEE_TO cannot be zero");
 const creationCodeHash = keccak256(creationCode(artifact, feeTo));
 let found = false;
@@ -31,7 +30,6 @@ for (let nonce = 0n; nonce < 2_000_000n; ++nonce) {
   if (!address.toLowerCase().startsWith("0x0000")) continue;
   const result = predict(artifact, feeTo, rawSalt);
   const manifest = {
-    productionReady,
     feeTo,
     saltNamespace,
     rawSalt,

@@ -719,13 +719,14 @@ Preview shows:
 Asset remains with Use user
 Locked Quote settles to suppliers
 Asset Yield due      0
-Close Fee
+Close Fee · 1%
+Net if Closed
 status → CLOSED
 ```
 
 Close is the **Swap outcome**, not a late Repay.
 
-The Close Fee is frozen from the full-term reference Yield at Use opening, converted to Quote at the immutable Tick price, and deducted from realized Quote proceeds.
+The Close Fee is frozen at Use opening as `floor(Quote Principal × 1%)`. At Close, providers receive the locked Quote Principal minus that fee. It does not depend on duration, utilization or Yield pricing.
 
 If Exit Working exists, the net provider Quote from Close resolves Exit first for the corresponding principal portion; only the excess becomes active provider Quote growth.
 
@@ -744,7 +745,8 @@ Receive
 Pay
 Price
 Execution: Immediate
-Protocol Fee
+Protocol Fee · 1%
+Provider Net
 ```
 
 Also make explicit:
@@ -757,9 +759,9 @@ No Term Position
 No Asset Yield
 ```
 
-For protocol-fee calculation only, Immediate Swap computes the same reference full-term Asset Yield an equivalent Use would quote, converts that reference to Quote at the Tick price, and derives the Swap Fee from it.
+Immediate Swap charges `floor(Quote Principal × 1%)`. The preview shows Quote Principal, Protocol Fee · 1%, and Provider Net. Equal Quote Principal produces equal Swap and frozen Close fees.
 
-The protocol fee is deducted from provider Swap proceeds, not added to taker Quote Principal.
+The protocol fee is deducted from provider Swap proceeds, not added to taker Quote Principal. Providers receive at least 99% of posted Quote; fee rounding down can leave more.
 
 **Exit does not disable Swap.** Immediate Swap consumes only active Available liquidity and pays active shareholders. Resolving Working is untouched.
 
@@ -797,17 +799,14 @@ In Use                  120 TOKEN-equivalent
 
 Claimable
 Exit Asset               40 TOKEN
-Earned Yield              6 TOKEN
+Earned Yield (net)        5.94 TOKEN
 Exit Quote              960 USDC
 Swapped               6,000 USDC
-
-Protocol Fee on Yield    0.6 TOKEN
-Net Yield                5.4 TOKEN
 
 [Collect]
 ```
 
-`Earned Yield` is always denominated in the supplied **Asset**. It may include active Repay Yield and Exit Repay Yield.
+`Earned Yield` is already net of the protocol fee, is denominated in the supplied **Asset**, and may include active and Exit Repay Yield.
 
 Only show `Resolving` when non-zero. The Asset-equivalent label describes unresolved Working principal, not a guaranteed Asset payout.
 
@@ -897,9 +896,7 @@ It may include both Tick tokens:
 ```text
 Asset side
 - Exit Asset principal
-- Gross Asset Yield
-- Protocol Fee on Yield
-- Net Asset Yield
+- Net Asset Yield (the fee was paid at Repay)
 
 Quote side
 - Exit Quote
@@ -910,12 +907,12 @@ Rules:
 
 ```text
 Exit Asset principal      → no fee
-Asset Yield               → 10% cumulative protocol fee at collection
+Asset Yield               → already net of the 1% fee charged at Repay
 Exit Quote                → no second fee
 active Swap/Close Quote   → no second fee
 ```
 
-The Yield protocol fee is denominated in **Asset**, because Yield itself is denominated in Asset. The protocol carries fractional fee remainder per supplier × Tick, so repeatedly collecting the same cumulative gross Yield cannot reduce the cumulative 10% fee through rounding.
+The Yield protocol fee is denominated in **Asset** and paid once at Repay. Collect transfers the already-net claim, so multiple partial Collect calls do not charge another fee.
 
 The button remains:
 
@@ -1102,6 +1099,10 @@ The UI MUST always show network context to avoid ambiguity. Tick-local settlemen
 
 # 23. Transaction preview and simulation
 
+Fee display: Swap preview shows Quote Principal, Protocol Fee · 1%, and Provider Net. Active Use shows Quote Principal, frozen Close Fee · 1%, and Net if Closed. Repay shows Asset principal, accrued gross Asset Yield, 1% Yield fee, and the full Quote refund. Provider Yield and Collect show already-net Yield. A small raw-unit fee may round to zero.
+
+Internal share precision/capacity handling is not a product concept and MUST remain hidden behind the adapter. The protocol guarantees bounded progress for otherwise-valid Supply and Withdraw; the UI MUST NOT require users to understand internal share caps, normalization, generations, or recovery mechanics.
+
 Before wallet signature, every state-changing action must show the exact economic preview derived from canonical onchain state.
 
 The preview includes the action's automatic one-step settlement hook. A mature cursor Close may change:
@@ -1204,13 +1205,13 @@ The product prepares required token accounts and validates mint/network ownershi
 Fee recipient token accounts are denomination-specific:
 
 ```text
-Collect Yield fee → FEE_TO Asset ATA
+Repay Yield fee  → FEE_TO Asset ATA
 Close/Swap fee    → FEE_TO Quote ATA
 ```
 
 Because automatic settlement may perform a Close inside another action, the product should ensure the Quote FEE_TO ATA exists whenever the current cursor Position may be mature.
 
-The Asset FEE_TO ATA is required for Collect whenever gross Asset Yield is claimable.
+The Asset FEE_TO ATA is required for Repay whenever its accrued gross Asset Yield has a nonzero fee.
 
 # 25. Errors and resolving states
 

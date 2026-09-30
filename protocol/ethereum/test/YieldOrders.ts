@@ -163,7 +163,7 @@ describe("yld.cx integration", async () => {
 
     const claim = await market.read.previewCollect([tickId, supplier.account.address]);
     assert.equal(claim.exitAsset, 200n * E);
-    assert.ok(claim.grossYieldAsset > 0n);
+    assert.ok(claim.activeYieldAsset + claim.exitYieldAsset > 0n);
     const collectHash = await market.write.collect([tickId], { account: supplier.account });
     const collectReceipt = await client.waitForTransactionReceipt({ hash: collectHash });
     assert.ok(eventNames(collectReceipt, market.abi, market.address).includes("Collected"));
@@ -343,7 +343,7 @@ describe("yld.cx integration", async () => {
     assert.equal((await market.read.getTick([tickId]))[0].availableSupply, 100n * E);
   });
 
-  it("keeps the 10% Asset Yield fee invariant across separate Collect calls", async () => {
+  it("charges the 1% Asset Yield fee at Repay and never again at Collect", async () => {
     const { asset, market, tickId } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1_000n * E, zeroAddress], { account: supplier.account });
     await asset.write.mint([taker.account.address, 100n * E]);
@@ -354,6 +354,7 @@ describe("yld.cx integration", async () => {
     });
     await market.write.repay([1n, firstQuote.fullTermYieldAsset], { account: taker.account });
     const firstClaim = await market.read.previewCollect([tickId, supplier.account.address]);
+    const feeAfterFirstRepay = await asset.read.balanceOf([deployer.account.address]);
     await market.write.collect([tickId], { account: supplier.account });
 
     const secondQuote = await market.read.previewUse([tickId, 100n * E]);
@@ -362,12 +363,11 @@ describe("yld.cx integration", async () => {
     });
     await market.write.repay([2n, secondQuote.fullTermYieldAsset], { account: taker.account });
     const secondClaim = await market.read.previewCollect([tickId, supplier.account.address]);
+    const feeAfterSecondRepay = await asset.read.balanceOf([deployer.account.address]);
     await market.write.collect([tickId], { account: supplier.account });
-
-    const totalGross = firstClaim.grossYieldAsset + secondClaim.grossYieldAsset;
-    assert.equal(await asset.read.balanceOf([deployer.account.address]), totalGross / 10n);
-    const provider = (await market.read.getEarnPosition([supplier.account.address, tickId])).provider;
-    assert.equal(provider.yieldFeeCarry, (totalGross * 1_000n) % 10_000n);
+    assert.ok(firstClaim.activeYieldAsset > 0n && secondClaim.activeYieldAsset > 0n);
+    assert.ok(feeAfterFirstRepay > 0n && feeAfterSecondRepay > feeAfterFirstRepay);
+    assert.equal(await asset.read.balanceOf([deployer.account.address]), feeAfterSecondRepay);
   });
 
   it("lets a new active supplier trade while an older Exit is unresolved", async () => {
