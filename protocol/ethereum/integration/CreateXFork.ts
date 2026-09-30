@@ -20,6 +20,8 @@ describe("same-address CreateX deployment on a supported-chain fork", async () =
   const publicClient = await viem.getPublicClient();
   const [wallet] = await viem.getWalletClients();
   const manifest = await readManifest();
+  if (!manifest.feeTo || !manifest.rawSalt) throw new Error("production deployment configuration is incomplete");
+  const rawSalt = manifest.rawSalt;
   const prediction = predict(await readArtifact(), manifest.feeTo, manifest.rawSalt);
   assertManifest(manifest, prediction);
 
@@ -38,7 +40,7 @@ describe("same-address CreateX deployment on a supported-chain fork", async () =
       address: CREATE_X_ADDRESS,
       abi: CREATE_X_ABI,
       functionName: "deployCreate2",
-      args: [manifest.rawSalt, prediction.initCode],
+      args: [rawSalt, prediction.initCode],
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     assert.equal(receipt.status, "success");

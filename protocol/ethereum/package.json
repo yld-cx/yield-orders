@@ -1,6 +1,6 @@
 {
   "name": "@yld-cx/ethereum-protocol",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "yld.cx — Ethereum / EVM L2s Yield Orders Protocol",
   "keywords": [
     "ethereum",
@@ -27,14 +27,16 @@
     "README.md",
     "abi/YieldOrders.json",
     "contracts/YieldOrders.sol",
-    "contracts/libraries/TickMath.sol"
+    "contracts/libraries/TickMath.sol",
+    "contracts/libraries/Uint512.sol"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "build": "hardhat build && npm run abi:export",
-    "build:production": "hardhat build --build-profile production && npm run abi:export",
+    "build:production": "npm run size && npm run abi:export",
+    "size": "hardhat build --build-profile production && node scripts/check-size.mjs",
     "test": "hardhat test",
     "test:solidity": "hardhat test solidity",
     "test:nodejs": "hardhat test nodejs",

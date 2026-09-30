@@ -12,13 +12,14 @@ export const NETWORKS = {
 } as const;
 
 export type DeploymentManifest = {
-  feeTo: Address;
+  version: "0.2";
+  feeTo: Address | null;
   saltNamespace: string;
-  rawSalt: Hex;
-  guardedSalt: Hex;
-  address: Address;
-  creationCodeHash: Hex;
-  runtimeCodeHash: Hex;
+  rawSalt: Hex | null;
+  guardedSalt: Hex | null;
+  address: Address | null;
+  creationCodeHash: Hex | null;
+  runtimeCodeHash: Hex | null;
   compiler: string;
   networks: Record<keyof typeof NETWORKS, number>;
 };
@@ -46,7 +47,7 @@ export function guardSalt(rawSalt: Hex): Hex {
   return keccak256(encodeAbiParameters([{ type: "bytes32" }], [rawSalt]));
 }
 
-export function candidateSalt(nonce: bigint, namespace = "yld.cx-v0.1-test"): Hex {
+export function candidateSalt(nonce: bigint, namespace = "yld.cx-v0.2"): Hex {
   return keccak256(encodeAbiParameters([{ type: "string" }, { type: "uint256" }], [namespace, nonce]));
 }
 
@@ -91,6 +92,7 @@ export function predict(
 }
 
 export function assertManifest(manifest: DeploymentManifest, prediction: ReturnType<typeof predict>): void {
+  if (!manifest.feeTo || !manifest.rawSalt) throw new Error("production configuration is incomplete");
   if (!prediction.address.toLowerCase().startsWith("0x0000"))
     throw new Error("Protocol address must start with 0x0000");
   for (const [name, config] of Object.entries(NETWORKS)) {
@@ -104,7 +106,7 @@ export function assertManifest(manifest: DeploymentManifest, prediction: ReturnT
       throw new Error(`${name} predicts a different address`);
   }
   for (const field of ["address", "guardedSalt", "creationCodeHash", "runtimeCodeHash"] as const) {
-    if (manifest[field].toLowerCase() !== prediction[field].toLowerCase())
+    if (manifest[field]?.toLowerCase() !== prediction[field].toLowerCase())
       throw new Error(`Pinned ${field} differs from local production build`);
   }
 }

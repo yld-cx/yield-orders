@@ -7,19 +7,28 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {TickMath} from "./libraries/TickMath.sol";
+import {Uint512} from "./libraries/Uint512.sol";
 
-/// @notice yld.cx v0.1 exact-tick, fixed-term liquidity protocol.
+/// @notice yld.cx v0.2 exact-tick, fixed-term Product-Sum liquidity protocol.
 contract YieldOrders is Multicall, ReentrancyGuard {
     using SafeERC20 for IERC20;
-
     uint256 public constant BPS = 10_000;
     uint256 public constant Q128 = 1 << 128;
     uint256 public constant PROTOCOL_FEE_BPS = 100;
-    uint256 public constant MAX_SHARES = type(uint128).max;
+    uint256 public constant MAX_ACCOUNTING_AMOUNT = 1e30;
+    uint256 public constant PRINCIPAL_PRECISION = 1e36;
+    uint256 public constant P_PRECISION = 1e39;
+    uint256 public constant SCALE_FACTOR = 1e9;
+    uint256 public constant P_MIN = 1e30;
+    uint256 public constant MAX_SCALE_SPAN = 8;
+    uint256 public constant MAX_SCALE_JUMP = 4;
     uint256 public constant MIN_DAILY_BPS = 1;
     uint256 public constant MAX_DAILY_BPS = 100;
     uint256 public constant CURVE_EXPONENT = 3;
     uint256 public constant MIN_BILLABLE_SECONDS = 1;
+    uint256 public constant SECONDS_PER_DAY = 86_400;
+    uint256 public constant MAX_TIMESTAMP = 9_223_372_036_854_775_807;
+    uint256 public constant MAX_DURATION_DAYS = 106_751_991_167_300;
     address public immutable FEE_TO;
 
     error InvalidInput();
@@ -33,34 +42,48 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     error Cooldown();
     error UnsupportedToken();
     error Invariant();
-    error ShareCapacity();
 
     struct Pair {
         address token0;
         address token1;
         bool exists;
     }
+    struct Domain {
+        uint256 P;
+        uint64 scale;
+        uint64 generation;
+        uint256 assetSum;
+        uint256 yieldSum;
+        uint256 quoteSum;
+    }
+    struct ScaleSums {
+        uint256 assetSum;
+        uint256 yieldSum;
+        uint256 quoteSum;
+        bool finalized;
+    }
+    struct GenerationMeta {
+        uint64 finalScale;
+        bool finalized;
+    }
+    enum DomainKind {
+        Active,
+        Exit
+    }
     struct Tick {
         uint256 pairId;
         address asset;
         address quote;
-        uint256 priceX128;
         uint8 direction;
         int32 priceTick;
         uint64 durationDays;
+        uint256 priceX128;
         bool exists;
         uint256 availableSupply;
         uint256 workingSupply;
         uint256 exitWorking;
-        uint256 totalShares;
-        uint256 yieldAssetGrowthX128;
-        uint256 swapQuoteGrowthX128;
-        uint64 generation;
-        uint256 totalExitShares;
-        uint256 exitAssetGrowthX128;
-        uint256 exitYieldAssetGrowthX128;
-        uint256 exitQuoteGrowthX128;
-        uint64 exitGeneration;
+        Domain active;
+        Domain exit;
         uint256 exitAssetReserve;
         uint256 yieldAssetReserve;
         uint256 exitQuoteReserve;
@@ -69,38 +92,24 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint64 nextPositionSeq;
         uint64 settleCursor;
     }
-    struct Provider {
-        uint256 shares;
+    struct Snapshot {
+        uint256 initialPrincipalX36;
         uint64 generation;
-        uint256 yieldAssetGrowthLastX128;
-        uint256 swapQuoteGrowthLastX128;
-        uint256 owedYieldAsset;
-        uint256 owedSwapQuote;
-        uint256 lastSupplyBlock;
-        uint256 exitShares;
-        uint64 exitGeneration;
-        uint256 exitAssetGrowthLastX128;
-        uint256 exitYieldAssetGrowthLastX128;
-        uint256 exitQuoteGrowthLastX128;
+        uint64 scale;
+        uint256 P;
+        uint256 assetSum;
+        uint256 yieldSum;
+        uint256 quoteSum;
+    }
+    struct ProviderPosition {
+        Snapshot active;
+        Snapshot exit;
+        uint256 owedActiveYieldAsset;
+        uint256 owedActiveQuote;
         uint256 owedExitAsset;
         uint256 owedExitYieldAsset;
         uint256 owedExitQuote;
-    }
-    struct FinalActive {
-        uint256 yieldGrowth;
-        uint256 quoteGrowth;
-    }
-    struct FinalExit {
-        uint256 assetGrowth;
-        uint256 yieldGrowth;
-        uint256 quoteGrowth;
-    }
-    struct ProjectedTick {
-        Tick tick;
-        FinalActive activeFinal;
-        FinalExit exitFinal;
-        bool activeFinalized;
-        bool exitFinalized;
+        uint256 lastSupplyBlock;
     }
     enum Status {
         INVALID,
@@ -121,24 +130,22 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         Status status;
     }
     struct UsePreview {
-        uint256 matchAmount;
+        uint256 assetAmount;
         uint256 quotePrincipal;
-        uint256 activeWorkingShareBefore;
-        uint256 activeWorkingShareAfter;
+        uint256 activeUtilizationBeforeX128;
+        uint256 activeUtilizationAfterX128;
         uint256 fullTermYieldAsset;
         uint256 closeFee;
         uint256 dailyRateX128;
-        uint256 termRateX128;
         uint256 maturity;
     }
     struct WithdrawPreview {
-        uint256 sharesToWithdraw;
-        uint256 principalClaim;
+        uint256 providerPrincipal;
+        uint256 principalAmount;
         uint256 availableAssetOut;
         uint256 workingToExit;
-        uint256 exitSharesMinted;
-        uint256 remainingActiveShares;
-        uint256 remainingExitShares;
+        uint256 remainingActivePrincipal;
+        uint256 resolvingPrincipal;
     }
     struct RepayPreview {
         uint256 assetPrincipal;
@@ -162,34 +169,61 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 activeYieldAsset;
         uint256 exitYieldAsset;
         uint256 exitQuote;
-        uint256 swapQuote;
+        uint256 activeQuote;
         uint256 totalAssetOut;
         uint256 totalQuoteOut;
+        uint256 resolvingPrincipal;
     }
     struct EarnPositionView {
-        Provider provider;
+        uint256 activePrincipal;
+        uint256 activePrincipalX36;
+        uint256 activeAvailable;
+        uint256 activeWorking;
+        uint256 exitPrincipalX36;
+        uint256 resolvingPrincipal;
         uint256 claimableActiveYieldAsset;
         uint256 claimableExitAsset;
         uint256 claimableExitYieldAsset;
-        uint256 claimableSwapQuote;
+        uint256 claimableActiveQuote;
         uint256 claimableExitQuote;
+    }
+    struct TickView {
+        address asset;
+        address quote;
+        uint64 durationDays;
+        uint256 priceX128;
+        uint256 availableSupply;
+        uint256 workingSupply;
+        uint256 exitWorking;
+        uint256 activeWorking;
+        uint256 activePrincipal;
+        uint64 settleCursor;
+    }
+    struct Projection {
+        Tick tick;
+        ScaleSums activeOverride;
+        ScaleSums exitOverride;
+        uint64 activeOldGeneration;
+        uint64 activeOldScale;
+        uint64 exitOldGeneration;
+        uint64 exitOldScale;
+        bool activeChanged;
+        bool exitChanged;
     }
 
     mapping(uint256 => Pair) public pairs;
-    mapping(uint256 => Position) public positions;
+    mapping(uint256 => Position) private _positions;
     mapping(address => uint256) public tokenLiability;
-    mapping(uint256 => mapping(uint64 => FinalActive)) public finalActive;
-    mapping(uint256 => mapping(uint64 => FinalExit)) public finalExit;
+    mapping(uint256 => mapping(uint8 => mapping(uint64 => mapping(uint64 => ScaleSums)))) public scaleSums;
+    mapping(uint256 => mapping(uint8 => mapping(uint64 => GenerationMeta))) public generationMeta;
     mapping(uint256 => mapping(uint64 => uint256)) public tickPositionId;
     mapping(uint256 => Tick) private _ticks;
-    mapping(uint256 => mapping(address => Provider)) private _providers;
+    mapping(uint256 => mapping(address => ProviderPosition)) private _providers;
     mapping(uint256 => uint256) private _tickAssetLiability;
     mapping(uint256 => uint256) private _tickQuoteLiability;
     mapping(address => uint256[]) private _userEarnTicks;
     mapping(address => mapping(uint256 => uint256)) private _earnIndexPlusOne;
-    mapping(address => uint256[]) private _userActivePositions;
-    mapping(uint256 => uint256) private _activeIndexPlusOne;
-
+    mapping(address => uint256[]) private _userPositions;
     uint256 public nextPositionId = 1;
 
     event PairCreated(uint256 indexed pairId, address indexed token0, address indexed token1);
@@ -202,21 +236,13 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         address asset,
         address quote
     );
-    event Supplied(
-        uint256 indexed tickId,
-        address indexed supplier,
-        uint256 assetAmount,
-        uint256 sharesMinted,
-        address referrer
-    );
+    event Supplied(uint256 indexed tickId, address indexed supplier, uint256 assetAmount, address referrer);
     event Withdrawn(
         uint256 indexed tickId,
         address indexed supplier,
-        uint256 sharesBurned,
-        uint256 principalClaim,
+        uint256 principalAmount,
         uint256 availableAssetOut,
-        uint256 workingToExit,
-        uint256 exitSharesMinted
+        uint256 workingToExit
     );
     event Collected(
         uint256 indexed tickId,
@@ -225,7 +251,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 activeYieldAsset,
         uint256 exitYieldAsset,
         uint256 exitQuote,
-        uint256 swapQuote,
+        uint256 activeQuote,
         uint256 totalAssetOut,
         uint256 totalQuoteOut
     );
@@ -279,18 +305,19 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 providerSwapProceeds,
         address referrer
     );
-    event GenerationFinalized(
+    event DomainScaleChanged(
         uint256 indexed tickId,
-        uint64 generationId,
-        uint256 finalYieldAssetGrowthX128,
-        uint256 finalSwapQuoteGrowthX128
+        DomainKind indexed domain,
+        uint64 generation,
+        uint64 oldScale,
+        uint64 newScale,
+        uint256 newP
     );
-    event ExitGenerationFinalized(
+    event DomainGenerationFinalized(
         uint256 indexed tickId,
-        uint64 exitGenerationId,
-        uint256 finalExitAssetGrowthX128,
-        uint256 finalExitYieldAssetGrowthX128,
-        uint256 finalExitQuoteGrowthX128
+        DomainKind indexed domain,
+        uint64 generation,
+        uint64 finalScale
     );
 
     constructor(address feeTo) {
@@ -303,7 +330,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         (token0, token1) = a < b ? (a, b) : (b, a);
         id = uint256(keccak256(abi.encode(token0, token1)));
     }
-
     function getPair(
         address a,
         address b
@@ -311,7 +337,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         (pairId, token0, token1) = _pair(a, b);
         exists = pairs[pairId].exists;
     }
-
     function createPair(address a, address b) external returns (uint256 id) {
         address token0;
         address token1;
@@ -320,7 +345,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         pairs[id] = Pair(token0, token1, true);
         emit PairCreated(id, token0, token1);
     }
-
     function createTick(
         uint256 pairId,
         uint8 direction,
@@ -329,7 +353,15 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     ) external returns (uint256 id) {
         Pair storage p = pairs[pairId];
         if (!p.exists) revert NotFound();
-        if (direction > 1 || priceTick < -887272 || priceTick > 887272 || durationDays == 0) revert InvalidInput();
+        if (
+            direction > 1 ||
+            priceTick < -887272 ||
+            priceTick > 887272 ||
+            durationDays == 0 ||
+            durationDays > MAX_DURATION_DAYS
+        ) revert InvalidInput();
+        uint256 durationSeconds = uint256(durationDays) * SECONDS_PER_DAY;
+        if (durationSeconds > MAX_TIMESTAMP) revert InvalidInput();
         id = uint256(keccak256(abi.encode(pairId, direction, priceTick, durationDays)));
         if (_ticks[id].exists) revert AlreadyExists();
         uint160 sqrtPriceX96 = TickMath.getSqrtRatioAtTick(int24(priceTick));
@@ -337,102 +369,99 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         t.pairId = pairId;
         t.asset = direction == 0 ? p.token0 : p.token1;
         t.quote = direction == 0 ? p.token1 : p.token0;
-        t.priceX128 = Math.mulDiv(uint256(sqrtPriceX96), uint256(sqrtPriceX96), 1 << 64);
         t.direction = direction;
         t.priceTick = priceTick;
         t.durationDays = durationDays;
+        t.priceX128 = Math.mulDiv(uint256(sqrtPriceX96), uint256(sqrtPriceX96), 1 << 64);
+        t.active.P = P_PRECISION;
+        t.exit.P = P_PRECISION;
         t.exists = true;
         emit TickCreated(id, pairId, direction, priceTick, durationDays, t.asset, t.quote);
     }
-
-    function getTick(
-        uint256 id
-    ) external view returns (Tick memory tick, uint256 activeWorking, uint256 activePrincipal) {
-        tick = _requireTick(id);
-        activeWorking = tick.workingSupply - tick.exitWorking;
-        activePrincipal = tick.availableSupply + activeWorking;
-    }
-
     function _requireTick(uint256 id) internal view returns (Tick storage t) {
         t = _ticks[id];
         if (!t.exists) revert NotFound();
     }
-
+    function getTick(uint256 id) external view returns (TickView memory q) {
+        Tick storage t = _requireTick(id);
+        q = TickView(
+            t.asset,
+            t.quote,
+            t.durationDays,
+            t.priceX128,
+            t.availableSupply,
+            t.workingSupply,
+            t.exitWorking,
+            t.workingSupply - t.exitWorking,
+            t.availableSupply + t.workingSupply - t.exitWorking,
+            t.settleCursor
+        );
+    }
+    function getDomain(uint256 id, DomainKind kind) external view returns (Domain memory) {
+        Tick storage t = _requireTick(id);
+        return kind == DomainKind.Active ? t.active : t.exit;
+    }
+    function _bound(uint256 amount) internal pure {
+        if (amount > MAX_ACCOUNTING_AMOUNT) revert InvalidInput();
+    }
+    function _activePrincipal(Tick memory t) internal pure returns (uint256) {
+        return t.availableSupply + t.workingSupply - t.exitWorking;
+    }
     function _pow4(uint256 u) internal pure returns (uint256) {
         uint256 u2 = Math.mulDiv(u, u, Q128);
         return Math.mulDiv(u2, u2, Q128);
     }
-
-    function _quote(Tick memory t, uint256 x) internal pure returns (uint256) {
-        return Math.mulDiv(x, t.priceX128, Q128, Math.Rounding.Ceil);
+    function _quote(Tick memory t, uint256 x) internal pure returns (uint256 q) {
+        q = Math.mulDiv(x, t.priceX128, Q128, Math.Rounding.Ceil);
+        if (q == 0) revert InvalidInput();
+        _bound(q);
     }
-
-    function _fullTermYield(Tick memory t, uint256 x) internal pure returns (uint256) {
+    function _fullTermYield(Tick memory t, uint256 x) internal pure returns (uint256 result) {
         uint256 wa = t.workingSupply - t.exitWorking;
         uint256 ca = t.availableSupply + wa;
-        if (x == 0 || x > t.availableSupply || ca == 0 || t.totalShares == 0) revert InsufficientLiquidity();
+        if (x == 0 || x > t.availableSupply || ca == 0) revert InsufficientLiquidity();
         uint256 u0 = Math.mulDiv(wa, Q128, ca);
         uint256 u1 = Math.mulDiv(wa + x, Q128, ca);
         uint256 curve = 4 * MIN_DAILY_BPS * (u1 - u0) + (MAX_DAILY_BPS - MIN_DAILY_BPS) * (_pow4(u1) - _pow4(u0));
-        uint256 durationCurve = uint256(t.durationDays) * curve;
-        uint256 result = Math.mulDiv(ca, durationCurve, 4 * BPS * Q128, Math.Rounding.Ceil);
+        result = Math.mulDiv(ca, uint256(t.durationDays) * curve, 4 * BPS * Q128, Math.Rounding.Ceil);
         if (result == 0) revert InvalidInput();
-        return result;
+        _bound(result);
     }
-
     function _swapPreview(Tick memory t, uint256 x) internal pure returns (SwapPreview memory q) {
-        if (x == 0 || x > t.availableSupply || t.totalShares == 0) revert InsufficientLiquidity();
+        if (x == 0 || x > t.availableSupply) revert InsufficientLiquidity();
+        _bound(x);
         q.assetAmount = x;
         q.quotePrincipal = _quote(t, x);
-        if (q.quotePrincipal == 0) revert InvalidInput();
         q.swapFee = Math.mulDiv(q.quotePrincipal, PROTOCOL_FEE_BPS, BPS);
         q.providerSwapProceeds = q.quotePrincipal - q.swapFee;
     }
-
-    function _checkShareCapacity(uint256 minted, uint256 current) internal pure {
-        if (minted == 0 || current > MAX_SHARES || minted > MAX_SHARES - current) revert ShareCapacity();
+    function _maturity(Tick memory t) internal view returns (uint256 maturity) {
+        if (block.timestamp > MAX_TIMESTAMP) revert InvalidInput();
+        uint256 duration = uint256(t.durationDays) * SECONDS_PER_DAY;
+        maturity = block.timestamp + duration;
+        if (maturity > MAX_TIMESTAMP) revert InvalidInput();
     }
-
-    function _checkMintInput(uint256 amount, uint256 current) internal pure {
-        if (current > MAX_SHARES || amount > MAX_SHARES - current) revert ShareCapacity();
-    }
-
-    function _growth(uint256 amount, uint256 shares) internal pure returns (uint256 increment) {
-        if (amount == 0) return 0;
-        if (shares == 0 || shares > MAX_SHARES) revert Invariant();
-        increment = Math.mulDiv(amount, Q128, shares);
-        if (increment == 0) revert Invariant();
-    }
-
-    function _checkRepayCapacity(uint256 assetAmount, uint256 fullTermYieldAsset) internal pure {
-        if (fullTermYieldAsset > type(uint256).max - assetAmount) revert InvalidInput();
-    }
-
     function _reconcileLiability(address token, uint256 previous, uint256 current) internal {
         uint256 total = tokenLiability[token];
         total = current >= previous ? total + (current - previous) : total - (previous - current);
         tokenLiability[token] = total;
         if (IERC20(token).balanceOf(address(this)) < total) revert Invariant();
     }
-
     function _checkAsset(uint256 id, Tick storage t) internal {
         uint256 current = t.availableSupply + t.exitAssetReserve + t.yieldAssetReserve;
         _reconcileLiability(t.asset, _tickAssetLiability[id], current);
         _tickAssetLiability[id] = current;
     }
-
     function _checkQuote(uint256 id, Tick storage t) internal {
         uint256 current = t.quoteEscrow + t.exitQuoteReserve + t.activeQuoteReserve;
         _reconcileLiability(t.quote, _tickQuoteLiability[id], current);
         _tickQuoteLiability[id] = current;
     }
-
     function _pull(IERC20 token, address from, uint256 amount) internal {
         uint256 beforeBalance = token.balanceOf(address(this));
         token.safeTransferFrom(from, address(this), amount);
         if (token.balanceOf(address(this)) - beforeBalance != amount) revert UnsupportedToken();
     }
-
     function _push(IERC20 token, address to, uint256 amount) internal {
         if (amount == 0) return;
         uint256 beforeFrom = token.balanceOf(address(this));
@@ -442,85 +471,278 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             revert UnsupportedToken();
     }
 
-    function _activePrincipal(Tick storage t) internal view returns (uint256) {
-        return t.availableSupply + t.workingSupply - t.exitWorking;
+    function _persist(uint256 id, DomainKind kind, Domain storage d) internal {
+        scaleSums[id][uint8(kind)][d.generation][d.scale] = ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, true);
     }
-
-    function _finalizeActive(uint256 id, Tick storage t) internal {
-        if (_activePrincipal(t) != 0 || t.totalShares == 0) return;
-        uint64 g = t.generation;
-        finalActive[id][g] = FinalActive(t.yieldAssetGrowthX128, t.swapQuoteGrowthX128);
-        emit GenerationFinalized(id, g, t.yieldAssetGrowthX128, t.swapQuoteGrowthX128);
-        t.totalShares = 0;
-        t.generation = g + 1;
-        t.yieldAssetGrowthX128 = 0;
-        t.swapQuoteGrowthX128 = 0;
+    function _fund(
+        Domain storage d,
+        uint256 principal,
+        uint256 assetGain,
+        uint256 yieldGain,
+        uint256 quoteGain
+    ) internal {
+        if (principal == 0) revert Invariant();
+        _bound(assetGain);
+        _bound(yieldGain);
+        _bound(quoteGain);
+        if (assetGain != 0) d.assetSum += Math.mulDiv(assetGain, d.P, principal);
+        if (yieldGain != 0) d.yieldSum += Math.mulDiv(yieldGain, d.P, principal);
+        if (quoteGain != 0) d.quoteSum += Math.mulDiv(quoteGain, d.P, principal);
     }
-
-    function _finalizeExit(uint256 id, Tick storage t) internal {
-        if (t.exitWorking != 0 || t.totalExitShares == 0) return;
-        uint64 g = t.exitGeneration;
-        finalExit[id][g] = FinalExit(t.exitAssetGrowthX128, t.exitYieldAssetGrowthX128, t.exitQuoteGrowthX128);
-        emit ExitGenerationFinalized(id, g, t.exitAssetGrowthX128, t.exitYieldAssetGrowthX128, t.exitQuoteGrowthX128);
-        t.totalExitShares = 0;
-        t.exitGeneration = g + 1;
-        t.exitAssetGrowthX128 = 0;
-        t.exitYieldAssetGrowthX128 = 0;
-        t.exitQuoteGrowthX128 = 0;
+    function _fundMemory(
+        Domain memory d,
+        uint256 principal,
+        uint256 assetGain,
+        uint256 yieldGain,
+        uint256 quoteGain
+    ) internal pure {
+        if (principal == 0) revert Invariant();
+        if (assetGain != 0) d.assetSum += Math.mulDiv(assetGain, d.P, principal);
+        if (yieldGain != 0) d.yieldSum += Math.mulDiv(yieldGain, d.P, principal);
+        if (quoteGain != 0) d.quoteSum += Math.mulDiv(quoteGain, d.P, principal);
     }
-
-    function _sync(uint256 id, address owner) internal {
-        Tick storage t = _ticks[id];
-        Provider storage p = _providers[id][owner];
-        if (p.generation != t.generation) {
-            FinalActive storage f = finalActive[id][p.generation];
-            p.owedYieldAsset += Math.mulDiv(p.shares, f.yieldGrowth - p.yieldAssetGrowthLastX128, Q128);
-            p.owedSwapQuote += Math.mulDiv(p.shares, f.quoteGrowth - p.swapQuoteGrowthLastX128, Q128);
-            p.shares = 0;
-            p.generation = t.generation;
-            p.yieldAssetGrowthLastX128 = 0;
-            p.swapQuoteGrowthLastX128 = 0;
+    function _depletionP(
+        uint256 oldP,
+        uint256 beforePrincipal,
+        uint256 afterPrincipal
+    ) internal pure returns (uint256 newP, uint64 jump) {
+        if (beforePrincipal == 0 || afterPrincipal >= beforePrincipal) revert Invariant();
+        if (afterPrincipal == 0) return (0, 0);
+        uint256 scaledAfter = afterPrincipal;
+        for (uint256 i; i <= MAX_SCALE_JUMP; ++i) {
+            newP = Math.mulDiv(oldP, scaledAfter, beforePrincipal);
+            if (newP >= P_MIN) return (newP, uint64(i));
+            if (i != MAX_SCALE_JUMP) scaledAfter *= SCALE_FACTOR;
         }
-        p.owedYieldAsset += Math.mulDiv(p.shares, t.yieldAssetGrowthX128 - p.yieldAssetGrowthLastX128, Q128);
-        p.owedSwapQuote += Math.mulDiv(p.shares, t.swapQuoteGrowthX128 - p.swapQuoteGrowthLastX128, Q128);
-        p.yieldAssetGrowthLastX128 = t.yieldAssetGrowthX128;
-        p.swapQuoteGrowthLastX128 = t.swapQuoteGrowthX128;
-        if (p.exitGeneration != t.exitGeneration) {
-            FinalExit storage f = finalExit[id][p.exitGeneration];
-            p.owedExitAsset += Math.mulDiv(p.exitShares, f.assetGrowth - p.exitAssetGrowthLastX128, Q128);
-            p.owedExitYieldAsset += Math.mulDiv(p.exitShares, f.yieldGrowth - p.exitYieldAssetGrowthLastX128, Q128);
-            p.owedExitQuote += Math.mulDiv(p.exitShares, f.quoteGrowth - p.exitQuoteGrowthLastX128, Q128);
-            p.exitShares = 0;
-            p.exitGeneration = t.exitGeneration;
-            p.exitAssetGrowthLastX128 = 0;
-            p.exitYieldAssetGrowthLastX128 = 0;
-            p.exitQuoteGrowthLastX128 = 0;
-        }
-        p.owedExitAsset += Math.mulDiv(p.exitShares, t.exitAssetGrowthX128 - p.exitAssetGrowthLastX128, Q128);
-        p.owedExitYieldAsset += Math.mulDiv(
-            p.exitShares,
-            t.exitYieldAssetGrowthX128 - p.exitYieldAssetGrowthLastX128,
-            Q128
-        );
-        p.owedExitQuote += Math.mulDiv(p.exitShares, t.exitQuoteGrowthX128 - p.exitQuoteGrowthLastX128, Q128);
-        p.exitAssetGrowthLastX128 = t.exitAssetGrowthX128;
-        p.exitYieldAssetGrowthLastX128 = t.exitYieldAssetGrowthX128;
-        p.exitQuoteGrowthLastX128 = t.exitQuoteGrowthX128;
+        revert Invariant();
     }
-
+    function _deplete(
+        uint256 id,
+        DomainKind kind,
+        Domain storage d,
+        uint256 beforePrincipal,
+        uint256 afterPrincipal
+    ) internal {
+        if (afterPrincipal == 0) {
+            _persist(id, kind, d);
+            generationMeta[id][uint8(kind)][d.generation] = GenerationMeta(d.scale, true);
+            emit DomainGenerationFinalized(id, kind, d.generation, d.scale);
+            d.generation += 1;
+            d.scale = 0;
+            d.P = P_PRECISION;
+            d.assetSum = 0;
+            d.yieldSum = 0;
+            d.quoteSum = 0;
+            return;
+        }
+        (uint256 newP, uint64 jump) = _depletionP(d.P, beforePrincipal, afterPrincipal);
+        if (jump != 0) {
+            uint64 oldScale = d.scale;
+            _persist(id, kind, d);
+            d.scale += jump;
+            d.assetSum = 0;
+            d.yieldSum = 0;
+            d.quoteSum = 0;
+            emit DomainScaleChanged(id, kind, d.generation, oldScale, d.scale, newP);
+        }
+        d.P = newP;
+    }
+    function _depleteMemory(
+        Domain memory d,
+        uint256 beforePrincipal,
+        uint256 afterPrincipal
+    ) internal pure returns (bool changed, ScaleSums memory oldSums, uint64 oldGeneration, uint64 oldScale) {
+        oldGeneration = d.generation;
+        oldScale = d.scale;
+        if (afterPrincipal == 0) {
+            oldSums = ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, true);
+            changed = true;
+            d.generation += 1;
+            d.scale = 0;
+            d.P = P_PRECISION;
+            d.assetSum = 0;
+            d.yieldSum = 0;
+            d.quoteSum = 0;
+            return (changed, oldSums, oldGeneration, oldScale);
+        }
+        (uint256 newP, uint64 jump) = _depletionP(d.P, beforePrincipal, afterPrincipal);
+        if (jump != 0) {
+            oldSums = ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, true);
+            changed = true;
+            d.scale += jump;
+            d.assetSum = 0;
+            d.yieldSum = 0;
+            d.quoteSum = 0;
+        }
+        d.P = newP;
+    }
+    function _scaleValue(
+        uint256 id,
+        DomainKind kind,
+        uint64 generation,
+        uint64 scale,
+        Projection memory v
+    ) internal view returns (ScaleSums memory s) {
+        Domain memory d = kind == DomainKind.Active ? v.tick.active : v.tick.exit;
+        if (generation == d.generation && scale == d.scale) return ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, false);
+        if (
+            kind == DomainKind.Active &&
+            v.activeChanged &&
+            generation == v.activeOldGeneration &&
+            scale == v.activeOldScale
+        ) return v.activeOverride;
+        if (kind == DomainKind.Exit && v.exitChanged && generation == v.exitOldGeneration && scale == v.exitOldScale)
+            return v.exitOverride;
+        return scaleSums[id][uint8(kind)][generation][scale];
+    }
+    function _endScale(
+        uint256 id,
+        DomainKind kind,
+        uint64 generation,
+        Projection memory v
+    ) internal view returns (uint64) {
+        Domain memory d = kind == DomainKind.Active ? v.tick.active : v.tick.exit;
+        if (generation == d.generation) return d.scale;
+        if (
+            kind == DomainKind.Active &&
+            v.activeChanged &&
+            generation == v.activeOldGeneration &&
+            v.tick.active.generation != generation
+        ) return v.activeOldScale;
+        if (
+            kind == DomainKind.Exit &&
+            v.exitChanged &&
+            generation == v.exitOldGeneration &&
+            v.tick.exit.generation != generation
+        ) return v.exitOldScale;
+        GenerationMeta memory m = generationMeta[id][uint8(kind)][generation];
+        if (!m.finalized) revert Invariant();
+        return m.finalScale;
+    }
+    function _sumField(ScaleSums memory s, uint8 stream) internal pure returns (uint256) {
+        if (stream == 0) return s.assetSum;
+        if (stream == 1) return s.yieldSum;
+        return s.quoteSum;
+    }
+    /// @dev Exact §9 recurrence: one floor, with the fractional remainder carried through every scale.
+    function _accrued(
+        uint256 id,
+        DomainKind kind,
+        Snapshot memory snap,
+        uint8 stream,
+        Projection memory v
+    ) internal view returns (uint256 gain) {
+        uint256 A = snap.initialPrincipalX36;
+        if (A == 0) return 0;
+        uint256 B = snap.P * PRINCIPAL_PRECISION;
+        if (A > B || B == 0) revert Invariant();
+        uint64 end = _endScale(id, kind, snap.generation, v);
+        if (end < snap.scale) revert Invariant();
+        uint256 span = Math.min(MAX_SCALE_SPAN, uint256(end - snap.scale));
+        uint256 first = _sumField(_scaleValue(id, kind, snap.generation, snap.scale, v), stream);
+        uint256 checkpoint =
+            stream == 0
+                ? snap.assetSum
+                : stream == 1
+                    ? snap.yieldSum
+                    : snap.quoteSum;
+        uint256 dS = first - checkpoint;
+        gain = Math.mulDiv(A, dS, B);
+        // The exact modular remainder is below B and fits one limb.
+        Uint512.Value memory R = Uint512.Value(0, mulmod(A, dS, B));
+        uint256 pow = 1;
+        for (uint256 i = 1; i <= span; ++i) {
+            pow *= SCALE_FACTOR;
+            dS = _sumField(_scaleValue(id, kind, snap.generation, snap.scale + uint64(i), v), stream);
+            uint256 whole = dS / pow;
+            uint256 frac = dS % pow;
+            uint256 wholeGain = Math.mulDiv(A, whole, B);
+            uint256 wholeRem = mulmod(A, whole, B);
+            Uint512.Value memory N = Uint512.add(Uint512.mulSmall(R, SCALE_FACTOR), Uint512.mul(wholeRem, pow));
+            N = Uint512.add(N, Uint512.mul(A, frac));
+            Uint512.Value memory D = Uint512.mul(B, pow);
+            uint256 carry;
+            if (Uint512.gte(N, D)) {
+                N = Uint512.sub(N, D);
+                ++carry;
+            }
+            if (Uint512.gte(N, D)) {
+                N = Uint512.sub(N, D);
+                ++carry;
+            }
+            gain += wholeGain + carry;
+            R = N;
+        }
+    }
+    function _principal(Snapshot memory s, Domain memory d) internal pure returns (uint256 amountX36) {
+        if (s.initialPrincipalX36 == 0 || s.generation != d.generation) return 0;
+        if (d.scale < s.scale || s.P == 0) revert Invariant();
+        amountX36 = Math.mulDiv(s.initialPrincipalX36, d.P, s.P);
+        uint256 diff = d.scale - s.scale;
+        for (uint256 i; i < diff && amountX36 != 0; ++i) amountX36 /= SCALE_FACTOR;
+    }
+    function _snapshot(Snapshot memory s, Domain memory d, uint256 principalX36) internal pure {
+        s.initialPrincipalX36 = principalX36;
+        s.generation = d.generation;
+        s.scale = d.scale;
+        s.P = d.P;
+        s.assetSum = d.assetSum;
+        s.yieldSum = d.yieldSum;
+        s.quoteSum = d.quoteSum;
+    }
+    function _snapshotStorage(Snapshot storage s, Domain storage d, uint256 principalX36) internal {
+        s.initialPrincipalX36 = principalX36;
+        s.generation = d.generation;
+        s.scale = d.scale;
+        s.P = d.P;
+        s.assetSum = d.assetSum;
+        s.yieldSum = d.yieldSum;
+        s.quoteSum = d.quoteSum;
+    }
+    function _syncProvider(
+        uint256 id,
+        ProviderPosition memory p,
+        Projection memory v
+    ) internal view returns (ProviderPosition memory) {
+        for (uint8 domain = 0; domain < 2; ++domain) {
+            Snapshot memory s = domain == 0 ? p.active : p.exit;
+            if (s.initialPrincipalX36 == 0) continue;
+            DomainKind kind = DomainKind(domain);
+            for (uint8 stream = 0; stream < 3; ++stream) {
+                if (domain == 0 && stream == 0) continue;
+                uint256 gain = _accrued(id, kind, s, stream, v);
+                if (domain == 0) {
+                    if (stream == 1) p.owedActiveYieldAsset += gain;
+                    else p.owedActiveQuote += gain;
+                } else {
+                    if (stream == 0) p.owedExitAsset += gain;
+                    else if (stream == 1) p.owedExitYieldAsset += gain;
+                    else p.owedExitQuote += gain;
+                }
+            }
+            Domain memory d = domain == 0 ? v.tick.active : v.tick.exit;
+            _snapshot(s, d, _principal(s, d));
+        }
+        return p;
+    }
+    function _sync(uint256 id, address owner) internal returns (ProviderPosition storage ps) {
+        Projection memory v;
+        v.tick = _ticks[id];
+        _providers[id][owner] = _syncProvider(id, _providers[id][owner], v);
+        return _providers[id][owner];
+    }
     function _addEarn(address owner, uint256 id) internal {
         if (_earnIndexPlusOne[owner][id] != 0) return;
         _userEarnTicks[owner].push(id);
         _earnIndexPlusOne[owner][id] = _userEarnTicks[owner].length;
     }
-
     function _pruneEarn(address owner, uint256 id) internal {
-        Provider storage p = _providers[id][owner];
+        ProviderPosition storage p = _providers[id][owner];
         if (
-            p.shares != 0 ||
-            p.exitShares != 0 ||
-            p.owedYieldAsset != 0 ||
-            p.owedSwapQuote != 0 ||
+            p.active.initialPrincipalX36 != 0 ||
+            p.exit.initialPrincipalX36 != 0 ||
+            p.owedActiveYieldAsset != 0 ||
+            p.owedActiveQuote != 0 ||
             p.owedExitAsset != 0 ||
             p.owedExitYieldAsset != 0 ||
             p.owedExitQuote != 0
@@ -534,116 +756,95 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         list.pop();
         delete _earnIndexPlusOne[owner][id];
     }
-
-    function _removeActive(uint256 positionId, address owner) internal {
-        uint256 slot = _activeIndexPlusOne[positionId];
-        uint256[] storage list = _userActivePositions[owner];
-        uint256 last = list[list.length - 1];
-        list[slot - 1] = last;
-        _activeIndexPlusOne[last] = slot;
-        list.pop();
-        delete _activeIndexPlusOne[positionId];
-    }
-
     function _page(uint256[] storage list, uint256 offset, uint256 limit) internal view returns (uint256[] memory out) {
         if (offset >= list.length) return new uint256[](0);
         uint256 n = Math.min(limit, list.length - offset);
         out = new uint256[](n);
         for (uint256 i; i < n; ++i) out[i] = list[offset + i];
     }
-
-    function getEarnPositions(address user, uint256 offset, uint256 limit) external view returns (uint256[] memory) {
-        return _page(_userEarnTicks[user], offset, limit);
+    function getEarnPositions(address owner, uint256 offset, uint256 limit) external view returns (uint256[] memory) {
+        return _page(_userEarnTicks[owner], offset, limit);
     }
-    function getUsePositions(address user, uint256 offset, uint256 limit) external view returns (uint256[] memory) {
-        return _page(_userActivePositions[user], offset, limit);
+    function getUsePositions(address owner, uint256 offset, uint256 limit) external view returns (uint256[] memory) {
+        return _page(_userPositions[owner], offset, limit);
     }
     function getPosition(uint256 id) external view returns (Position memory) {
-        return positions[id];
+        return _positions[id];
     }
 
     function _settleOne(uint256 id, Tick storage t) internal {
         if (t.settleCursor == t.nextPositionSeq) return;
         uint256 positionId = tickPositionId[id][t.settleCursor];
-        Position storage p = positions[positionId];
+        Position storage p = _positions[positionId];
         if (p.status == Status.ACTIVE) {
             if (block.timestamp < p.maturity) return;
             _close(positionId, p, t);
         }
         t.settleCursor += 1;
     }
-
     function settle(uint256 id) external nonReentrant {
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
     }
 
-    function supply(uint256 id, uint256 assetAmount, address referrer) external nonReentrant returns (uint256 minted) {
+    function supply(uint256 id, uint256 assetAmount, address referrer) external nonReentrant {
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
         if (assetAmount == 0) revert InvalidInput();
-        _sync(id, msg.sender);
-        Provider storage p = _providers[id][msg.sender];
-        uint256 ca = _activePrincipal(t);
-        if ((ca == 0) != (t.totalShares == 0)) revert Invariant();
-        _checkMintInput(assetAmount, t.totalShares);
-        minted = ca == 0 ? assetAmount : Math.mulDiv(assetAmount, t.totalShares, ca);
-        _checkShareCapacity(minted, t.totalShares);
+        _bound(assetAmount);
+        uint256 ca = t.availableSupply + t.workingSupply - t.exitWorking;
+        _bound(ca + assetAmount);
+        ProviderPosition storage p = _sync(id, msg.sender);
+        uint256 principalX36 = p.active.initialPrincipalX36 + assetAmount * PRINCIPAL_PRECISION;
+        if (principalX36 > MAX_ACCOUNTING_AMOUNT * PRINCIPAL_PRECISION) revert InvalidInput();
         _pull(IERC20(t.asset), msg.sender, assetAmount);
         t.availableSupply += assetAmount;
-        t.totalShares += minted;
-        p.shares += minted;
+        _snapshotStorage(p.active, t.active, principalX36);
         p.lastSupplyBlock = block.number;
         _addEarn(msg.sender, id);
         _checkAsset(id, t);
-        emit Supplied(id, msg.sender, assetAmount, minted, referrer);
+        emit Supplied(id, msg.sender, assetAmount, referrer);
     }
-
-    function withdraw(uint256 id, uint256 sharesToWithdraw) external nonReentrant returns (WithdrawPreview memory q) {
+    function _withdrawNumbers(
+        Tick memory t,
+        uint256 principalX36,
+        uint256 requested
+    ) internal pure returns (WithdrawPreview memory q) {
+        if (requested == 0) revert InvalidInput();
+        q.providerPrincipal = principalX36 / PRINCIPAL_PRECISION;
+        q.principalAmount = Math.min(requested, q.providerPrincipal);
+        if (q.principalAmount == 0) revert InvalidInput();
+        uint256 ca = _activePrincipal(t);
+        if (ca == 0) revert Invariant();
+        q.availableAssetOut = Math.mulDiv(q.principalAmount, t.availableSupply, ca);
+        q.workingToExit = q.principalAmount - q.availableAssetOut;
+        if (q.workingToExit > t.workingSupply - t.exitWorking) revert Invariant();
+        _bound(t.exitWorking + q.workingToExit);
+        q.remainingActivePrincipal = (principalX36 - q.principalAmount * PRINCIPAL_PRECISION) / PRINCIPAL_PRECISION;
+    }
+    function withdraw(uint256 id, uint256 principalAmount) external nonReentrant returns (WithdrawPreview memory q) {
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
-        _sync(id, msg.sender);
-        Provider storage p = _providers[id][msg.sender];
-        if (sharesToWithdraw == 0 || sharesToWithdraw > p.shares) revert InvalidInput();
+        ProviderPosition storage p = _sync(id, msg.sender);
         if (block.number <= p.lastSupplyBlock) revert Cooldown();
-        uint256 ca = _activePrincipal(t);
-        uint256 s = t.totalShares;
-        if (ca == 0 || s == 0) revert Invariant();
-        q.sharesToWithdraw = sharesToWithdraw;
-        q.principalClaim = Math.mulDiv(sharesToWithdraw, ca, s);
-        if (q.principalClaim == 0 && sharesToWithdraw != p.shares) revert InvalidInput();
-        q.availableAssetOut = Math.mulDiv(sharesToWithdraw, t.availableSupply, s);
-        q.workingToExit = q.principalClaim - q.availableAssetOut;
-        if (q.workingToExit > t.workingSupply - t.exitWorking) revert Invariant();
-        if (q.workingToExit != 0) {
-            _checkMintInput(q.workingToExit, t.totalExitShares);
-            q.exitSharesMinted =
-                t.exitWorking == 0 ? q.workingToExit : Math.mulDiv(q.workingToExit, t.totalExitShares, t.exitWorking);
-            _checkShareCapacity(q.exitSharesMinted, t.totalExitShares);
-            t.exitWorking += q.workingToExit;
-            t.totalExitShares += q.exitSharesMinted;
-            p.exitShares += q.exitSharesMinted;
-        }
+        Tick memory tm = t;
+        q = _withdrawNumbers(tm, p.active.initialPrincipalX36, principalAmount);
         t.availableSupply -= q.availableAssetOut;
-        t.totalShares -= sharesToWithdraw;
-        p.shares -= sharesToWithdraw;
-        q.remainingActiveShares = p.shares;
-        q.remainingExitShares = p.exitShares;
-        if ((_activePrincipal(t) == 0) != (t.totalShares == 0)) revert Invariant();
+        t.exitWorking += q.workingToExit;
+        _snapshotStorage(p.active, t.active, p.active.initialPrincipalX36 - q.principalAmount * PRINCIPAL_PRECISION);
+        if (q.workingToExit != 0) {
+            uint256 exitX36 = p.exit.initialPrincipalX36 + q.workingToExit * PRINCIPAL_PRECISION;
+            if (exitX36 > MAX_ACCOUNTING_AMOUNT * PRINCIPAL_PRECISION) revert InvalidInput();
+            _snapshotStorage(p.exit, t.exit, exitX36);
+        }
+        if (t.availableSupply + t.workingSupply == t.exitWorking)
+            _deplete(id, DomainKind.Active, t.active, _activePrincipal(tm), 0);
+        q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
         _push(IERC20(t.asset), msg.sender, q.availableAssetOut);
         _pruneEarn(msg.sender, id);
         _checkAsset(id, t);
-        emit Withdrawn(
-            id,
-            msg.sender,
-            sharesToWithdraw,
-            q.principalClaim,
-            q.availableAssetOut,
-            q.workingToExit,
-            q.exitSharesMinted
-        );
+        emit Withdrawn(id, msg.sender, q.principalAmount, q.availableAssetOut, q.workingToExit);
     }
-
     function use(
         uint256 id,
         uint256 assetAmount,
@@ -654,30 +855,29 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
         if (block.timestamp > deadline) revert Expired();
-        SwapPreview memory q = _swapPreview(t, assetAmount);
-        uint256 fullTermYieldAsset = _fullTermYield(t, assetAmount);
-        _checkRepayCapacity(assetAmount, fullTermYieldAsset);
-        if (fullTermYieldAsset > maxFullTermYieldAsset) revert Slippage();
-        uint256 maturity = block.timestamp + uint256(t.durationDays) * 1 days;
-        positionId = nextPositionId;
-        nextPositionId = positionId + 1;
-        uint64 seq = t.nextPositionSeq;
-        t.nextPositionSeq = seq + 1;
+        Tick memory tm = t;
+        SwapPreview memory q = _swapPreview(tm, assetAmount);
+        uint256 fullYield = _fullTermYield(tm, assetAmount);
+        if (fullYield > maxFullTermYieldAsset) revert Slippage();
+        uint256 maturity = _maturity(tm);
+        // Full precision mulDiv makes every 1..termSeconds elapsed quote representable.
+        if (assetAmount > type(uint256).max - fullYield) revert InvalidInput();
+        positionId = nextPositionId++;
+        uint64 seq = t.nextPositionSeq++;
         tickPositionId[id][seq] = positionId;
-        positions[positionId] = Position(
+        _positions[positionId] = Position(
             id,
             seq,
             msg.sender,
             assetAmount,
             q.quotePrincipal,
-            fullTermYieldAsset,
+            fullYield,
             q.swapFee,
             block.timestamp,
             maturity,
             Status.ACTIVE
         );
-        _userActivePositions[msg.sender].push(positionId);
-        _activeIndexPlusOne[positionId] = _userActivePositions[msg.sender].length;
+        _userPositions[msg.sender].push(positionId);
         t.availableSupply -= assetAmount;
         t.workingSupply += assetAmount;
         t.quoteEscrow += q.quotePrincipal;
@@ -692,15 +892,14 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             msg.sender,
             assetAmount,
             q.quotePrincipal,
-            fullTermYieldAsset,
+            fullYield,
             q.swapFee,
             block.timestamp,
             maturity,
             referrer
         );
     }
-
-    function _repayPreview(Position storage p, Tick memory t) internal view returns (RepayPreview memory q) {
+    function _repayPreview(Position memory p, Tick memory t) internal view returns (RepayPreview memory q) {
         if (p.status != Status.ACTIVE || block.timestamp >= p.maturity) revert InvalidState();
         q.assetPrincipal = p.assetAmount;
         uint256 elapsed = block.timestamp - p.openedAt;
@@ -711,45 +910,40 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             Math.Rounding.Ceil
         );
         if (q.grossYieldAsset == 0 || q.grossYieldAsset > p.fullTermYieldAsset) revert Invariant();
+        _bound(q.grossYieldAsset);
         q.yieldFeeAsset = Math.mulDiv(q.grossYieldAsset, PROTOCOL_FEE_BPS, BPS);
         q.totalAssetIn = q.assetPrincipal + q.grossYieldAsset;
         q.exitFill = Math.min(p.assetAmount, t.exitWorking);
         q.activeReturn = p.assetAmount - q.exitFill;
-        uint256 netYieldAsset = q.grossYieldAsset - q.yieldFeeAsset;
-        q.exitYieldAsset = Math.mulDiv(netYieldAsset, q.exitFill, p.assetAmount);
-        q.activeYieldAsset = netYieldAsset - q.exitYieldAsset;
+        uint256 netYield = q.grossYieldAsset - q.yieldFeeAsset;
+        q.exitYieldAsset = Math.mulDiv(netYield, q.exitFill, p.assetAmount);
+        q.activeYieldAsset = netYield - q.exitYieldAsset;
         q.quotePrincipalUnlocked = p.quotePrincipal;
     }
-
     function repay(uint256 positionId, uint256 maxYieldAsset) external nonReentrant returns (RepayPreview memory q) {
-        Position storage p = positions[positionId];
+        Position storage p = _positions[positionId];
         if (p.status != Status.ACTIVE) revert InvalidState();
         Tick storage t = _ticks[p.tickId];
         if (p.tickSeq != t.settleCursor) _settleOne(p.tickId, t);
         if (p.user != msg.sender) revert Unauthorized();
-        q = _repayPreview(p, t);
+        Tick memory tm = t;
+        Position memory pm = p;
+        q = _repayPreview(pm, tm);
         if (q.grossYieldAsset > maxYieldAsset) revert Slippage();
+        uint256 oldExit = t.exitWorking;
+        uint256 oldActive = _activePrincipal(tm);
         _pull(IERC20(t.asset), msg.sender, q.totalAssetIn);
+        if (q.exitFill != 0) _fund(t.exit, oldExit, q.exitFill, q.exitYieldAsset, 0);
+        if (q.activeYieldAsset != 0) _fund(t.active, oldActive, 0, q.activeYieldAsset, 0);
         t.workingSupply -= p.assetAmount;
         t.exitWorking -= q.exitFill;
         t.availableSupply += q.activeReturn;
         t.exitAssetReserve += q.exitFill;
         t.yieldAssetReserve += q.grossYieldAsset - q.yieldFeeAsset;
         t.quoteEscrow -= p.quotePrincipal;
-        if (q.exitFill != 0) {
-            if (t.totalExitShares == 0) revert Invariant();
-            t.exitAssetGrowthX128 += _growth(q.exitFill, t.totalExitShares);
-        }
-        if (q.exitYieldAsset != 0) t.exitYieldAssetGrowthX128 += _growth(q.exitYieldAsset, t.totalExitShares);
-        if (q.activeYieldAsset != 0) {
-            if (t.totalShares == 0) revert Invariant();
-            t.yieldAssetGrowthX128 += _growth(q.activeYieldAsset, t.totalShares);
-        }
+        if (q.exitFill != 0) _deplete(p.tickId, DomainKind.Exit, t.exit, oldExit, t.exitWorking);
         p.status = Status.REPAID;
-        _removeActive(positionId, p.user);
         if (p.tickSeq == t.settleCursor) t.settleCursor += 1;
-        _finalizeExit(p.tickId, t);
-        _finalizeActive(p.tickId, t);
         _push(IERC20(t.asset), FEE_TO, q.yieldFeeAsset);
         _push(IERC20(t.quote), msg.sender, p.quotePrincipal);
         _checkAsset(p.tickId, t);
@@ -769,30 +963,50 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             q.activeYieldAsset
         );
     }
-
+    function swap(
+        uint256 id,
+        uint256 assetAmount,
+        uint256 maxQuoteIn,
+        uint256 deadline,
+        address referrer
+    ) external nonReentrant returns (SwapPreview memory q) {
+        Tick storage t = _requireTick(id);
+        _settleOne(id, t);
+        if (block.timestamp > deadline) revert Expired();
+        Tick memory tm = t;
+        q = _swapPreview(tm, assetAmount);
+        if (q.quotePrincipal > maxQuoteIn) revert Slippage();
+        uint256 oldActive = _activePrincipal(tm);
+        _pull(IERC20(t.quote), msg.sender, q.quotePrincipal);
+        _fund(t.active, oldActive, 0, 0, q.providerSwapProceeds);
+        t.availableSupply -= assetAmount;
+        t.activeQuoteReserve += q.providerSwapProceeds;
+        _deplete(id, DomainKind.Active, t.active, oldActive, oldActive - assetAmount);
+        _push(IERC20(t.quote), FEE_TO, q.swapFee);
+        _push(IERC20(t.asset), msg.sender, assetAmount);
+        _checkAsset(id, t);
+        _checkQuote(id, t);
+        emit ImmediateSwap(id, msg.sender, assetAmount, q.quotePrincipal, q.swapFee, q.providerSwapProceeds, referrer);
+    }
     function _close(uint256 positionId, Position storage p, Tick storage t) internal {
         if (p.status != Status.ACTIVE || block.timestamp < p.maturity) revert InvalidState();
         uint256 proceeds = p.quotePrincipal - p.closeFee;
         uint256 exitFill = Math.min(p.assetAmount, t.exitWorking);
+        uint256 activeFill = p.assetAmount - exitFill;
         uint256 exitQuote = Math.mulDiv(proceeds, exitFill, p.assetAmount);
         uint256 activeQuote = proceeds - exitQuote;
+        uint256 oldExit = t.exitWorking;
+        uint256 oldActive = t.availableSupply + t.workingSupply - oldExit;
+        if (exitFill != 0 && exitQuote != 0) _fund(t.exit, oldExit, 0, 0, exitQuote);
+        if (activeFill != 0 && activeQuote != 0) _fund(t.active, oldActive, 0, 0, activeQuote);
         t.workingSupply -= p.assetAmount;
         t.exitWorking -= exitFill;
         t.quoteEscrow -= p.quotePrincipal;
         t.exitQuoteReserve += exitQuote;
         t.activeQuoteReserve += activeQuote;
-        if (exitQuote != 0) {
-            if (t.totalExitShares == 0) revert Invariant();
-            t.exitQuoteGrowthX128 += _growth(exitQuote, t.totalExitShares);
-        }
-        if (activeQuote != 0) {
-            if (t.totalShares == 0) revert Invariant();
-            t.swapQuoteGrowthX128 += _growth(activeQuote, t.totalShares);
-        }
+        if (exitFill != 0) _deplete(p.tickId, DomainKind.Exit, t.exit, oldExit, oldExit - exitFill);
+        if (activeFill != 0) _deplete(p.tickId, DomainKind.Active, t.active, oldActive, oldActive - activeFill);
         p.status = Status.CLOSED;
-        _removeActive(positionId, p.user);
-        _finalizeExit(p.tickId, t);
-        _finalizeActive(p.tickId, t);
         _push(IERC20(t.quote), FEE_TO, p.closeFee);
         _checkAsset(p.tickId, t);
         _checkQuote(p.tickId, t);
@@ -811,73 +1025,38 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             activeQuote
         );
     }
-
     function close(uint256 positionId) external nonReentrant {
-        Position storage p = positions[positionId];
+        Position storage p = _positions[positionId];
         if (p.status != Status.ACTIVE) revert InvalidState();
         Tick storage t = _ticks[p.tickId];
         if (p.tickSeq != t.settleCursor) _settleOne(p.tickId, t);
         _close(positionId, p, t);
         if (p.tickSeq == t.settleCursor) t.settleCursor += 1;
     }
-
-    function swap(
-        uint256 id,
-        uint256 assetAmount,
-        uint256 maxQuoteIn,
-        uint256 deadline,
-        address referrer
-    ) external nonReentrant returns (SwapPreview memory q) {
-        Tick storage t = _requireTick(id);
-        _settleOne(id, t);
-        if (block.timestamp > deadline) revert Expired();
-        q = _swapPreview(t, assetAmount);
-        if (q.quotePrincipal > maxQuoteIn) revert Slippage();
-        _pull(IERC20(t.quote), msg.sender, q.quotePrincipal);
-        t.availableSupply -= assetAmount;
-        t.activeQuoteReserve += q.providerSwapProceeds;
-        t.swapQuoteGrowthX128 += _growth(q.providerSwapProceeds, t.totalShares);
-        _finalizeActive(id, t);
-        _push(IERC20(t.asset), msg.sender, assetAmount);
-        _push(IERC20(t.quote), FEE_TO, q.swapFee);
-        _checkAsset(id, t);
-        _checkQuote(id, t);
-        emit ImmediateSwap(
-            id,
-            msg.sender,
-            assetAmount,
-            q.quotePrincipal,
-            q.swapFee,
-            q.providerSwapProceeds,
-            referrer
-        );
-    }
-
-    function _collectPreview(Provider memory p) internal pure returns (CollectPreview memory q) {
+    function _collectPreview(ProviderPosition memory p) internal pure returns (CollectPreview memory q) {
         q.exitAsset = p.owedExitAsset;
-        q.activeYieldAsset = p.owedYieldAsset;
+        q.activeYieldAsset = p.owedActiveYieldAsset;
         q.exitYieldAsset = p.owedExitYieldAsset;
         q.exitQuote = p.owedExitQuote;
-        q.swapQuote = p.owedSwapQuote;
+        q.activeQuote = p.owedActiveQuote;
         q.totalAssetOut = q.exitAsset + q.activeYieldAsset + q.exitYieldAsset;
-        q.totalQuoteOut = q.exitQuote + q.swapQuote;
+        q.totalQuoteOut = q.exitQuote + q.activeQuote;
+        q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
     }
-
     function collect(uint256 id) external nonReentrant returns (CollectPreview memory q) {
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
-        _sync(id, msg.sender);
-        Provider storage p = _providers[id][msg.sender];
+        ProviderPosition storage p = _sync(id, msg.sender);
         q = _collectPreview(p);
         t.exitAssetReserve -= q.exitAsset;
         t.yieldAssetReserve -= q.activeYieldAsset + q.exitYieldAsset;
         t.exitQuoteReserve -= q.exitQuote;
-        t.activeQuoteReserve -= q.swapQuote;
+        t.activeQuoteReserve -= q.activeQuote;
         p.owedExitAsset = 0;
-        p.owedYieldAsset = 0;
+        p.owedActiveYieldAsset = 0;
         p.owedExitYieldAsset = 0;
         p.owedExitQuote = 0;
-        p.owedSwapQuote = 0;
+        p.owedActiveQuote = 0;
         _pruneEarn(msg.sender, id);
         _push(IERC20(t.asset), msg.sender, q.totalAssetOut);
         _push(IERC20(t.quote), msg.sender, q.totalQuoteOut);
@@ -890,190 +1069,136 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             q.activeYieldAsset,
             q.exitYieldAsset,
             q.exitQuote,
-            q.swapQuote,
+            q.activeQuote,
             q.totalAssetOut,
             q.totalQuoteOut
         );
     }
 
-    function _projectTick(uint256 id, bool skipSettle) internal view returns (ProjectedTick memory v) {
+    function _projectTick(uint256 id, bool skipSettle) internal view returns (Projection memory v) {
         v.tick = _ticks[id];
         Tick memory t = v.tick;
         if (skipSettle || t.settleCursor == t.nextPositionSeq) return v;
-        Position storage p = positions[tickPositionId[id][t.settleCursor]];
+        Position storage p = _positions[tickPositionId[id][t.settleCursor]];
         if (p.status != Status.ACTIVE) {
-            t.settleCursor += 1;
-            v.tick = t;
+            v.tick.settleCursor += 1;
             return v;
         }
         if (block.timestamp < p.maturity) return v;
         uint256 proceeds = p.quotePrincipal - p.closeFee;
         uint256 exitFill = Math.min(p.assetAmount, t.exitWorking);
+        uint256 activeFill = p.assetAmount - exitFill;
         uint256 exitQuote = Math.mulDiv(proceeds, exitFill, p.assetAmount);
         uint256 activeQuote = proceeds - exitQuote;
-        t.workingSupply -= p.assetAmount;
-        t.exitWorking -= exitFill;
-        t.quoteEscrow -= p.quotePrincipal;
-        t.exitQuoteReserve += exitQuote;
-        t.activeQuoteReserve += activeQuote;
-        if (exitQuote != 0) t.exitQuoteGrowthX128 += _growth(exitQuote, t.totalExitShares);
-        if (activeQuote != 0) t.swapQuoteGrowthX128 += _growth(activeQuote, t.totalShares);
-        if (t.exitWorking == 0 && t.totalExitShares != 0) {
-            v.exitFinal = FinalExit(t.exitAssetGrowthX128, t.exitYieldAssetGrowthX128, t.exitQuoteGrowthX128);
-            v.exitFinalized = true;
-            t.totalExitShares = 0;
-            t.exitGeneration += 1;
-            t.exitAssetGrowthX128 = 0;
-            t.exitYieldAssetGrowthX128 = 0;
-            t.exitQuoteGrowthX128 = 0;
-        }
-        if (t.availableSupply + t.workingSupply - t.exitWorking == 0 && t.totalShares != 0) {
-            v.activeFinal = FinalActive(t.yieldAssetGrowthX128, t.swapQuoteGrowthX128);
-            v.activeFinalized = true;
-            t.totalShares = 0;
-            t.generation += 1;
-            t.yieldAssetGrowthX128 = 0;
-            t.swapQuoteGrowthX128 = 0;
-        }
-        t.settleCursor += 1;
-        v.tick = t;
+        uint256 oldExit = t.exitWorking;
+        uint256 oldActive = _activePrincipal(t);
+        if (exitFill != 0 && exitQuote != 0) _fundMemory(v.tick.exit, oldExit, 0, 0, exitQuote);
+        if (activeFill != 0 && activeQuote != 0) _fundMemory(v.tick.active, oldActive, 0, 0, activeQuote);
+        v.tick.workingSupply -= p.assetAmount;
+        v.tick.exitWorking -= exitFill;
+        v.tick.quoteEscrow -= p.quotePrincipal;
+        v.tick.exitQuoteReserve += exitQuote;
+        v.tick.activeQuoteReserve += activeQuote;
+        if (exitFill != 0)
+            (v.exitChanged, v.exitOverride, v.exitOldGeneration, v.exitOldScale) = _depleteMemory(
+                v.tick.exit,
+                oldExit,
+                oldExit - exitFill
+            );
+        if (activeFill != 0)
+            (v.activeChanged, v.activeOverride, v.activeOldGeneration, v.activeOldScale) = _depleteMemory(
+                v.tick.active,
+                oldActive,
+                oldActive - activeFill
+            );
+        v.tick.settleCursor += 1;
     }
-
     function _previewProvider(
         uint256 id,
         address owner,
-        ProjectedTick memory v
-    ) internal view returns (Provider memory p) {
-        Tick memory t = v.tick;
-        p = _providers[id][owner];
-        if (p.generation != t.generation) {
-            FinalActive memory f =
-                v.activeFinalized && p.generation + 1 == t.generation ? v.activeFinal : finalActive[id][p.generation];
-            p.owedYieldAsset += Math.mulDiv(p.shares, f.yieldGrowth - p.yieldAssetGrowthLastX128, Q128);
-            p.owedSwapQuote += Math.mulDiv(p.shares, f.quoteGrowth - p.swapQuoteGrowthLastX128, Q128);
-            p.shares = 0;
-            p.generation = t.generation;
-            p.yieldAssetGrowthLastX128 = 0;
-            p.swapQuoteGrowthLastX128 = 0;
-        }
-        p.owedYieldAsset += Math.mulDiv(p.shares, t.yieldAssetGrowthX128 - p.yieldAssetGrowthLastX128, Q128);
-        p.owedSwapQuote += Math.mulDiv(p.shares, t.swapQuoteGrowthX128 - p.swapQuoteGrowthLastX128, Q128);
-        p.yieldAssetGrowthLastX128 = t.yieldAssetGrowthX128;
-        p.swapQuoteGrowthLastX128 = t.swapQuoteGrowthX128;
-        if (p.exitGeneration != t.exitGeneration) {
-            FinalExit memory f =
-                v.exitFinalized && p.exitGeneration + 1 == t.exitGeneration
-                    ? v.exitFinal
-                    : finalExit[id][p.exitGeneration];
-            p.owedExitAsset += Math.mulDiv(p.exitShares, f.assetGrowth - p.exitAssetGrowthLastX128, Q128);
-            p.owedExitYieldAsset += Math.mulDiv(p.exitShares, f.yieldGrowth - p.exitYieldAssetGrowthLastX128, Q128);
-            p.owedExitQuote += Math.mulDiv(p.exitShares, f.quoteGrowth - p.exitQuoteGrowthLastX128, Q128);
-            p.exitShares = 0;
-            p.exitGeneration = t.exitGeneration;
-            p.exitAssetGrowthLastX128 = 0;
-            p.exitYieldAssetGrowthLastX128 = 0;
-            p.exitQuoteGrowthLastX128 = 0;
-        }
-        p.owedExitAsset += Math.mulDiv(p.exitShares, t.exitAssetGrowthX128 - p.exitAssetGrowthLastX128, Q128);
-        p.owedExitYieldAsset += Math.mulDiv(
-            p.exitShares,
-            t.exitYieldAssetGrowthX128 - p.exitYieldAssetGrowthLastX128,
-            Q128
-        );
-        p.owedExitQuote += Math.mulDiv(p.exitShares, t.exitQuoteGrowthX128 - p.exitQuoteGrowthLastX128, Q128);
+        Projection memory v
+    ) internal view returns (ProviderPosition memory) {
+        return _syncProvider(id, _providers[id][owner], v);
     }
-
-    function _previewProvider(uint256 id, address owner) internal view returns (Provider memory) {
-        ProjectedTick memory v;
+    function getEarnPosition(address owner, uint256 id) external view returns (EarnPositionView memory q) {
+        _requireTick(id);
+        Projection memory v;
         v.tick = _ticks[id];
-        return _previewProvider(id, owner, v);
+        ProviderPosition memory p = _previewProvider(id, owner, v);
+        return _earnPosition(v.tick, p);
     }
-
-    function getEarnPosition(address owner, uint256 id) external view returns (EarnPositionView memory v) {
-        _requireTick(id);
-        v.provider = _previewProvider(id, owner);
-        v.claimableActiveYieldAsset = v.provider.owedYieldAsset;
-        v.claimableExitAsset = v.provider.owedExitAsset;
-        v.claimableExitYieldAsset = v.provider.owedExitYieldAsset;
-        v.claimableSwapQuote = v.provider.owedSwapQuote;
-        v.claimableExitQuote = v.provider.owedExitQuote;
+    function _earnPosition(Tick memory t, ProviderPosition memory p) internal pure returns (EarnPositionView memory q) {
+        q.activePrincipal = p.active.initialPrincipalX36 / PRINCIPAL_PRECISION;
+        q.activePrincipalX36 = p.active.initialPrincipalX36;
+        q.exitPrincipalX36 = p.exit.initialPrincipalX36;
+        uint256 ca = _activePrincipal(t);
+        if (ca != 0) q.activeAvailable = Math.mulDiv(q.activePrincipal, t.availableSupply, ca);
+        q.activeWorking = q.activePrincipal - q.activeAvailable;
+        q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
+        q.claimableActiveYieldAsset = p.owedActiveYieldAsset;
+        q.claimableExitAsset = p.owedExitAsset;
+        q.claimableExitYieldAsset = p.owedExitYieldAsset;
+        q.claimableActiveQuote = p.owedActiveQuote;
+        q.claimableExitQuote = p.owedExitQuote;
     }
-
-    function previewSupply(uint256 id, uint256 assetAmount) external view returns (uint256 sharesMinted) {
+    struct SupplyPreview {
+        uint256 resultingActivePrincipal;
+        uint256 marketAvailable;
+    }
+    function previewSupply(uint256 id, uint256 assetAmount) external view returns (SupplyPreview memory q) {
         _requireTick(id);
-        Tick memory t = _projectTick(id, false).tick;
+        Projection memory v = _projectTick(id, false);
         if (assetAmount == 0) revert InvalidInput();
-        uint256 ca = t.availableSupply + t.workingSupply - t.exitWorking;
-        if ((ca == 0) != (t.totalShares == 0)) revert Invariant();
-        _checkMintInput(assetAmount, t.totalShares);
-        sharesMinted = ca == 0 ? assetAmount : Math.mulDiv(assetAmount, t.totalShares, ca);
-        _checkShareCapacity(sharesMinted, t.totalShares);
+        _bound(assetAmount);
+        _bound(_activePrincipal(v.tick) + assetAmount);
+        ProviderPosition memory p = _previewProvider(id, msg.sender, v);
+        q.resultingActivePrincipal =
+            (p.active.initialPrincipalX36 + assetAmount * PRINCIPAL_PRECISION) / PRINCIPAL_PRECISION;
+        q.marketAvailable = v.tick.availableSupply + assetAmount;
     }
-
     function previewWithdraw(
         uint256 id,
-        address supplier,
-        uint256 sharesToWithdraw
+        address owner,
+        uint256 principalAmount
     ) external view returns (WithdrawPreview memory q) {
         _requireTick(id);
-        ProjectedTick memory v = _projectTick(id, false);
-        Tick memory t = v.tick;
-        Provider memory p = _previewProvider(id, supplier, v);
-        uint256 ca = t.availableSupply + t.workingSupply - t.exitWorking;
-        if (sharesToWithdraw == 0 || sharesToWithdraw > p.shares || ca == 0) revert InvalidInput();
+        Projection memory v = _projectTick(id, false);
+        ProviderPosition memory p = _previewProvider(id, owner, v);
         if (block.number <= p.lastSupplyBlock) revert Cooldown();
-        q.sharesToWithdraw = sharesToWithdraw;
-        q.principalClaim = Math.mulDiv(sharesToWithdraw, ca, t.totalShares);
-        if (q.principalClaim == 0 && sharesToWithdraw != p.shares) revert InvalidInput();
-        q.availableAssetOut = Math.mulDiv(sharesToWithdraw, t.availableSupply, t.totalShares);
-        q.workingToExit = q.principalClaim - q.availableAssetOut;
-        if (q.workingToExit != 0) _checkMintInput(q.workingToExit, t.totalExitShares);
-        q.exitSharesMinted =
-            q.workingToExit == 0
-                ? 0
-                : t.exitWorking == 0
-                    ? q.workingToExit
-                    : Math.mulDiv(q.workingToExit, t.totalExitShares, t.exitWorking);
-        if (q.workingToExit != 0) _checkShareCapacity(q.exitSharesMinted, t.totalExitShares);
-        q.remainingActiveShares = p.shares - sharesToWithdraw;
-        q.remainingExitShares = p.exitShares + q.exitSharesMinted;
+        q = _withdrawNumbers(v.tick, p.active.initialPrincipalX36, principalAmount);
+        q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION + q.workingToExit;
     }
-
     function previewUse(uint256 id, uint256 amount) external view returns (UsePreview memory q) {
         _requireTick(id);
         Tick memory t = _projectTick(id, false).tick;
         SwapPreview memory s = _swapPreview(t, amount);
-        uint256 fullTermYieldAsset = _fullTermYield(t, amount);
-        _checkRepayCapacity(amount, fullTermYieldAsset);
         uint256 wa = t.workingSupply - t.exitWorking;
-        uint256 ca = t.availableSupply + wa;
-        q.matchAmount = amount;
+        uint256 ca = _activePrincipal(t);
+        q.assetAmount = amount;
         q.quotePrincipal = s.quotePrincipal;
-        q.activeWorkingShareBefore = Math.mulDiv(wa, Q128, ca);
-        q.activeWorkingShareAfter = Math.mulDiv(wa + amount, Q128, ca);
-        q.fullTermYieldAsset = fullTermYieldAsset;
+        q.activeUtilizationBeforeX128 = Math.mulDiv(wa, Q128, ca);
+        q.activeUtilizationAfterX128 = Math.mulDiv(wa + amount, Q128, ca);
+        q.fullTermYieldAsset = _fullTermYield(t, amount);
         q.closeFee = s.swapFee;
-        uint256 u2 = Math.mulDiv(q.activeWorkingShareBefore, q.activeWorkingShareBefore, Q128);
-        uint256 u3 = Math.mulDiv(u2, q.activeWorkingShareBefore, Q128);
+        uint256 u2 = Math.mulDiv(q.activeUtilizationBeforeX128, q.activeUtilizationBeforeX128, Q128);
+        uint256 u3 = Math.mulDiv(u2, q.activeUtilizationBeforeX128, Q128);
         q.dailyRateX128 = Math.mulDiv(MIN_DAILY_BPS * Q128 + (MAX_DAILY_BPS - MIN_DAILY_BPS) * u3, 1, BPS);
-        q.termRateX128 = q.dailyRateX128 * t.durationDays;
-        q.maturity = block.timestamp + uint256(t.durationDays) * 1 days;
+        q.maturity = _maturity(t);
     }
-
     function previewRepay(uint256 positionId) external view returns (RepayPreview memory) {
-        Position storage p = positions[positionId];
+        Position memory p = _positions[positionId];
         if (p.status != Status.ACTIVE) revert InvalidState();
-        return _repayPreview(p, _projectTick(p.tickId, p.tickSeq == _ticks[p.tickId].settleCursor).tick);
+        Tick storage t = _ticks[p.tickId];
+        Projection memory v = _projectTick(p.tickId, p.tickSeq == t.settleCursor);
+        return _repayPreview(p, v.tick);
     }
-
     function previewSwap(uint256 id, uint256 amount) external view returns (SwapPreview memory) {
         _requireTick(id);
         return _swapPreview(_projectTick(id, false).tick, amount);
     }
-
-    function previewCollect(uint256 id, address supplier) external view returns (CollectPreview memory) {
+    function previewCollect(uint256 id, address owner) external view returns (CollectPreview memory) {
         _requireTick(id);
-        ProjectedTick memory v = _projectTick(id, false);
-        return _collectPreview(_previewProvider(id, supplier, v));
+        Projection memory v = _projectTick(id, false);
+        return _collectPreview(_previewProvider(id, owner, v));
     }
 }
