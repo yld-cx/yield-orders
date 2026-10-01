@@ -6,7 +6,7 @@ import {MockERC20} from "./MockERC20.sol";
 
 interface Vm {
     function prank(address) external;
-    function roll(uint256) external;
+    function warp(uint256) external;
 }
 
 contract YieldOrdersTest {
@@ -25,18 +25,29 @@ contract YieldOrdersTest {
         quote = new MockERC20("Quote", "QUO", 18);
         uint256 pairId = protocol.createPair(address(asset), address(quote));
         tickId = protocol.createTick(pairId, address(asset) < address(quote) ? 0 : 1, 0, 1);
-        asset.mint(A, 1e24); asset.mint(B, 1e24); quote.mint(TAKER, 1e24);
-        vm.prank(A); asset.approve(address(protocol), type(uint256).max);
-        vm.prank(B); asset.approve(address(protocol), type(uint256).max);
-        vm.prank(TAKER); quote.approve(address(protocol), type(uint256).max);
+        asset.mint(A, 1e24);
+        asset.mint(B, 1e24);
+        quote.mint(TAKER, 1e24);
+        vm.prank(A);
+        asset.approve(address(protocol), type(uint256).max);
+        vm.prank(B);
+        asset.approve(address(protocol), type(uint256).max);
+        vm.prank(TAKER);
+        quote.approve(address(protocol), type(uint256).max);
     }
 
     function testFractionalPrincipalSurvives() public {
-        vm.prank(A); protocol.supply(tickId, 1, address(0));
-        vm.prank(B); protocol.supply(tickId, 1, address(0));
-        vm.prank(TAKER); protocol.swap(tickId, 1, 1, block.timestamp + 1, address(0));
+        vm.prank(A);
+        protocol.supply(tickId, 1, address(0));
+        vm.prank(B);
+        protocol.supply(tickId, 1, address(0));
+        vm.prank(TAKER);
+        protocol.swap(tickId, 1, 1, block.timestamp + 1, address(0));
         YieldOrders.TickView memory t = protocol.getTick(tickId);
-        require(t.activePrincipal == 1 && protocol.getDomain(tickId, YieldOrders.DomainKind.Active).P == 5e38, "product");
+        require(
+            t.activePrincipal == 1 && protocol.getDomain(tickId, YieldOrders.DomainKind.Active).P == 5e38,
+            "product"
+        );
         YieldOrders.EarnPositionView memory a = protocol.getEarnPosition(A, tickId);
         YieldOrders.EarnPositionView memory b = protocol.getEarnPosition(B, tickId);
         require(a.activePrincipal == 0 && b.activePrincipal == 0, "raw floor");
@@ -45,12 +56,19 @@ contract YieldOrdersTest {
     }
 
     function testSupplyAndUseKeepProduct() public {
-        vm.prank(A); protocol.supply(tickId, 1000 ether, address(0));
-        vm.prank(TAKER); protocol.use(tickId, 100 ether, type(uint256).max, block.timestamp + 1, address(0));
+        vm.prank(A);
+        protocol.supply(tickId, 1000 ether, address(0));
+        vm.prank(TAKER);
+        protocol.use(tickId, 100 ether, type(uint256).max, block.timestamp + 1, address(0));
         YieldOrders.TickView memory t = protocol.getTick(tickId);
-        require(t.activePrincipal == 1000 ether && protocol.getDomain(tickId, YieldOrders.DomainKind.Active).P == protocol.P_PRECISION(), "principal and product");
-        vm.roll(block.number + 1);
-        vm.prank(A); YieldOrders.WithdrawPreview memory w = protocol.withdraw(tickId, 500 ether);
+        require(
+            t.activePrincipal == 1000 ether &&
+                protocol.getDomain(tickId, YieldOrders.DomainKind.Active).P == protocol.P_PRECISION(),
+            "principal and product"
+        );
+        vm.warp(block.timestamp + 1);
+        vm.prank(A);
+        YieldOrders.WithdrawPreview memory w = protocol.withdraw(tickId, 500 ether);
         require(w.availableAssetOut == 450 ether && w.workingToExit == 50 ether, "exit split");
         t = protocol.getTick(tickId);
         require(t.activePrincipal == 500 ether && t.exitWorking == 50 ether, "domains");

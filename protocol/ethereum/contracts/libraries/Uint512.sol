@@ -4,7 +4,10 @@ pragma solidity ^0.8.36;
 /// @dev Checked two-limb unsigned arithmetic for the bounded Product-Sum recurrence.
 library Uint512 {
     error Arithmetic512();
-    struct Value { uint256 hi; uint256 lo; }
+    struct Value {
+        uint256 hi;
+        uint256 lo;
+    }
 
     function mul(uint256 a, uint256 b) internal pure returns (Value memory z) {
         uint256 mm = mulmod(a, b, type(uint256).max);

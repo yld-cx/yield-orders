@@ -659,6 +659,18 @@
         "internalType": "uint256",
         "name": "workingToExit",
         "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "yieldAssetOut",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "forfeitedYield",
+        "type": "uint256"
       }
     ],
     "name": "Withdrawn",
@@ -962,6 +974,21 @@
             "internalType": "uint256",
             "name": "resolvingPrincipal",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingActiveYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingExitYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "vestingRemainingSeconds",
+            "type": "uint256"
           }
         ],
         "internalType": "struct YieldOrders.CollectPreview",
@@ -1190,6 +1217,31 @@
           {
             "internalType": "uint256",
             "name": "claimableExitQuote",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "timestamp",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "vestingElapsedSeconds",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "vestingDurationSeconds",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingActiveYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingExitYieldAsset",
             "type": "uint256"
           }
         ],
@@ -1557,6 +1609,21 @@
             "internalType": "uint256",
             "name": "resolvingPrincipal",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingActiveYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingExitYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "vestingRemainingSeconds",
+            "type": "uint256"
           }
         ],
         "internalType": "struct YieldOrders.CollectPreview",
@@ -1831,6 +1898,16 @@
           {
             "internalType": "uint256",
             "name": "resolvingPrincipal",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "yieldAssetOut",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "forfeitedYield",
             "type": "uint256"
           }
         ],
@@ -2186,6 +2263,16 @@
           {
             "internalType": "uint256",
             "name": "resolvingPrincipal",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "yieldAssetOut",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "forfeitedYield",
             "type": "uint256"
           }
         ],

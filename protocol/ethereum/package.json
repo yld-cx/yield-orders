@@ -27,6 +27,7 @@
     "README.md",
     "abi/YieldOrders.json",
     "contracts/YieldOrders.sol",
+    "contracts/libraries/ProductSumMath.sol",
     "contracts/libraries/TickMath.sol",
     "contracts/libraries/Uint512.sol"
   ],

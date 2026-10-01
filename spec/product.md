@@ -84,9 +84,11 @@ Resolving
 
 Claimable
 ├── Exit Asset
-├── Asset Yield
+├── currently collectible Asset Yield
 └── Quote proceeds
 ```
+
+Uncollected Yield may continue vesting over the Tick duration.
 
 Withdraw:
 
@@ -100,7 +102,7 @@ Collect:
 
 ```text
 resolved Exit Asset
-+ net Asset Yield
++ currently collectible net Asset Yield
 + active Swap/Close Quote
 + Exit Close Quote
 ```
@@ -284,7 +286,7 @@ Preferred wording:
 Yield when used and returned
 ```
 
-No guaranteed APY.
+No guaranteed APY. Every Supply (including a top-up) restarts Yield vesting for that provider's outstanding uncollected Yield. Show currently collectible Yield and the time to full vesting; Collect before additional Supply is optional.
 
 ---
 
@@ -449,7 +451,9 @@ In Use                  120 TOKEN-equivalent
 
 Claimable
 Exit Asset               40 TOKEN
-Earned Yield (net)        5.94 TOKEN
+Allocated Yield (net)     5.94 TOKEN
+Collectible Yield now      [preview] TOKEN
+Yield fully collectible    [time remaining]
 Exit Quote              960 USDC
 Swapped               6,000 USDC
 
@@ -479,13 +483,15 @@ Preview:
 ```text
 Withdraw                 50%
 
-Receive now             200 TOKEN
+Receive principal now   200 TOKEN
+Collectible Yield out   [preview] TOKEN
+Redistributed Yield     [preview] TOKEN
 Move to Resolving       300 TOKEN-equivalent
 ```
 
 Explanation:
 
-> Available liquidity is received now. Liquidity currently In Use moves to Resolving. Repay resolves it as Asset + Yield; Close resolves it as Quote.
+> Available liquidity and the vested Yield attributable to the withdrawn principal are received now. The uncollectible remainder is redistributed to other remaining Active providers, or `FEE_TO` if none are eligible. Liquidity currently In Use moves to Resolving; Repay resolves it as Asset + Yield, Close as Quote.
 
 For Max:
 
@@ -504,13 +510,13 @@ There is no share dust-burn UX.
 
 # 18. Collect
 
-Collect everything currently claimable:
+Collect everything currently claimable. Net Asset Yield becomes collectible linearly from the last Supply or Collect over the Tick duration; principal and Quote proceeds do not vest.
 
 ```text
 Asset:
 - Exit Asset principal
-- net active Asset Yield
-- net Exit Asset Yield
+- currently collectible net active Asset Yield
+- currently collectible net Exit Asset Yield
 
 Quote:
 - active Swap/Close proceeds
@@ -523,7 +529,7 @@ All Quote is already net of the 1% Swap/Close fee.
 
 Collect charges no fee.
 
-Collect may occur before Resolving is complete.
+Collect may occur before Resolving is complete. Each Collect resets the position timestamp and restarts vesting of the remaining uncollected Yield. Multiple Collects at the same timestamp release no additional Yield. Collect before a new Supply is optional; Supply always resets the timestamp.
 
 ---
 
@@ -536,7 +542,7 @@ Withdraw first
 Collect later
 ```
 
-Already-funded economics are not lost.
+Withdraw releases the currently collectible Yield attributable to withdrawn Active principal and redistributes its uncollectible remainder. Previously settled principal/Quote proceeds and outstanding Yield not attributable to withdrawn principal remain claimable according to the existing rules.
 
 After Max Withdraw:
 
@@ -561,7 +567,7 @@ Withdraw & Collect
 EVM:
 
 ```text
-Multicall
+Multicall (Withdraw first, then Collect)
 ```
 
 Solana:
@@ -570,7 +576,7 @@ Solana:
 atomic instruction composition where limits permit
 ```
 
-Semantics remain two canonical actions.
+Semantics remain two canonical actions. Collect resets the timestamp; collecting first and then withdrawing at the same blockchain timestamp will fail the withdrawal time check.
 
 ---
 
@@ -648,6 +654,7 @@ Supply preview:
 Asset supplied
 resulting provider Active principal
 market Available / In Use
+Yield vesting restarts
 ```
 
 Withdraw preview:
@@ -655,7 +662,9 @@ Withdraw preview:
 ```text
 current transferable provider Active principal
 requested principal
-Receive now
+Receive principal now
+Yield out now
+forfeited Yield redistributed / FEE_TO
 Move to Resolving
 remaining transferable Active principal
 resulting Resolving principal
@@ -694,8 +703,10 @@ Provider Net
 Collect:
 
 ```text
-Asset out
+Asset out (including currently collectible Yield)
 Quote out
+outstanding uncollected Yield
+remaining vesting time
 remaining Resolving
 ```
 
@@ -794,8 +805,8 @@ Review the updated amount.
 Part of your withdrawal is Resolving
 because that liquidity is currently In Use.
 
-Newly supplied liquidity cannot be
-withdrawn in the same block/slot.
+Supply or Collect restarts your timestamp.
+Withdraw requires blockchain time to advance.
 
 This position has matured and can no longer be Repaid.
 
@@ -864,7 +875,7 @@ Claimable
 8. Available portion is received immediately.
 9. In Use portion becomes Resolving.
 10. Repay/Close resolves Resolving first.
-11. Collect resolved Asset + net Yield + Quote whenever desired.
+11. Collect resolved Asset and Quote plus the currently collectible net Yield. Collect restarts remaining Yield vesting.
 ```
 
 ---

@@ -191,13 +191,13 @@ owed_exit_asset
 owed_exit_yield_asset
 owed_exit_quote
 
-last_supply_slot
+timestamp
 bump
 ```
 
 No shares. No Exit shares.
 
-ProviderPosition is permanent in v0.2.
+ProviderPosition is permanent in v0.2. The single non-negative `timestamp` replaces the slot cooldown field; Supply and Collect reset it from `Clock.unix_timestamp`, and Withdraw requires the current Unix timestamp to be strictly greater.
 
 `*_initial_principal_x36` is Asset principal in `PRINCIPAL_PRECISION = 1e36` sub-raw units. It is not a share balance and has no global supply denominator. Positive sub-raw principal remains snapshotted even when its whole-raw-unit preview is zero. A residual that finally rounds below one fixed-point unit is below `1e-36` raw Asset and, under the shared funded-gain bound, can receive less than `1e-6` raw units from any one funded distribution.
 
@@ -457,10 +457,10 @@ generation
 Yield sum
 Quote sum
 
-last_supply_slot = current slot
+timestamp = Clock.unix_timestamp
 ```
 
-Active P is unchanged.
+Active P is unchanged. Every Supply resets `timestamp`, including top-ups, restarting outstanding Yield vesting.
 
 ---
 
@@ -478,7 +478,7 @@ Require:
 
 ```text
 principal_amount > 0
-current_slot > last_supply_slot
+Clock.unix_timestamp > timestamp
 ```
 
 Synchronize both domains.
@@ -532,7 +532,20 @@ A positive sub-raw remainder remains snapshotted.
 
 If `working_to_exit > 0`, add `working_to_exit * PRINCIPAL_PRECISION` to synchronized Exit principal_x36 and refresh Exit snapshot.
 
-Transfer `available_out` from Asset Vault.
+After provider synchronization, release and redistribute outstanding Active Yield attributable to the withdrawn principal using the exact formula in `spec/protocol.md` §19:
+
+```text
+duration_seconds = duration_days * SECONDS_PER_DAY
+yield_for_withdraw = floor(owed_active_yield_asset * (x * PRINCIPAL_PRECISION) / provider_principal_x36)
+elapsed = min(Clock.unix_timestamp - timestamp, duration_days * SECONDS_PER_DAY)
+yield_asset_out = floor(yield_for_withdraw * elapsed / duration_seconds)
+forfeited_yield = yield_for_withdraw - yield_asset_out
+owed_active_yield_asset -= yield_for_withdraw
+```
+
+After principal withdrawal, apply canonical §19 redistribution: exclude the withdrawing provider's retained X36 principal from post-withdrawal Active, round the other providers' denominator UP to whole raw units, and fund the Active Yield sum only if at least one raw unit of other Active remains. Otherwise transfer `forfeited_yield` to immutable `FEE_TO` Asset ATA. Refresh the withdrawing provider's Active gain checkpoint **after funding** to prevent self-recapture. Already-funded Yield MUST NOT increase the Asset Vault liability. Pass and validate the immutable `FEE_TO` Asset ATA when the fee branch is possible. Preserve outstanding Exit Yield, and do not reset `timestamp`.
+
+Transfer `available_out + yield_asset_out` from Asset Vault. Previews and events MUST surface `yield_asset_out` and `forfeited_yield`.
 
 ---
 
@@ -674,16 +687,22 @@ Transfer:
 
 ```text
 Asset Vault:
-    active Yield
-    Exit Asset
-    Exit Yield
+    time-weighted collectible active Yield
+    Exit Asset principal (fully collectible)
+    time-weighted collectible Exit Yield
 
 Quote Proceeds Vault:
     active Quote
     Exit Quote
 ```
 
-Clear paid owed fields.
+```text
+elapsed = min(Clock.unix_timestamp - timestamp, duration_days * SECONDS_PER_DAY)
+active_yield_out = floor(owed_active_yield_asset * elapsed / duration_seconds)
+exit_yield_out = floor(owed_exit_yield_asset * elapsed / duration_seconds)
+```
+
+Clear only paid Yield; retain the remainder. Clear fully paid Exit Asset and Quote claims. Reset `timestamp = Clock.unix_timestamp` on every successful Collect, including zero-value calls. Repeated Collect at the same timestamp MUST NOT release additional Yield.
 
 No fee.
 
@@ -819,6 +838,7 @@ scale transitions
 gain sums
 provider compounded principal
 provider realized gains
+Yield vesting / Withdraw forfeiture / redistribution
 
 Exit split
 maturity
@@ -852,6 +872,15 @@ exact vault solvency
 transaction composition
 
 cross-chain Product-Sum vectors
+one provider timestamp per Tick; Supply and Collect reset it
+same-timestamp Withdraw rejection
+partial/full-term Collect and repeat Collect at same timestamp
+partial/full Withdraw Yield release and post-withdrawal redistribution
+Active entirely Working, no eligible other Active -> FEE_TO
+repeated partial Withdraw cannot reclaim forfeited Yield through residual Active
+historical Yield collectible after Swap/Close and generation rollover
+cross-chain vesting/forfeiture/rounding golden vectors
+passive provider across 9+ scale transitions
 1-raw + 1-raw fractional-principal preservation
 sub-raw provider snapshot retention
 Max Withdraw preserves positive sub-raw principal_x36

@@ -297,7 +297,7 @@ struct ProviderPosition {
     uint256 owedExitYieldAsset;
     uint256 owedExitQuote;
 
-    uint256 lastSupplyBlock;
+    uint256 timestamp;
 }
 ```
 
@@ -349,11 +349,13 @@ principalRaw =
 
 Provider gains MUST use the canonical exact cross-scale recurrence in `spec/protocol.md` §9.
 
-Do not floor each scale's provider gain independently. The EVM implementation MUST retain the exact cross-scale fractional remainder with bounded `uint512` arithmetic and produce the same `providerGain` as the canonical rational expression.
+Do not floor each scale's provider gain independently. The EVM implementation MUST retain the exact cross-scale fractional remainder with bounded `uint512` arithmetic and produce the same `providerGain` as the canonical rational expression. `Uint512.mulSmall` MUST revert if the high-limb addition overflows, as well as when the intermediate multiplication exceeds 512 bits.
 
 All realization rounds DOWN.
 
 A sync writes gains into `owed*`, then refreshes snapshots. A positive sub-raw `principalX36` MUST remain snapshotted even when `principalRaw == 0`.
+
+The existing provider `timestamp` replaces the prior block cooldown field. Supply and Collect reset it to `block.timestamp`; Withdraw checks `block.timestamp > timestamp` and does not reset it. Both chains implement the canonical vested-Yield calculations from `spec/protocol.md` §§19 and 22.
 
 ---
 
@@ -533,10 +535,10 @@ provider.active.initialPrincipalX36 =
 
 snapshot active state
 
-lastSupplyBlock = block.number
+timestamp = block.timestamp
 ```
 
-Supply does not alter active P.
+Supply does not alter active P. Supply resets the shared provider `timestamp` even on an existing position, restarting vesting of all outstanding Yield; Collect beforehand is optional.
 
 ---
 
@@ -546,7 +548,7 @@ Require:
 
 ```text
 principalAmount > 0
-block.number > lastSupplyBlock
+block.timestamp > timestamp
 ```
 
 After settlement and synchronization:
@@ -595,7 +597,24 @@ providerPrincipalX36
 
 If `workingToExit > 0`, add `workingToExit * PRINCIPAL_PRECISION` to the provider's synchronized Exit `principalX36` and take fresh Exit snapshots.
 
-Transfer `availableOut`.
+Apply canonical §19 Yield release and redistribution after provider synchronization and before completing Withdraw:
+
+```text
+DproviderX36 = pre-withdraw compounded active principalX36
+Y = synced owedActiveYieldAsset
+durationSeconds = durationDays * SECONDS_PER_DAY
+yieldForWithdraw = floor(Y * (x * PRINCIPAL_PRECISION) / DproviderX36)
+elapsed = min(block.timestamp - timestamp, durationDays * SECONDS_PER_DAY)
+yieldAssetOut = floor(yieldForWithdraw * elapsed / durationSeconds)
+forfeitedYield = yieldForWithdraw - yieldAssetOut
+owedActiveYieldAsset -= yieldForWithdraw
+```
+
+Use the canonical §19 redistribution rule: subtract the withdrawing provider's **remaining X36 principal** from post-withdrawal Active principal, round the other providers' denominator UP to whole raw units, and fund the existing Active Yield sum only if at least one raw unit of other Active exposure remains. Otherwise send forfeited Yield to `FEE_TO`. After funding, refresh the withdrawing provider's Active gain checkpoint so their retained principal cannot reclaim their own forfeiture. The existing Yield reserve already covers the redistribution: do not add new funded Yield or charge a second fee.
+
+Transfer `availableOut + yieldAssetOut`. Extend `WithdrawPreview` and `Withdrawn` with `yieldAssetOut` and `forfeitedYield` (the latter can be split into redistribution / `FEE_TO` amounts if useful). Preserve the existing Exit principal split and sub-raw remainder.
+
+Withdraw does not reset `timestamp`. Previously allocated Exit Yield and any retained Active Yield remain outstanding for later Collect.
 
 No Max dust-share special case exists.
 
@@ -751,19 +770,23 @@ automatic settle one
 sync active
 sync Exit
 
+elapsed = min(block.timestamp - timestamp, durationDays * SECONDS_PER_DAY)
+activeYieldOut = floor(owedActiveYieldAsset * elapsed / durationSeconds)
+exitYieldOut = floor(owedExitYieldAsset * elapsed / durationSeconds)
+
 Asset out =
-    owedActiveYieldAsset
+    activeYieldOut
   + owedExitAsset
-  + owedExitYieldAsset
+  + exitYieldOut
 
 Quote out =
     owedActiveQuote
   + owedExitQuote
 ```
 
-Clear paid `owed*`.
+Clear only the paid `owed*`; retain uncollected funded Yield. Reset `timestamp = block.timestamp` on every successful Collect, including one that pays zero. Repeat Collect at the same timestamp must not release additional Yield.
 
-No protocol fee at Collect.
+No protocol fee at Collect. Asset principal and Quote proceeds do not vest.
 
 ---
 
@@ -879,7 +902,9 @@ Withdrawn(
     supplier,
     principalAmount,
     availableAssetOut,
-    workingToExit
+    workingToExit,
+    yieldAssetOut,
+    forfeitedYield
 )
 
 Collected(
@@ -1002,9 +1027,12 @@ activeWorking equivalent
 
 resolvingPrincipal
 
-claimable active Yield
+currently collectible active Yield
+outstanding uncollected active Yield
 claimable Exit Asset
-claimable Exit Yield
+currently collectible Exit Yield
+outstanding uncollected Exit Yield
+timestamp and vesting progress
 claimable active Quote
 claimable Exit Quote
 ```
@@ -1053,17 +1081,26 @@ scale exact threshold
 scale transition
 multi-scale transition
 historical scale claim
+passive provider across 9+ scale transitions; verify dust bound
 
 active generation reset
 Exit generation reset
 stale provider historical claims
 
-historical Astra H-01 sequence
-historical Exit share-inflation sequence
+repeated near-total depletion sequence
+repeated Exit resolution sequence
 
 no share/capacity state exists
 Supply remains available after adversarial depletions
 Withdraw remains available after adversarial Exit resolutions
+Supply and Collect reset timestamp; same-timestamp Withdraw rejected
+Collect time-weighted Active/Exit Yield, retains remainder and resets timestamp
+Collect before top-up / top-up without Collect
+partial/full Withdraw Yield release and post-withdrawal redistribution
+all Working yet Active > 0; no eligible other Active -> FEE_TO
+Swap/Close exhaust Active; outstanding Yield still vests
+partial withdrawal self-recapture prevented by donor exclusion
+fractional Yield rounding and repeated Collect
 ```
 
 Stateful fuzz tests MUST compare against a high-precision reference model.
@@ -1077,6 +1114,7 @@ Production remains disabled until:
 ```text
 Product-Sum implementation complete
 full unit + fuzz suite passes
+production runtime passes the EIP-170 24,576-byte size gate
 EVM/Solana golden vectors frozen
 FEE_TO frozen
 bytecode frozen
