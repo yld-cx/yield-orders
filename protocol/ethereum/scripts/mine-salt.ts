@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { getAddress, getCreate2Address, keccak256, zeroAddress } from "viem";
-import { TEST_FEE_TO, YLD_FEE_TO } from "../hardhat.config.js";
+import { COMPILER_DESCRIPTION, PROTOCOL_VERSION, TEST_FEE_TO, YLD_FEE_TO } from "../hardhat.config.js";
 import {
   candidateSalt,
   CREATE_X_ADDRESS,
@@ -24,7 +24,7 @@ if (
   currentManifest.runtimeCodeHash
 )
   throw new Error("Clear the previous deployment result before mining a new salt");
-if (!YLD_FEE_TO) throw new Error("Set final production YLD_FEE_TO before mining a v0.2 salt");
+if (!YLD_FEE_TO) throw new Error(`Set final production YLD_FEE_TO before mining a v${PROTOCOL_VERSION} salt`);
 const feeTo = getAddress(YLD_FEE_TO);
 if (currentManifest.feeTo && currentManifest.feeTo.toLowerCase() !== feeTo.toLowerCase())
   throw new Error("YLD_FEE_TO differs from the manifest fee receiver");
@@ -42,7 +42,7 @@ for (let nonce = 0n; nonce < 2_000_000n; ++nonce) {
   if (!address.toLowerCase().startsWith("0x0000")) continue;
   const result = predict(artifact, feeTo, rawSalt);
   const manifest = {
-    version: "0.2",
+    version: PROTOCOL_VERSION,
     feeTo,
     saltNamespace,
     rawSalt,
@@ -50,7 +50,7 @@ for (let nonce = 0n; nonce < 2_000_000n; ++nonce) {
     address: result.address,
     creationCodeHash: result.creationCodeHash,
     runtimeCodeHash: result.runtimeCodeHash,
-    compiler: "solc 0.8.36; cancun; optimizer 200; viaIR",
+    compiler: COMPILER_DESCRIPTION,
     networks: Object.fromEntries(Object.entries(NETWORKS).map(([name, config]) => [name, config.chainId])),
   };
   await writeFile(new URL("../deployments/config.json", import.meta.url), `${JSON.stringify(manifest, null, 2)}\n`);

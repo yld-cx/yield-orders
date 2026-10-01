@@ -4,6 +4,7 @@ import { network } from "hardhat";
 import { encodeAbiParameters, encodeFunctionData, getContract, keccak256, zeroAddress } from "viem";
 import protocolAbiJson from "../abi/YieldOrders.json" with { type: "json" };
 import type { YieldOrders$Type } from "../artifacts/contracts/YieldOrders.sol/artifacts.js";
+import { SALT_NAMESPACE } from "../hardhat.config.js";
 import { feeOnTransferTokenAbi, mockERC20Abi, reentrantTokenAbi } from "./abi/mocks.js";
 import { TickModel, X, P0, F, MAX } from "./reference.js";
 import { candidateSalt, guardSalt, predict, readArtifact } from "../scripts/deployment.js";
@@ -822,7 +823,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
 
   it("uses v0.2 initcode and guarded salt for equal cross-chain CREATE2 predictions", async () => {
     const artifact = await readArtifact();
-    const salt = candidateSalt(42n, "yld.cx-v0.2-test");
+    const salt = candidateSalt(42n, `${SALT_NAMESPACE}-test`);
     const one = predict(artifact, deployer.account.address, salt);
     const two = predict(artifact, deployer.account.address, salt);
     assert.equal(one.address, two.address);

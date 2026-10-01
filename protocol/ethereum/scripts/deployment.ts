@@ -1,7 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, encodeDeployData, getCreate2Address, keccak256, type Address, type Hex } from "viem";
-import { BASE_RPC_URL, ETHEREUM_RPC_URL, ROBINHOOD_RPC_URL } from "../hardhat.config.js";
+import {
+  BASE_RPC_URL,
+  ETHEREUM_RPC_URL,
+  PROTOCOL_VERSION,
+  ROBINHOOD_RPC_URL,
+  SALT_NAMESPACE,
+} from "../hardhat.config.js";
 
 export const CREATE_X_ADDRESS = "0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed" as const;
 export const CREATE_X_RUNTIME_HASH = "0xbd8a7ea8cfca7b4e5f5041d7d4b17bc317c5ce42cfbc42066a00cf26b43eb53f" as const;
@@ -12,7 +18,7 @@ export const NETWORKS = {
 } as const;
 
 export type DeploymentManifest = {
-  version: "0.2";
+  version: typeof PROTOCOL_VERSION;
   feeTo: Address | null;
   saltNamespace: string;
   rawSalt: Hex | null;
@@ -47,7 +53,7 @@ export function guardSalt(rawSalt: Hex): Hex {
   return keccak256(encodeAbiParameters([{ type: "bytes32" }], [rawSalt]));
 }
 
-export function candidateSalt(nonce: bigint, namespace = "yld.cx-v0.2"): Hex {
+export function candidateSalt(nonce: bigint, namespace: string = SALT_NAMESPACE): Hex {
   return keccak256(encodeAbiParameters([{ type: "string" }, { type: "uint256" }], [namespace, nonce]));
 }
 
