@@ -7,7 +7,8 @@ import type { YieldOrders$Type } from "../artifacts/contracts/YieldOrders.sol/ar
 import { SALT_NAMESPACE } from "../hardhat.config.js";
 import { feeOnTransferTokenAbi, mockERC20Abi, reentrantTokenAbi } from "./abi/mocks.js";
 import { TickModel, X, P0, F, MAX } from "./reference.js";
-import { candidateSalt, guardSalt, predict, readArtifact } from "../scripts/deployment.js";
+import { candidateSalt, guardSalt, NETWORKS, predict, readArtifact } from "../scripts/deployment.js";
+import { withSimulatedActions } from "./simulation.js";
 
 const abi = protocolAbiJson as unknown as YieldOrders$Type["abi"];
 const E = 10n ** 18n;
@@ -26,7 +27,10 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const asset = await viem.deployContract("MockERC20", ["Asset", "AST", 18]);
     const quote = await viem.deployContract("MockERC20", ["Quote", "QUO", 18]);
     const deployed = await viem.deployContract("YieldOrders", [deployer.account.address]);
-    const market = getContract({ address: deployed.address, abi, client: { public: client, wallet: deployer } });
+    const market = withSimulatedActions(
+      getContract({ address: deployed.address, abi, client: { public: client, wallet: deployer } }),
+      client, abi, a.account.address, taker.account.address,
+    );
     const ast = getContract({
       address: asset.address,
       abi: mockERC20Abi,
@@ -124,7 +128,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const { market, tickId, deadline, ast, quo, checkCustody } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1_000n * E, zeroAddress], { account: a.account });
     assert.equal((await market.read.getDomain([tickId, 0])).P, P0);
-    const useQuote = await market.read.previewUse([tickId, 400n * E]);
+    const useQuote = await market.simulate.previewUse([tickId, 400n * E]);
     assert.equal(useQuote.quotePrincipal, 400n * E);
     assert.equal(useQuote.fullTermYieldAsset, 103_360_000_000_000_000n);
     await market.write.use([tickId, 400n * E, useQuote.fullTermYieldAsset, await deadline(), zeroAddress], {
@@ -132,24 +136,24 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     });
     assert.equal((await market.read.getDomain([tickId, 0])).P, P0);
     assert.equal((await market.read.getTick([tickId])).activePrincipal, 1_000n * E);
-    const before = await market.read.previewWithdraw([tickId, a.account.address, 500n * E]);
+    const before = await market.simulate.previewWithdraw([tickId, a.account.address, 500n * E]);
     assert.equal(before.availableAssetOut, 300n * E);
     assert.equal(before.workingToExit, 200n * E);
     await market.write.withdraw([tickId, 500n * E], { account: a.account });
     assert.equal((await market.read.getTick([tickId])).exitWorking, 200n * E);
     await networkHelpers.time.increase(3_600);
-    const repay = await market.read.previewRepay([1n]);
+    const repay = await market.simulate.previewRepay([1n]);
     assert.equal(repay.exitFill, 200n * E);
     assert.equal(repay.activeReturn, 200n * E);
     await market.write.repay([1n, useQuote.fullTermYieldAsset], { account: taker.account });
     assert.equal((await market.read.getDomain([tickId, 0])).P, P0);
     assert.equal((await market.read.getDomain([tickId, 1])).generation, 1n);
-    assert.ok((await ast.read.balanceOf([deployer.account.address])) >= repay.yieldFeeAsset);
-    const claim = await market.read.previewCollect([tickId, a.account.address]);
+    assert.ok((await market.read.accruedProtocolFees([ast.address])) >= repay.yieldFeeAsset);
+    const claim = await market.simulate.previewCollect([tickId, a.account.address]);
     assert.equal(claim.exitAsset, 200n * E);
     assert.ok(claim.activeYieldAsset + claim.exitYieldAsset > 0n);
     await market.write.collect([tickId], { account: a.account });
-    assert.equal((await market.read.previewCollect([tickId, a.account.address])).activeYieldAsset, 0n);
+    assert.equal((await market.simulate.previewCollect([tickId, a.account.address])).activeYieldAsset, 0n);
     assert.ok((await market.read.getEarnPosition([a.account.address, tickId])).outstandingActiveYieldAsset > 0n);
     assert.equal(await quo.read.balanceOf([taker.account.address]), 10n ** 33n);
     await checkCustody();
@@ -158,7 +162,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
   it("Swap and Close fund sums before depletion; new supplier inherits no old Quote", async () => {
     const { market, tickId, deadline, checkCustody } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1000n * E, zeroAddress], { account: a.account });
-    const swap = await market.read.previewSwap([tickId, 400n * E]);
+    const swap = await market.simulate.previewSwap([tickId, 400n * E]);
     await market.write.swap([tickId, 400n * E, swap.quotePrincipal, await deadline(), zeroAddress], {
       account: taker.account,
     });
@@ -166,8 +170,8 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     assert.equal(d.quoteSum, (swap.providerSwapProceeds * P0) / (1000n * E));
     assert.equal(d.P, (P0 * 600n) / 1000n);
     await market.write.supply([tickId, 100n * E, zeroAddress], { account: b.account });
-    assert.equal((await market.read.previewCollect([tickId, b.account.address])).activeQuote, 0n);
-    const uq = await market.read.previewUse([tickId, 500n * E]);
+    assert.equal((await market.simulate.previewCollect([tickId, b.account.address])).activeQuote, 0n);
+    const uq = await market.simulate.previewUse([tickId, 500n * E]);
     await market.write.use([tickId, 500n * E, uq.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
@@ -176,8 +180,8 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     d = await market.read.getDomain([tickId, 0]);
     assert.equal(d.P, (((P0 * 600n) / 1000n) * 200n) / 700n);
     assert.equal((await market.read.getPosition([1n])).status, 3);
-    const claimA = await market.read.previewCollect([tickId, a.account.address]);
-    const claimB = await market.read.previewCollect([tickId, b.account.address]);
+    const claimA = await market.simulate.previewCollect([tickId, a.account.address]);
+    const claimB = await market.simulate.previewCollect([tickId, b.account.address]);
     assert.ok(claimA.activeQuote > claimB.activeQuote);
     await checkCustody();
   });
@@ -189,9 +193,9 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     assert.equal((await market.read.getDomain([tickId, 0])).generation, 1n);
     assert.equal((await market.read.generationMeta([tickId, 0, 0n]))[1], true);
     await market.write.supply([tickId, 50n * E, zeroAddress], { account: b.account });
-    const old = await market.read.previewCollect([tickId, a.account.address]);
+    const old = await market.simulate.previewCollect([tickId, a.account.address]);
     assert.equal(old.activeQuote, 99n * E);
-    assert.equal((await market.read.previewCollect([tickId, b.account.address])).activeQuote, 0n);
+    assert.equal((await market.simulate.previewCollect([tickId, b.account.address])).activeQuote, 0n);
     await market.write.collect([tickId], { account: a.account });
     assert.equal((await market.read.getEarnPosition([a.account.address, tickId])).activePrincipalX36, 0n);
   });
@@ -214,7 +218,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       assert.equal(Number(d.scale), model.active.scale);
       assert.equal(d.quoteSum, model.active.sums.quote);
       const expected = model.active.sync(model.get(a.account.address).active);
-      const preview = await market.read.previewCollect([tickId, a.account.address]);
+      const preview = await market.simulate.previewCollect([tickId, a.account.address]);
       assert.equal(preview.activeQuote, expected.gains.quote);
       assert.equal(
         (await market.read.getEarnPosition([a.account.address, tickId])).activePrincipalX36,
@@ -234,7 +238,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     assert.notEqual((oldSnapshot.initial * (firstSum - oldSnapshot.sums.quote)) % (oldSnapshot.P * X), 0n);
     assert.ok((model.active.history.get("0:1")?.quote ?? 0n) > 0n);
     assert.ok(model.active.sums.quote > 0n);
-    const preview = await market.read.previewCollect([tickId, a.account.address]);
+    const preview = await market.simulate.previewCollect([tickId, a.account.address]);
     assert.equal(preview.activeQuote, model.active.gain(model.get(a.account.address).active, "quote"));
     const finalAmount = model.active.principal;
     model.swap(finalAmount, finalAmount - finalAmount / 100n);
@@ -245,7 +249,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     assert.equal((await market.read.generationMeta([tickId, 0, 0n]))[0], 8n);
     assert.equal((await market.read.generationMeta([tickId, 0, 0n]))[1], true);
     assert.equal(
-      (await market.read.previewCollect([tickId, a.account.address])).activeQuote,
+      (await market.simulate.previewCollect([tickId, a.account.address])).activeQuote,
       model.active.gain(model.get(a.account.address).active, "quote"),
     );
     await market.write.collect([tickId], { account: a.account });
@@ -272,7 +276,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     const sameBlock = [
       encodeFunctionData({ abi, functionName: "supply", args: [tickId, 1n, zeroAddress] }),
-      encodeFunctionData({ abi, functionName: "withdraw", args: [tickId, 1n] }),
+      encodeFunctionData({ abi, functionName: "withdraw", args: [tickId, 1n, 0n, max] }),
     ];
     await assert.rejects(market.write.multicall([sameBlock], { account: a.account }));
     await market.write.supply([tickId, 2n, zeroAddress], { account: a.account });
@@ -280,7 +284,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await market.write.swap([tickId, 1n, 1n, await deadline(), zeroAddress], { account: taker.account });
     const before = await market.read.getEarnPosition([a.account.address, tickId]);
     assert.equal(before.activePrincipal, 1n);
-    const preview = await market.read.previewWithdraw([tickId, a.account.address, max]);
+    const preview = await market.simulate.previewWithdraw([tickId, a.account.address, max]);
     assert.equal(preview.principalAmount, 1n);
     await market.write.withdraw([tickId, max], { account: a.account });
     const after = await market.read.getEarnPosition([a.account.address, tickId]);
@@ -291,13 +295,13 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
   it("charges each frozen 1% fee exactly once and never charges Collect", async () => {
     const { market, ast, quo, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1000n * E, zeroAddress], { account: a.account });
-    const swap = await market.read.previewSwap([tickId, 100n * E]);
+    const swap = await market.simulate.previewSwap([tickId, 100n * E]);
     await market.write.swap([tickId, 100n * E, swap.quotePrincipal, await deadline(), zeroAddress], {
       account: taker.account,
     });
     assert.equal(swap.swapFee, 1n * E);
-    assert.equal(await quo.read.balanceOf([deployer.account.address]), swap.swapFee);
-    const q = await market.read.previewUse([tickId, 100n * E]);
+    assert.equal(await market.read.accruedProtocolFees([quo.address]), swap.swapFee);
+    const q = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
@@ -306,25 +310,25 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await market.write.repay([1n, q.fullTermYieldAsset], { account: taker.account });
     const afterAsset = await ast.read.balanceOf([taker.account.address]);
     const gross = beforeAsset - afterAsset - 100n * E;
-    assert.equal(await ast.read.balanceOf([deployer.account.address]), gross / 100n);
-    const q2 = await market.read.previewUse([tickId, 100n * E]);
+    assert.equal(await market.read.accruedProtocolFees([ast.address]), gross / 100n);
+    const q2 = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q2.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
     await networkHelpers.time.increase(Number(DAY));
     await market.write.close([2n], { account: keeper.account });
-    assert.equal(await quo.read.balanceOf([deployer.account.address]), 2n * E);
-    const feeAsset = await ast.read.balanceOf([deployer.account.address]);
-    const feeQuote = await quo.read.balanceOf([deployer.account.address]);
+    assert.equal(await market.read.accruedProtocolFees([quo.address]), 2n * E);
+    const feeAsset = await market.read.accruedProtocolFees([ast.address]);
+    const feeQuote = await market.read.accruedProtocolFees([quo.address]);
     await market.write.collect([tickId], { account: a.account });
-    assert.equal(await ast.read.balanceOf([deployer.account.address]), feeAsset);
-    assert.equal(await quo.read.balanceOf([deployer.account.address]), feeQuote);
+    assert.equal(await market.read.accruedProtocolFees([ast.address]), feeAsset);
+    assert.equal(await market.read.accruedProtocolFees([quo.address]), feeQuote);
   });
 
   it("gives a supplier joining after Repay no historical Yield", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1000n * E, zeroAddress], { account: a.account });
-    const q = await market.read.previewUse([tickId, 100n * E]);
+    const q = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
@@ -356,7 +360,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
   it("bills one second for same-timestamp Repay, permits near-maturity Repay, and Closes at maturity", async () => {
     const { market, ast, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1000n * E, zeroAddress], { account: a.account });
-    const q = await market.read.previewUse([tickId, 100n * E]);
+    const q = await market.simulate.previewUse([tickId, 100n * E]);
     const beforeAsset = await ast.read.balanceOf([taker.account.address]);
     await market.write.multicall(
       [
@@ -374,7 +378,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     assert.equal((await market.read.getPosition([1n])).status, 2);
     const oneSecondYield = (q.fullTermYieldAsset + DAY - 1n) / DAY;
     assert.equal(beforeAsset - (await ast.read.balanceOf([taker.account.address])), oneSecondYield);
-    const q2 = await market.read.previewUse([tickId, 100n * E]);
+    const q2 = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q2.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
@@ -382,7 +386,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await networkHelpers.time.setNextBlockTimestamp(Number(p2.maturity - 1n));
     await market.write.repay([2n, q2.fullTermYieldAsset], { account: taker.account });
     assert.equal((await market.read.getPosition([2n])).status, 2);
-    const q3 = await market.read.previewUse([tickId, 100n * E]);
+    const q3 = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q3.fullTermYieldAsset, (await deadline()) + DAY, zeroAddress], {
       account: taker.account,
     });
@@ -390,7 +394,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await networkHelpers.time.setNextBlockTimestamp(Number(p3.maturity));
     await market.write.close([3n], { account: keeper.account });
     assert.equal((await market.read.getPosition([3n])).status, 3);
-    const q4 = await market.read.previewUse([tickId, 100n * E]);
+    const q4 = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q4.fullTermYieldAsset, (await deadline()) + DAY, zeroAddress], {
       account: taker.account,
     });
@@ -402,7 +406,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
   it("resolves Exit first on Close and keeps Exit generation proceeds collectible", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
-    const q = await market.read.previewUse([tickId, 100n * E]);
+    const q = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
@@ -411,11 +415,11 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await networkHelpers.time.increase(Number(DAY));
     await market.write.settle([tickId], { account: keeper.account });
     assert.equal((await market.read.getDomain([tickId, 1])).generation, 1n);
-    const claim = await market.read.previewCollect([tickId, a.account.address]);
+    const claim = await market.simulate.previewCollect([tickId, a.account.address]);
     assert.equal(claim.exitQuote, 99n * E);
     assert.equal(claim.activeQuote, 0n);
     await market.write.collect([tickId], { account: a.account });
-    assert.equal((await market.read.previewCollect([tickId, a.account.address])).totalQuoteOut, 0n);
+    assert.equal((await market.simulate.previewCollect([tickId, a.account.address])).totalQuoteOut, 0n);
   });
 
   it("accepts a new Exit deposit after partial resolution and allocates later Close proceeds", async () => {
@@ -426,7 +430,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       await market.write.supply([tickId, 1000n * E, zeroAddress], { account: who.account });
     }
     for (const amount of [200n * E, 400n * E]) {
-      const q = await market.read.previewUse([tickId, amount]);
+      const q = await market.simulate.previewUse([tickId, amount]);
       model.use(amount);
       await market.write.use([tickId, amount, q.fullTermYieldAsset, await deadline(), zeroAddress], {
         account: taker.account,
@@ -439,9 +443,9 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const hash = await market.write.repay([1n, p1.fullTermYieldAsset], { account: taker.account });
     const receipt = await client.getTransactionReceipt({ hash });
     const block = await client.getBlock({ blockNumber: receipt.blockNumber });
-    const term = p1.maturity - p1.openedAt;
-    const elapsed = block.timestamp - p1.openedAt;
-    const gross = (p1.fullTermYieldAsset * (elapsed > 0n ? elapsed : 1n) + term - 1n) / term;
+    const term = BigInt(p1.maturity) - BigInt(p1.openedAt);
+    const elapsed = block.timestamp - BigInt(p1.openedAt);
+    const gross = (BigInt(p1.fullTermYieldAsset) * (elapsed > 0n ? elapsed : 1n) + term - 1n) / term;
     model.repay(200n * E, gross - gross / 100n);
     assert.equal((await market.read.getTick([tickId])).exitWorking, 100n * E);
     model.withdraw(b.account.address, 500n * E);
@@ -449,7 +453,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     assert.equal((await market.read.getTick([tickId])).exitWorking, model.exitWorking);
     const p2 = await market.read.getPosition([2n]);
     await networkHelpers.time.setNextBlockTimestamp(Number(p2.maturity));
-    model.close(400n * E, p2.quotePrincipal - p2.closeFee);
+    model.close(400n * E, BigInt(p2.quotePrincipal) - BigInt(p2.closeFee));
     await market.write.close([2n], { account: keeper.account });
     const exit = await market.read.getDomain([tickId, 1]);
     assert.equal(exit.P, model.exit.P);
@@ -457,8 +461,8 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     for (const who of [a, b]) {
       const ref = model.get(who.account.address);
       const v = await market.read.getEarnPosition([who.account.address, tickId]);
-      assert.equal(v.claimableExitAsset, ref.owedExitAsset + model.exit.gain(ref.exit, "asset"));
-      assert.equal(v.claimableExitQuote, ref.owedExitQuote + model.exit.gain(ref.exit, "quote"));
+      assert.equal(v.claimableExitAsset, ref.owedExitAsset + model.exit.gainWithFraction(ref.exit, "asset", ref.exitFractions.asset));
+      assert.equal(v.claimableExitQuote, ref.owedExitQuote + model.exit.gainWithFraction(ref.exit, "quote", ref.exitFractions.quote));
     }
     await checkCustody();
   });
@@ -506,11 +510,11 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
           const v = await market.read.getEarnPosition([who.account.address, tickId]);
           assert.equal(v.activePrincipalX36, model.active.principalX36(ref.active));
           assert.equal(v.exitPrincipalX36, model.exit.principalX36(ref.exit));
-          assert.equal(v.outstandingActiveYieldAsset, ref.owedActiveYield + model.active.gain(ref.active, "yield"));
-          assert.equal(v.claimableActiveQuote, ref.owedActiveQuote + model.active.gain(ref.active, "quote"));
-          assert.equal(v.claimableExitAsset, ref.owedExitAsset + model.exit.gain(ref.exit, "asset"));
-          assert.equal(v.outstandingExitYieldAsset, ref.owedExitYield + model.exit.gain(ref.exit, "yield"));
-          assert.equal(v.claimableExitQuote, ref.owedExitQuote + model.exit.gain(ref.exit, "quote"));
+          assert.equal(v.outstandingActiveYieldAsset, ref.owedActiveYield + model.active.gainWithFraction(ref.active, "yield", ref.activeFractions.yield));
+          assert.equal(v.claimableActiveQuote, ref.owedActiveQuote + model.active.gainWithFraction(ref.active, "quote", ref.activeFractions.quote));
+          assert.equal(v.claimableExitAsset, ref.owedExitAsset + model.exit.gainWithFraction(ref.exit, "asset", ref.exitFractions.asset));
+          assert.equal(v.outstandingExitYieldAsset, ref.owedExitYield + model.exit.gainWithFraction(ref.exit, "yield", ref.exitFractions.yield));
+          assert.equal(v.claimableExitQuote, ref.owedExitQuote + model.exit.gainWithFraction(ref.exit, "quote", ref.exitFractions.quote));
           activeX36 += v.activePrincipalX36;
           exitX36 += v.exitPrincipalX36;
           if (v.activePrincipalX36 > 0n && v.activePrincipalX36 < X)
@@ -518,8 +522,8 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         }
         assert.ok(activeX36 <= model.active.principal * X);
         assert.ok(exitX36 <= model.exit.principal * X);
-        assert.equal(await ast.read.balanceOf([deployer.account.address]), expectedAssetFee);
-        assert.equal(await quo.read.balanceOf([deployer.account.address]), expectedQuoteFee);
+        assert.equal(await market.read.accruedProtocolFees([ast.address]), expectedAssetFee);
+        assert.equal(await market.read.accruedProtocolFees([quo.address]), expectedQuoteFee);
         await checkCustody();
       }
       for (const [who, amount] of [
@@ -543,7 +547,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         if (model.available > 10n * E && draw() % 3n !== 0n) {
           const requested = (1n + (draw() % 20n)) * E;
           const amount = requested < model.available ? requested : model.available;
-          const q = await market.read.previewSwap([tickId, amount]);
+          const q = await market.simulate.previewSwap([tickId, amount]);
           const before = model.active.principal;
           model.swap(amount, q.providerSwapProceeds);
           expectedQuoteFee += q.swapFee;
@@ -556,7 +560,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         }
         if (model.available > 50n * E && round % 2 === 0) {
           const amount = (20n + (draw() % 30n)) * E;
-          const q = await market.read.previewUse([tickId, amount]);
+          const q = await market.simulate.previewUse([tickId, amount]);
           const beforeP = (await market.read.getDomain([tickId, 0])).P;
           model.use(amount);
           const positionId = await market.read.nextPositionId();
@@ -601,8 +605,8 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
             await networkHelpers.time.setNextBlockTimestamp(Number(p.maturity));
             const beforeActive = model.active.principal;
             const beforeExit = model.exit.principal;
-            model.close(amount, p.quotePrincipal - p.closeFee);
-            expectedQuoteFee += p.closeFee;
+            model.close(amount, BigInt(p.quotePrincipal) - BigInt(p.closeFee));
+            expectedQuoteFee += BigInt(p.closeFee);
             await market.write.settle([tickId], { account: keeper.account });
             assert.equal(
               (await market.read.getTick([tickId])).activePrincipal,
@@ -616,10 +620,10 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
             });
             const receipt = await client.getTransactionReceipt({ hash });
             const block = await client.getBlock({ blockNumber: receipt.blockNumber });
-            const elapsed = block.timestamp - p.openedAt;
+            const elapsed = block.timestamp - BigInt(p.openedAt);
             const billable = elapsed > 0n ? elapsed : 1n;
-            const term = p.maturity - p.openedAt;
-            const gross = (p.fullTermYieldAsset * billable + term - 1n) / term;
+            const term = BigInt(p.maturity) - BigInt(p.openedAt);
+            const gross = (BigInt(p.fullTermYieldAsset) * billable + term - 1n) / term;
             expectedAssetFee += gross / 100n;
             const beforeP = (await market.read.getDomain([tickId, 0])).P;
             model.repay(amount, gross - gross / 100n);
@@ -630,7 +634,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         if (round % 3 === 0) {
           const who = providers[Number(draw() % 3n)];
           const ref = model.sync(who.account.address);
-          const q = await market.read.previewCollect([tickId, who.account.address]);
+          const q = await market.simulate.previewCollect([tickId, who.account.address]);
           assert.equal(q.exitAsset, ref.owedExitAsset);
           assert.equal(q.totalQuoteOut, ref.owedActiveQuote + ref.owedExitQuote);
           const hash = await market.write.collect([tickId], { account: who.account });
@@ -647,7 +651,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         await check();
         if (round % 6 === 5 && model.working === 0n && model.available > 0n) {
           const amount = model.available;
-          const q = await market.read.previewSwap([tickId, amount]);
+          const q = await market.simulate.previewSwap([tickId, amount]);
           model.swap(amount, q.providerSwapProceeds);
           expectedQuoteFee += q.swapFee;
           await market.write.swap([tickId, amount, q.quotePrincipal, await deadline(), zeroAddress], {
@@ -670,20 +674,20 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
   it("supports Multicall withdrawal plus collection and exact one-position settlement", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
-    const uq = await market.read.previewUse([tickId, 20n * E]);
+    const uq = await market.simulate.previewUse([tickId, 20n * E]);
     await market.write.use([tickId, 20n * E, uq.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
     await networkHelpers.time.increase(Number(DAY));
-    const before = await market.read.previewCollect([tickId, a.account.address]);
+    const before = await market.simulate.previewCollect([tickId, a.account.address]);
     assert.ok(before.activeQuote > 0n);
     const calls = [
-      encodeFunctionData({ abi, functionName: "withdraw", args: [tickId, 50n * E] }),
+      encodeFunctionData({ abi, functionName: "withdraw", args: [tickId, 50n * E, 0n, max] }),
       encodeFunctionData({ abi, functionName: "collect", args: [tickId] }),
     ];
     await market.write.multicall([calls], { account: a.account });
     assert.equal((await market.read.getTick([tickId])).settleCursor, 1n);
-    assert.equal((await market.read.previewCollect([tickId, a.account.address])).totalQuoteOut, 0n);
+    assert.equal((await market.simulate.previewCollect([tickId, a.account.address])).totalQuoteOut, 0n);
   });
 
   it("supports settle plus collect and multiple mature Closes in one Multicall", async () => {
@@ -713,21 +717,21 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       ],
       { account: a.account },
     );
-    assert.equal((await market.read.previewCollect([tickId, a.account.address])).totalQuoteOut, 0n);
+    assert.equal((await market.simulate.previewCollect([tickId, a.account.address])).totalQuoteOut, 0n);
   });
 
-  it("projects the same one-step Close in state-sensitive previews", async () => {
+  it("simulates the same one-step Close in state-sensitive actions", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
-    const useQuote = await market.read.previewUse([tickId, 20n * E]);
+    const useQuote = await market.simulate.previewUse([tickId, 20n * E]);
     await market.write.use([tickId, 20n * E, useQuote.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
     await networkHelpers.time.increase(Number(DAY));
-    const supply = await market.read.previewSupply([tickId, 10n * E], { account: a.account });
-    const withdrawal = await market.read.previewWithdraw([tickId, a.account.address, 100n * E]);
-    const use = await market.read.previewUse([tickId, 10n * E]);
-    const claim = await market.read.previewCollect([tickId, a.account.address]);
+    const supply = await market.simulate.previewSupply([tickId, 10n * E], { account: a.account });
+    const withdrawal = await market.simulate.previewWithdraw([tickId, a.account.address, 100n * E]);
+    const use = await market.simulate.previewUse([tickId, 10n * E]);
+    const claim = await market.simulate.previewCollect([tickId, a.account.address]);
     assert.equal(supply.resultingActivePrincipal, 90n * E);
     assert.equal(supply.marketAvailable, 90n * E);
     assert.equal(withdrawal.providerPrincipal, 80n * E);
@@ -743,7 +747,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     assert.equal((await market.read.getTick([tickId])).activeWorking, 0n);
   });
 
-  it("matches every projected Tick preview after one Exit-first Close", async () => {
+  it("matches every simulated Tick action after one Exit-first Close", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     for (const supplier of [a, b]) {
       await market.write.supply([tickId, 1_000n * E, zeroAddress], { account: supplier.account });
@@ -760,13 +764,13 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await networkHelpers.time.increaseTo(Number(first.maturity));
 
     const before = {
-      supply: await market.read.previewSupply([tickId, 10n * E], { account: b.account }),
-      withdraw: await market.read.previewWithdraw([tickId, b.account.address, 50n * E]),
-      use: await market.read.previewUse([tickId, 10n * E]),
-      swap: await market.read.previewSwap([tickId, 10n * E]),
-      collectA: await market.read.previewCollect([tickId, a.account.address]),
-      collectB: await market.read.previewCollect([tickId, b.account.address]),
-      repay: await market.read.previewRepay([2n]),
+      supply: await market.simulate.previewSupply([tickId, 10n * E], { account: b.account }),
+      withdraw: await market.simulate.previewWithdraw([tickId, b.account.address, 50n * E]),
+      use: await market.simulate.previewUse([tickId, 10n * E]),
+      swap: await market.simulate.previewSwap([tickId, 10n * E]),
+      collectA: await market.simulate.previewCollect([tickId, a.account.address]),
+      collectB: await market.simulate.previewCollect([tickId, b.account.address]),
+      repay: await market.simulate.previewRepay([2n]),
     };
     assert.ok(before.collectA.exitQuote > 0n);
     assert.ok(before.collectB.activeQuote > 0n);
@@ -774,14 +778,14 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await market.write.settle([tickId], { account: keeper.account });
     assert.equal((await market.read.getTick([tickId])).settleCursor, 1n);
     assert.equal((await market.read.getPosition([2n])).status, 1);
-    assert.deepEqual(await market.read.previewSupply([tickId, 10n * E], { account: b.account }), before.supply);
-    assert.deepEqual(await market.read.previewWithdraw([tickId, b.account.address, 50n * E]), before.withdraw);
-    assert.deepEqual(await market.read.previewSwap([tickId, 10n * E]), before.swap);
-    assert.deepEqual(await market.read.previewCollect([tickId, a.account.address]), before.collectA);
-    assert.deepEqual(await market.read.previewCollect([tickId, b.account.address]), before.collectB);
-    const afterUse = await market.read.previewUse([tickId, 10n * E]);
-    assert.deepEqual({ ...afterUse, maturity: 0n }, { ...before.use, maturity: 0n });
-    const afterRepay = await market.read.previewRepay([2n]);
+    assert.deepEqual(await market.simulate.previewSupply([tickId, 10n * E], { account: b.account }), before.supply);
+    assert.deepEqual(await market.simulate.previewWithdraw([tickId, b.account.address, 50n * E]), before.withdraw);
+    assert.deepEqual(await market.simulate.previewSwap([tickId, 10n * E]), before.swap);
+    assert.deepEqual(await market.simulate.previewCollect([tickId, a.account.address]), before.collectA);
+    assert.deepEqual(await market.simulate.previewCollect([tickId, b.account.address]), before.collectB);
+    const afterUse = await market.simulate.previewUse([tickId, 10n * E]);
+    assert.deepEqual({ ...afterUse, maturity: 0n, openedAt: 0n }, { ...before.use, maturity: 0n, openedAt: 0n });
+    const afterRepay = await market.simulate.previewRepay([2n]);
     assert.equal(afterRepay.exitFill, before.repay.exitFill);
     assert.equal(afterRepay.activeReturn, before.repay.activeReturn);
     assert.equal(afterRepay.quotePrincipalUnlocked, before.repay.quotePrincipalUnlocked);
@@ -790,8 +794,8 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
   it("supports sequential Uses, Swaps, and Repays in one Multicall", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1000n * E, zeroAddress], { account: a.account });
-    const useQuote = await market.read.previewUse([tickId, 100n * E]);
-    const swapQuote = await market.read.previewSwap([tickId, 20n * E]);
+    const useQuote = await market.simulate.previewUse([tickId, 100n * E]);
+    const swapQuote = await market.simulate.previewSwap([tickId, 20n * E]);
     const dl = await deadline();
     const calls = [
       encodeFunctionData({ abi, functionName: "use", args: [tickId, 100n * E, max, dl, zeroAddress] }),
@@ -898,11 +902,15 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
 
   it("uses v0.2 initcode and guarded salt for equal cross-chain CREATE2 predictions", async () => {
     const artifact = await readArtifact();
+    assert.deepEqual((artifact as any).linkReferences, {});
+    assert.deepEqual((artifact as any).deployedLinkReferences, {});
     const salt = candidateSalt(42n, `${SALT_NAMESPACE}-test`);
     const one = predict(artifact, deployer.account.address, salt);
-    const two = predict(artifact, deployer.account.address, salt);
+    const perNetwork = Object.values(NETWORKS).map(() => predict(artifact, deployer.account.address, salt));
+    const two = perNetwork[1];
     assert.equal(one.address, two.address);
     assert.equal(one.guardedSalt, guardSalt(salt));
     assert.equal(one.creationCodeHash, two.creationCodeHash);
+    assert.ok(perNetwork.every((entry) => entry.address === one.address && entry.runtimeCodeHash === one.runtimeCodeHash));
   });
 });

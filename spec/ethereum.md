@@ -83,7 +83,7 @@ uint256 constant MIN_BILLABLE_SECONDS = 1;
 address immutable FEE_TO;
 ```
 
-No owner, fee setter, proxy, protocol-fee vault, fee withdrawal function, or governance-controlled economics.
+One immutable `YieldOrders.sol` deployment contains all economic, custody, fee, settlement, and portfolio functions. `YieldMath`, `ProductSumMath`, `Uint512`, and `TickMath` are internal libraries, with no linked deployed library. There is no owner, fee setter, proxy, protocol-fee vault contract, or governance-controlled economics. `FEE_TO` MUST be nonzero and different from the deployed contract address.
 
 ---
 
@@ -120,6 +120,8 @@ tickId =
 ```
 
 `createPair` and `createTick` are permissionless and grant no creator rights.
+
+`priceTick` defines Quote **raw units** per Asset **raw unit** through `priceX128`. Human-readable prices must adjust for both tokens' decimals.
 
 Canonical time constants:
 
@@ -353,7 +355,7 @@ Do not floor each scale's provider gain independently. The EVM implementation MU
 
 All realization rounds DOWN.
 
-A sync writes gains into `owed*`, then refreshes snapshots. A positive sub-raw `principalX36` MUST remain snapshotted even when `principalRaw == 0`.
+A sync computes gains in X36 sub-raw units, adds each stream’s independent stored fractional remainder, credits whole raw units to `owed*`, retains the remainder, then refreshes snapshots. Active Yield/Quote and Exit Asset/Yield/Quote have separate remainders. A positive sub-raw `principalX36` MUST remain snapshotted even when `principalRaw == 0`. The per-checkpoint precision loss is less than `1e-36` raw unit per stream; see the canonical dust bound in `spec/protocol.md` §9.
 
 The existing provider `timestamp` replaces the prior block cooldown field. Supply and Collect reset it to `block.timestamp`; Withdraw checks `block.timestamp > timestamp` and does not reset it. Both chains implement the canonical vested-Yield calculations from `spec/protocol.md` §§19 and 22.
 
@@ -473,12 +475,17 @@ supply(
 
 withdraw(
     uint256 tickId,
-    uint256 principalAmount
+    uint256 principalAmount,
+    uint256 minImmediateAssetOut,
+    uint256 deadline
 )
 
 collect(
     uint256 tickId
 )
+
+quoteUse(uint256 tickId, uint256 assetAmount)
+collectProtocolFees(address token)
 
 use(
     uint256 tickId,
@@ -549,6 +556,8 @@ Require:
 ```text
 principalAmount > 0
 block.timestamp > timestamp
+block.timestamp <= deadline
+availableAssetOut >= minImmediateAssetOut
 ```
 
 After settlement and synchronization:
@@ -610,9 +619,9 @@ forfeitedYield = yieldForWithdraw - yieldAssetOut
 owedActiveYieldAsset -= yieldForWithdraw
 ```
 
-Use the canonical §19 redistribution rule: subtract the withdrawing provider's **remaining X36 principal** from post-withdrawal Active principal, round the other providers' denominator UP to whole raw units, and fund the existing Active Yield sum only if at least one raw unit of other Active exposure remains. Otherwise send forfeited Yield to `FEE_TO`. After funding, refresh the withdrawing provider's Active gain checkpoint so their retained principal cannot reclaim their own forfeiture. The existing Yield reserve already covers the redistribution: do not add new funded Yield or charge a second fee.
+Use the canonical §19 redistribution rule: subtract the withdrawing provider's **remaining X36 principal** from post-withdrawal Active principal, round the other providers' denominator UP to whole raw units, and fund the existing Active Yield sum only if at least one raw unit of other Active exposure remains. Otherwise add forfeited Yield to the Asset-denominated accrued protocol fee balance. After funding, refresh the withdrawing provider's Active gain checkpoint so their retained principal cannot reclaim their own forfeiture. The existing Yield reserve already covers the redistribution: do not add new funded Yield or charge a second fee.
 
-Transfer `availableOut + yieldAssetOut`. Extend `WithdrawPreview` and `Withdrawn` with `yieldAssetOut` and `forfeitedYield` (the latter can be split into redistribution / `FEE_TO` amounts if useful). Preserve the existing Exit principal split and sub-raw remainder.
+Transfer `availableOut + yieldAssetOut`. The `withdraw` return and `Withdrawn` event include `yieldAssetOut` and `forfeitedYield`. Preserve the existing Exit principal split and sub-raw remainder.
 
 Withdraw does not reset `timestamp`. Previously allocated Exit Yield and any retained Active Yield remain outstanding for later Collect.
 
@@ -705,7 +714,7 @@ Transfer:
 ```text
 Asset principal + gross Yield in
 full Quote Principal out
-Yield fee directly to FEE_TO
+Yield fee accrued in Asset-denominated protocol fees
 ```
 
 Exit domain:
@@ -743,7 +752,7 @@ Update active P.
 
 If active principal becomes zero, finalize active generation.
 
-Fee transfers directly to FEE_TO.
+Fee accrues in Quote-denominated protocol fees; Close follows the same rule. A fee transfer is never part of ordinary settlement.
 
 ---
 
@@ -843,7 +852,7 @@ Use WETH for ETH.
 
 Exact transfer balance checks are required where necessary.
 
-There is no rescue/admin bypass for a token that later becomes incompatible, blacklists protocol/fee addresses, or stops exact transfers. An affected Tick may become permanently stuck; this MUST NOT be "fixed" by adding mutable rescue authority.
+There is no rescue/admin bypass for an incompatible token. A token rejecting transfers to `FEE_TO` affects only `collectProtocolFees(token)` and MUST NOT prevent settlement, Swap, Repay, Withdraw, or Collect. A token blocking the protocol or user transfers can still stop those actions.
 
 ---
 
@@ -889,6 +898,8 @@ Freeze at least:
 ```text
 PairCreated
 TickCreated
+ProtocolFeesAccrued
+ProtocolFeesCollected
 
 Supplied(
     tickId,
@@ -994,28 +1005,15 @@ Scale/generation events are accounting metadata, not product actions.
 
 ---
 
-# 25. Views / previews
+# 25. Views and product simulations
 
-Required:
+Required views include `getPair`, `getTick`, `getEarnPosition`, `getPosition`, `getEarnPositions`, `getUsePositions`, `getDomain`, `nextPositionId`, `tokenLiability`, `accruedProtocolFees`, and `quoteUse`.
 
-```solidity
-getPair(...)
-getTick(...)
-getEarnPosition(...)
-getPosition(...)
+The six Solidity `preview*` methods and hypothetical settlement projection are removed. The product simulates real economic calls through OpenZeppelin `multicall(bytes[])` in one `eth_call`: action first, then post-action getters. **Never prepend `settle()`**; each economic action already attempts one settlement-cursor step. `supply` and `close` return no result, so use getters. For Use, read `nextPositionId` before the simulation and append `getPosition(positionId)`. The call must use the intended caller and sufficient token balances and allowances. A failed call can mean allowance, balance, maturity, cooldown, slippage, or deadline failure.
 
-getEarnPositions(...)
-getUsePositions(...)
+`quoteUse(tickId, assetAmount)` provides only current-state Quote Principal and full-term Yield before approval. It does not project an expired cursor Close. Market state can change between quotation, simulation, and execution; retain all execution-time limits and deadlines. `withdraw(tickId, principalAmount, minImmediateAssetOut, deadline)` may use zero minimum and a permissive deadline for unrestricted execution.
 
-previewSupply(...)
-previewWithdraw(...)
-previewUse(...)
-previewRepay(...)
-previewSwap(...)
-previewCollect(...)
-```
-
-All state-sensitive previews MUST project the same one-step settlement hook.
+`collectProtocolFees(token)` is permissionless and sends the entire accrued balance only to immutable `FEE_TO`. `accruedProtocolFees(token)` is a separate, fully backed global token liability, never double-counted in Tick reserves. A failed claim reverts only that claim.
 
 `getEarnPosition` exposes economic values:
 
@@ -1097,7 +1095,7 @@ Supply and Collect reset timestamp; same-timestamp Withdraw rejected
 Collect time-weighted Active/Exit Yield, retains remainder and resets timestamp
 Collect before top-up / top-up without Collect
 partial/full Withdraw Yield release and post-withdrawal redistribution
-all Working yet Active > 0; no eligible other Active -> FEE_TO
+all Working yet Active > 0; no eligible other Active -> accrued Asset protocol fee
 Swap/Close exhaust Active; outstanding Yield still vests
 partial withdrawal self-recapture prevented by donor exclusion
 fractional Yield rounding and repeated Collect

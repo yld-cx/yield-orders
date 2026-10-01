@@ -11,6 +11,7 @@ library Uint512 {
 
     function mul(uint256 a, uint256 b) internal pure returns (Value memory z) {
         uint256 mm = mulmod(a, b, type(uint256).max);
+        // Low-limb multiplication and the mulmod reconstruction intentionally wrap mod 2^256.
         unchecked {
             z.lo = a * b;
             z.hi = mm - z.lo - (mm < z.lo ? 1 : 0);
@@ -26,6 +27,7 @@ library Uint512 {
     }
 
     function add(Value memory a, Value memory b) internal pure returns (Value memory z) {
+        // A low-limb overflow becomes a carry; the high-limb overflow is checked explicitly.
         unchecked {
             z.lo = a.lo + b.lo;
             uint256 carry = z.lo < a.lo ? 1 : 0;
@@ -40,6 +42,7 @@ library Uint512 {
 
     function sub(Value memory a, Value memory b) internal pure returns (Value memory z) {
         if (!gte(a, b)) revert Arithmetic512();
+        // A low-limb borrow is propagated into the high limb.
         unchecked {
             z.lo = a.lo - b.lo;
             z.hi = a.hi - b.hi - (a.lo < b.lo ? 1 : 0);

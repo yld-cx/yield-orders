@@ -355,7 +355,7 @@ Quote Escrow holds ACTIVE Position Quote Principal.
 
 Quote Proceeds holds active and Exit Swap/Close claims.
 
-Fees go directly to validated FEE_TO ATAs.
+Fees accrue as separate per-mint liabilities backed by the existing token vaults. A later permissionless fee-claim instruction transfers only to the immutable `FEE_TO` ATA. A failed fee claim must not block settlement or provider actions.
 
 ---
 
@@ -390,7 +390,7 @@ PDA derivation
 extension allowlist
 ```
 
-Required `FEE_TO` ATAs must exist or be created/validated by the canonical instruction/account flow. There is no mutable rescue authority if a mint later becomes incompatible, blocks required accounts, or changes transfer behavior. An affected Tick may become permanently stuck.
+Required `FEE_TO` ATAs must exist or be created/validated by the fee-claim instruction, not ordinary settlement. There is no mutable rescue authority if a mint later becomes incompatible or blocks protocol/user transfers. A recipient-only rejection stops only the fee claim; a blocked protocol or user transfer can still stop the affected Tick action.
 
 ---
 
@@ -543,7 +543,7 @@ forfeited_yield = yield_for_withdraw - yield_asset_out
 owed_active_yield_asset -= yield_for_withdraw
 ```
 
-After principal withdrawal, apply canonical §19 redistribution: exclude the withdrawing provider's retained X36 principal from post-withdrawal Active, round the other providers' denominator UP to whole raw units, and fund the Active Yield sum only if at least one raw unit of other Active remains. Otherwise transfer `forfeited_yield` to immutable `FEE_TO` Asset ATA. Refresh the withdrawing provider's Active gain checkpoint **after funding** to prevent self-recapture. Already-funded Yield MUST NOT increase the Asset Vault liability. Pass and validate the immutable `FEE_TO` Asset ATA when the fee branch is possible. Preserve outstanding Exit Yield, and do not reset `timestamp`.
+After principal withdrawal, apply canonical §19 redistribution: exclude the withdrawing provider's retained X36 principal from post-withdrawal Active, round the other providers' denominator UP to whole raw units, and fund the Active Yield sum only if at least one raw unit of other Active remains. Otherwise accrue `forfeited_yield` as an Asset-denominated protocol fee. Refresh the withdrawing provider's Active gain checkpoint **after funding** to prevent self-recapture. Already-funded Yield MUST NOT increase the Asset Vault liability. The withdrawal instruction must not require the `FEE_TO` Asset ATA. Preserve outstanding Exit Yield, and do not reset `timestamp`.
 
 Transfer `available_out + yield_asset_out` from Asset Vault. Previews and events MUST surface `yield_asset_out` and `forfeited_yield`.
 
@@ -610,7 +610,7 @@ Transfer exact Asset principal + gross Yield to Asset Vault.
 
 Return full Quote Principal.
 
-Send Yield fee to FEE_TO Asset ATA.
+Accrue Yield fee as an Asset-denominated protocol liability.
 
 Exit:
 
@@ -646,7 +646,7 @@ then reduce principal
 then update P / scale / generation
 ```
 
-Send fee from Quote Escrow to FEE_TO Quote ATA.
+Accrue the fee as a Quote-denominated protocol liability, fully backed by escrowed Quote.
 
 Move provider Quote from Escrow to Quote Proceeds Vault.
 
@@ -670,7 +670,7 @@ Transfer:
 
 ```text
 Asset Vault → taker
-taker Quote → Quote Proceeds + FEE_TO
+taker Quote → Quote Proceeds + accrued protocol fee
 ```
 
 Exit is untouched.
@@ -754,7 +754,7 @@ The maximum historical scale bundle is a protocol constant shared with EVM and S
 
 Provider gains MUST use the exact bounded cross-scale recurrence from `spec/protocol.md` §9.
 
-The Solana implementation MUST preserve the same exact remainder across scales and match the EVM/reference SDK integer result bit-for-bit. Do not calculate separately rounded provider gains per scale.
+The Solana implementation MUST preserve the same exact remainder across scales, then carry independent X36 sub-raw gain fractions across provider checkpoints for Active Yield/Quote and Exit Asset/Yield/Quote. Do not mix fractions with different snapshot denominators. Match the EVM/reference SDK integer result and the canonical `N / 1e36` raw-unit checkpoint dust bound in `spec/protocol.md` §9.
 
 The program MUST retain a positive `principal_x36` snapshot even when `floor(principal_x36 / PRINCIPAL_PRECISION) == 0`.
 
@@ -792,7 +792,7 @@ For a mature cursor Close, the transaction includes:
 cursor TermPosition
 Quote Escrow Vault
 Quote Proceeds Vault
-FEE_TO Quote ATA
+accrued protocol fee state
 
 any ActiveScaleState required by scale transition
 any ExitScaleState required by scale transition
@@ -817,7 +817,7 @@ Repay → floor(gross Asset Yield × 1%)
 
 Principal is fee-free.
 
-Collect is fee-free.
+Collect is fee-free. Accrued per-mint fees are backed by vault balances and claimed separately to the immutable recipient; claim failure affects only that claim.
 
 ---
 
@@ -876,7 +876,7 @@ one provider timestamp per Tick; Supply and Collect reset it
 same-timestamp Withdraw rejection
 partial/full-term Collect and repeat Collect at same timestamp
 partial/full Withdraw Yield release and post-withdrawal redistribution
-Active entirely Working, no eligible other Active -> FEE_TO
+Active entirely Working, no eligible other Active -> accrued Asset protocol fee
 repeated partial Withdraw cannot reclaim forfeited Yield through residual Active
 historical Yield collectible after Swap/Close and generation rollover
 cross-chain vesting/forfeiture/rounding golden vectors

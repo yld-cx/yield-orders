@@ -663,6 +663,10 @@ providerGain = gain
 
 This recurrence is exactly equal to the single mathematical floor above. It does **not** round provider gain independently per scale; every fractional remainder is retained in `R` and carried across subsequent scales.
 
+At provider synchronization, lift the same rational calculation to **X36 gain units** by using `B = providerPSnapshot` rather than `providerPSnapshot * PRINCIPAL_PRECISION`. For each of the five independent streams (Active Yield/Quote, Exit Asset/Yield/Quote), add the result to that stream’s stored fraction, credit `floor(combinedX36 / PRINCIPAL_PRECISION)` whole raw units to `owed*`, and store `combinedX36 % PRINCIPAL_PRECISION`. This normalization permits principal changes, Collect, scale changes, and generation rollover without mixing fractions from different denominators or granting past gains to new liquidity. A single checkpoint floors less than one X36 unit per stream, so across `N` checkpoints the total discarded amount is strictly below `N / 1e36` raw units per stream. There is no silent whole-raw-unit loss in the reproduced two-provider, two-distribution vector with an intermediate Collect.
+
+For X36 recurrence steps, `A / B` may be as large as `1e36`, so the raw-gain two-subtraction carry bound does not apply. Split `A = principalWhole * B + principalRemainder`, extract `floor(principalWhole * fraction / scalePower)` with full-precision multiplication, and carry its remainder into the two-limb numerator. The four normalized remainder terms are each below the scaled denominator, so at most **three** subtractions are needed. The exact X36 result must equal the single rational floor; separately rounding each scale or limiting the lifted carry to two is invalid.
+
 Required arithmetic bounds:
 
 ```text
@@ -941,12 +945,12 @@ Therefore:
 ```text
 Swap/Close:
     ≥99% Quote → providers
-    ≤1% Quote  → FEE_TO
+    ≤1% Quote  → accrued protocol fees, claimable only to FEE_TO
 
 Repay:
     100% Asset principal → providers
     ≥99% Asset Yield     → providers
-    ≤1% Asset Yield      → FEE_TO
+    ≤1% Asset Yield      → accrued protocol fees, claimable only to FEE_TO
     100% Quote Principal → taker
 ```
 
@@ -1140,7 +1144,7 @@ Transfers:
 ```text
 Asset → taker
 QuotePrincipal from taker
-SwapFee → FEE_TO
+SwapFee → accrued Quote protocol fees
 providerQuote → Quote proceeds custody
 ```
 
@@ -1152,7 +1156,7 @@ Exit is untouched.
 
 # 19. Withdraw
 
-Withdraw is expressed in active **Asset principal**, not shares.
+Withdraw is expressed in active **Asset principal**, not shares. Execution accepts `minImmediateAssetOut` and `deadline`, checking the Available Asset returned against that minimum after its automatic settlement step. Zero minimum with a permissive deadline is unrestricted.
 
 Conceptual entry:
 
@@ -1267,10 +1271,10 @@ if remainingActive > ceil(remainingProviderX36 / PRINCIPAL_PRECISION):
     activeYieldSum += floor(forfeitedYield * activeP / eligiblePrincipal)
     refresh withdrawing provider's Active gain checkpoint to the new sum
 else:
-    forfeitedYield -> FEE_TO
+    forfeitedYield -> accrued Asset protocol fees
 ```
 
-The denominator rounds UP to ensure other providers cannot collectively claim more than the forfeited funds, including when fractional `principalX36` exists. Refreshing the withdrawing provider's checkpoint after funding prevents self-recapture through repeated partial Withdrawals. The redistributed amount is already funded in the Yield reserve: do not add new funds, increase the reserve, or charge the protocol fee again. When paid to `FEE_TO`, reduce funded Yield liability accordingly. Ordinary gain rounding can leave sub-raw dust in the reserve.
+The denominator rounds UP to ensure other providers cannot collectively claim more than the forfeited funds, including when fractional `principalX36` exists. Refreshing the withdrawing provider's checkpoint after funding prevents self-recapture through repeated partial Withdrawals. The redistributed amount is already funded in the Yield reserve: do not add new funds, increase the reserve, or charge the protocol fee again. When assigned to protocol fees, reduce the Tick funded Yield reserve and increase the global Asset fee liability by the same amount. Ordinary gain rounding can leave sub-raw dust in the reserve.
 
 `workingToExit` retains the existing Exit-first resolution rules. Future Yield funded into Exit after Withdraw follows ordinary provider Yield vesting. A provider with no Active principal can still Collect outstanding Yield, including Yield allocated before Swap/Close.
 
@@ -1317,7 +1321,7 @@ Transfers:
 ```text
 Asset principal + grossYield from taker → protocol
 Quote Principal → taker
-yieldFee Asset → FEE_TO
+yieldFee Asset → accrued Asset protocol fees
 ```
 
 Global state:
@@ -1451,7 +1455,7 @@ workingSupply -= x
 exitWorking -= exitFill
 ```
 
-Frozen Close fee goes to `FEE_TO`.
+Frozen Close fee accrues as a Quote-denominated protocol fee.
 
 A single Close may finalize both domains.
 
@@ -1506,7 +1510,7 @@ Use/Swap may consume only `availableSupply`.
 
 Funded claims are never active liquidity. Outstanding, not-yet-collectible Yield and Yield scheduled for redistribution remain covered by the existing funded Yield liability; redistribution does not mint a second claim.
 
-Fees transfer directly to immutable `FEE_TO`.
+Protocol fees accrue separately by token and are part of global token liabilities in addition to Tick reserves. `collectProtocolFees(token)` claims the accrued balance only to immutable `FEE_TO`. Failed fee claims do not affect ordinary market actions or settlement. No principal or unlocked Quote is charged.
 
 Production has no rescue / admin bypass for token-specific transfer failures. If an admitted token later changes behavior, blacklists required accounts, or otherwise violates the frozen exact-transfer assumptions, affected actions may become permanently unavailable for that Tick. **Stuck is stuck; no mutable rescue backdoor is introduced.**
 
@@ -1667,7 +1671,7 @@ At minimum:
 29. Provider `timestamp` is reset by every Supply and Collect; Withdraw requires `now > timestamp` and does not reset it.
 30. Only funded Asset Yield vests; principal and Quote proceeds remain unrestricted by vesting.
 31. Collect releases at most the canonical time-weighted portion and cannot be compounded through repeated calls.
-32. Withdraw releases only the time-weighted portion of attributable Active Yield; forfeited Yield is redistributed to other Active providers or transferred to `FEE_TO`, without self-recapture or new custody liabilities.
+32. Withdraw releases only the time-weighted portion of attributable Active Yield; forfeited Yield is redistributed to other Active providers or accrued as a backed protocol fee, without self-recapture or new custody liabilities.
 33. Historical Yield remains collectible after active principal depletion and generation rollover, subject to its timestamp.
 
 ---
@@ -1743,7 +1747,7 @@ Collect 0h / partial term / full term / repeated same timestamp
 Collect then Supply; Supply without Collect restarts outstanding vesting
 partial and full Withdraw release attributable Yield and redistribute the remainder
 remaining Active with 0 Available (all liquidity Working)
-no eligible other Active -> FEE_TO
+no eligible other Active -> accrued Asset protocol fee
 partial Withdraw cannot reclaim its own forfeited Yield through retained principal
 Withdraw to Exit; later Exit Repay/Close; later Collect
 Swap/Close exhaust Active but outstanding Yield remains collectible
@@ -1798,7 +1802,7 @@ Withdraw
 → Available portion leaves now
 → Working portion becomes a fresh Exit deposit
 → release time-weighted Yield attributable to withdrawn principal
-→ redistribute the remainder to post-withdrawal Active, or FEE_TO if none
+→ redistribute the remainder to post-withdrawal Active, or accrue an Asset protocol fee if none
 
 Collect
 → realize Product-Sum gains

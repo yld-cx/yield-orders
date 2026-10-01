@@ -474,7 +474,7 @@ Controls:
 25%   50%   75%   Max
 ```
 
-The adapter obtains current provider active principal from preview and converts percentage to Asset-denominated principal.
+The adapter obtains current provider active principal from `getEarnPosition` or a simulated action and converts percentage to Asset-denominated principal.
 
 No raw shares.
 
@@ -644,73 +644,25 @@ Always show network context.
 
 ---
 
-# 23. Previews
+# 23. Product previews and future SDK interface
 
-Every state-changing preview includes the same automatic one-step settlement projection as execution.
+The future TypeScript SDK in `product/` will call the single deployed EVM contract through simulated OpenZeppelin `multicall(bytes[])`. Each batch starts with **one economic action** and appends getters. Do not add `settle()` before it: the action already attempts one automatic settlement step. The SDK must use the connected caller and check token balances and allowances. It must surface expected allowance, balance, maturity, cooldown, deadline, and slippage failures distinctly from a successful simulation.
 
-Supply preview:
+| SDK preview | Simulated call and decoded result |
+| --- | --- |
+| `previewSupply` | `supply` + `getEarnPosition` + `getTick`; resulting principal and market state. |
+| `previewWithdraw` | `withdraw` + `getEarnPosition` + `getTick`; immediate Asset, Working moved to Exit, vested Yield out, forfeited Yield, remaining claims. |
+| `previewCollect` | `collect` + `getEarnPosition`; Asset, Quote and vested Yield paid, remaining claims. |
+| `previewUse` | `use` + `getPosition` + `getTick`; Quote Principal, full-term Yield, frozen Close fee, maturity, resulting position. Read `nextPositionId` before the batch. |
+| `previewRepay` | `repay` + `getPosition` + `getTick`; gross accrued Yield, Asset fee, total Asset in, Quote unlocked. |
+| `previewSwap` | `swap` + `getTick`; Quote required, fee, provider proceeds. |
+| `previewClose` | `close` + `getPosition` + `getTick` (and domain getters if needed); final status and Active/Exit accounting. |
 
-```text
-Asset supplied
-resulting provider Active principal
-market Available / In Use
-Yield vesting restarts
-```
+The SDK may use `quoteUse(tickId, assetAmount)` before approval for Quote Principal and full-term Yield. This read-only quotation uses current state and does not simulate an expired cursor settlement. Quote, simulation, and transaction execution can see different market state or timestamps. Preserve `maxFullTermYieldAsset`, `maxYieldAsset`, `maxQuoteIn`, Withdraw’s `minImmediateAssetOut`, and deadlines. Passing zero minimum and a permissive deadline keeps an unrestricted Withdraw option.
 
-Withdraw preview:
+The SDK must decode `bytes[]` with each call’s ABI entry and verify that `eth_call` did not commit changes. The tests in `protocol/ethereum/test/PreviewIntegration.ts` are the reference integration workflow. No production SDK implementation is part of this protocol task.
 
-```text
-current transferable provider Active principal
-requested principal
-Receive principal now
-Yield out now
-forfeited Yield redistributed / FEE_TO
-Move to Resolving
-remaining transferable Active principal
-resulting Resolving principal
-```
-
-Use preview:
-
-```text
-Asset
-Quote Principal
-Current Yield
-Full-term Yield
-frozen Close Fee
-maturity
-```
-
-Repay:
-
-```text
-Asset principal
-gross Yield
-1% Yield fee
-total Asset in
-Quote unlocked
-```
-
-Swap:
-
-```text
-Asset
-Quote Principal
-1% fee
-Provider Net
-```
-
-Collect:
-
-```text
-Asset out (including currently collectible Yield)
-Quote out
-outstanding uncollected Yield
-remaining vesting time
-remaining Resolving
-```
-
-Internal P/scale/generation must not be required for normal UX.
+Internal Product-Sum P/scale/generation and fractional remainders remain hidden from normal UX. A zero-value Collect must retain fractional Active and Exit entitlements for future distributions.
 
 ---
 
@@ -731,6 +683,7 @@ previewUse
 previewRepay
 previewSwap
 previewCollect
+previewClose
 
 supply
 withdraw

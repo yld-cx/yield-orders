@@ -68,7 +68,7 @@ contract YieldOrdersTest {
         );
         vm.warp(block.timestamp + 1);
         vm.prank(A);
-        YieldOrders.WithdrawPreview memory w = protocol.withdraw(tickId, 500 ether);
+        YieldOrders.WithdrawPreview memory w = protocol.withdraw(tickId, 500 ether, 0, type(uint256).max);
         require(w.availableAssetOut == 450 ether && w.workingToExit == 50 ether, "exit split");
         t = protocol.getTick(tickId);
         require(t.activePrincipal == 500 ether && t.exitWorking == 50 ether, "domains");

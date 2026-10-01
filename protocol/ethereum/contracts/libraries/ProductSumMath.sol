@@ -19,7 +19,7 @@ library ProductSumMath {
     /// @dev The caller bounds `gain` to 1e30. A domain P never exceeds 1e39,
     /// so `gain * product` is at most 1e69 and fits uint256.
     function fundingDelta(uint256 gain, uint256 product, uint256 principal) internal pure returns (uint256 delta) {
-        unchecked {
+        {
             delta = (gain * product) / principal;
         }
     }
@@ -71,17 +71,17 @@ library ProductSumMath {
         for (uint256 i; i < scaleDistance && amountX36 != 0; ++i) amountX36 /= SCALE_FACTOR;
     }
 
-    /// @dev Exact historical gain: one rational floor with a remainder carried across scales.
+    /// @dev Historical gain in X36 units. A single rational floor carries across scales.
     /// `scaleDeltas[0]` excludes the provider checkpoint; later entries are whole scale sums.
     /// The fixed array has MAX_SCALE_SPAN + 1 entries.
-    function accruedGain(
+    function accruedGainX36(
         uint256 initialPrincipalX36,
         uint256 snapshotProduct,
         uint256 span,
         uint256[9] memory scaleDeltas
     ) internal pure returns (uint256 gain) {
-        uint256 denominator = snapshotProduct * PRINCIPAL_PRECISION;
-        if (initialPrincipalX36 > denominator || denominator == 0) {
+        uint256 denominator = snapshotProduct;
+        if (denominator == 0 || initialPrincipalX36 > denominator * PRINCIPAL_PRECISION) {
             revert Invariant();
         }
 
@@ -90,6 +90,8 @@ library ProductSumMath {
         // The exact modular remainder is below denominator and fits one limb.
         Uint512.Value memory remainder = Uint512.Value(0, mulmod(initialPrincipalX36, firstDelta, denominator));
         uint256 scalePower = 1;
+        uint256 principalWhole = initialPrincipalX36 / denominator;
+        uint256 principalRemainder = initialPrincipalX36 % denominator;
         for (uint256 i = 1; i <= span; ++i) {
             scalePower *= SCALE_FACTOR;
             uint256 scaleDelta = scaleDeltas[i];
@@ -97,13 +99,18 @@ library ProductSumMath {
             uint256 fraction = scaleDelta % scalePower;
             uint256 wholeGain = Math.mulDiv(initialPrincipalX36, whole, denominator);
             uint256 wholeRemainder = mulmod(initialPrincipalX36, whole, denominator);
+            uint256 fractionalWhole = Math.mulDiv(principalWhole, fraction, scalePower);
+            uint256 fractionalRemainder = mulmod(principalWhole, fraction, scalePower);
             Uint512.Value memory numerator = Uint512.add(
                 Uint512.mulSmall(remainder, SCALE_FACTOR),
                 Uint512.mul(wholeRemainder, scalePower)
             );
-            numerator = Uint512.add(numerator, Uint512.mul(initialPrincipalX36, fraction));
+            numerator = Uint512.add(numerator, Uint512.mul(denominator, fractionalRemainder));
+            numerator = Uint512.add(numerator, Uint512.mul(principalRemainder, fraction));
             Uint512.Value memory scaledDenominator = Uint512.mul(denominator, scalePower);
             uint256 carry;
+            // Each of the four normalized remainder terms is strictly below the denominator.
+            // The potentially large whole part was extracted above, so at most three borrows remain.
             if (Uint512.gte(numerator, scaledDenominator)) {
                 numerator = Uint512.sub(numerator, scaledDenominator);
                 ++carry;
@@ -112,7 +119,11 @@ library ProductSumMath {
                 numerator = Uint512.sub(numerator, scaledDenominator);
                 ++carry;
             }
-            gain += wholeGain + carry;
+            if (Uint512.gte(numerator, scaledDenominator)) {
+                numerator = Uint512.sub(numerator, scaledDenominator);
+                ++carry;
+            }
+            gain += wholeGain + fractionalWhole + carry;
             remainder = numerator;
         }
     }

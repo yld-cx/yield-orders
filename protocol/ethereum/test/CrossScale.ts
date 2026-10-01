@@ -35,6 +35,32 @@ function boundedCarry(A: bigint, B: bigint, deltas: bigint[]) {
   return { gain, carries, remainder };
 }
 
+// X36 checkpoint carry uses the same rational floor with a smaller denominator.
+// Extracting A / P before the 512-bit recurrence keeps the residual carry at most three.
+function boundedCarryX36(A: bigint, P: bigint, deltas: bigint[]) {
+  let gain = (A * deltas[0]) / P;
+  let remainder = (A * deltas[0]) % P;
+  const principalWhole = A / P;
+  const principalRemainder = A % P;
+  let pow = 1n;
+  for (let i = 1; i < deltas.length; i++) {
+    pow *= F;
+    const whole = deltas[i] / pow;
+    const fraction = deltas[i] % pow;
+    const fractionalWhole = (principalWhole * fraction) / pow;
+    const fractionalRemainder = (principalWhole * fraction) % pow;
+    const numerator = remainder * F + ((A * whole) % P) * pow +
+      P * fractionalRemainder + principalRemainder * fraction;
+    const denominator = P * pow;
+    assert.ok(numerator <= U512 && denominator <= U512, "X36 uint512 bound");
+    const carry = numerator / denominator;
+    assert.ok(carry <= 3n, "X36 three-step carry");
+    gain += (A * whole) / P + fractionalWhole + carry;
+    remainder = numerator % denominator;
+  }
+  return gain;
+}
+
 describe("canonical cross-scale gain carry", () => {
   const B = P0 * X;
   for (const span of [0, 1, 8]) {
@@ -81,6 +107,22 @@ describe("canonical cross-scale gain carry", () => {
         i !== span && draw() % 4n === 0n ? 0n : draw(),
       );
       assert.equal(boundedCarry(A, B, deltas).gain, rational(A, B, deltas), `vector ${vector}`);
+    }
+  });
+
+  it("matches 2,048 seeded X36 checkpoint vectors with large fractional carries", () => {
+    let seed = 0x1968_2026n;
+    const draw = () => {
+      seed = (seed * 6364136223846793005n + 1442695040888963407n) & U256;
+      return seed;
+    };
+    for (let vector = 0; vector < 2048; vector++) {
+      const span = Number(draw() % 9n);
+      const A = 1n + draw() % 10n ** 57n;
+      const deltas = Array.from({ length: span + 1 }, (_, i) =>
+        i !== span && draw() % 4n === 0n ? 0n : draw() % 10n ** 39n,
+      );
+      assert.equal(boundedCarryX36(A, P0, deltas), rational(A, P0, deltas), `X36 vector ${vector}`);
     }
   });
 });

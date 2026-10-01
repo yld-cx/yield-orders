@@ -15,6 +15,8 @@ export type Account = {
   owedExitAsset: bigint;
   owedExitYield: bigint;
   owedExitQuote: bigint;
+  activeFractions: Sums;
+  exitFractions: Sums;
 };
 const zero = (): Sums => ({ asset: 0n, yield: 0n, quote: 0n });
 const snap = (): Snapshot => ({ initial: 0n, generation: 0, scale: 0, P: P0, sums: zero() });
@@ -26,6 +28,8 @@ export const account = (): Account => ({
   owedExitAsset: 0n,
   owedExitYield: 0n,
   owedExitQuote: 0n,
+  activeFractions: zero(),
+  exitFractions: zero(),
 });
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
 
@@ -61,6 +65,9 @@ export class DomainModel {
   }
   // One rational floor over every relevant scale; deliberately independent from Solidity's carry recurrence.
   gain(s: Snapshot, stream: keyof Sums): bigint {
+    return this.gainX36(s, stream) / X;
+  }
+  gainX36(s: Snapshot, stream: keyof Sums): bigint {
     if (s.initial === 0n) return 0n;
     const span = Math.min(8, this.end(s.generation) - s.scale);
     let numerator = 0n;
@@ -68,7 +75,10 @@ export class DomainModel {
       const delta = this.at(s.generation, s.scale + i)[stream] - (i === 0 ? s.sums[stream] : 0n);
       numerator += delta * F ** BigInt(span - i);
     }
-    return (s.initial * numerator) / (s.P * X * F ** BigInt(span));
+    return (s.initial * numerator) / (s.P * F ** BigInt(span));
+  }
+  gainWithFraction(s: Snapshot, stream: keyof Sums, fraction: bigint): bigint {
+    return (fraction + this.gainX36(s, stream)) / X;
   }
   sync(s: Snapshot): { next: Snapshot; gains: Sums } {
     const gains: Sums = { asset: this.gain(s, "asset"), yield: this.gain(s, "yield"), quote: this.gain(s, "quote") };
@@ -137,15 +147,18 @@ export class TickModel {
   }
   sync(who: string) {
     const a = this.get(who);
-    const active = this.active.sync(a.active);
-    const exit = this.exit.sync(a.exit);
-    a.active = active.next;
-    a.exit = exit.next;
-    a.owedActiveYield += active.gains.yield;
-    a.owedActiveQuote += active.gains.quote;
-    a.owedExitAsset += exit.gains.asset;
-    a.owedExitYield += exit.gains.yield;
-    a.owedExitQuote += exit.gains.quote;
+    const accrue = (domain: DomainModel, snapshot: Snapshot, fractions: Sums, stream: keyof Sums): bigint => {
+      const combined = fractions[stream] + domain.gainX36(snapshot, stream);
+      fractions[stream] = combined % X;
+      return combined / X;
+    };
+    a.owedActiveYield += accrue(this.active, a.active, a.activeFractions, "yield");
+    a.owedActiveQuote += accrue(this.active, a.active, a.activeFractions, "quote");
+    a.owedExitAsset += accrue(this.exit, a.exit, a.exitFractions, "asset");
+    a.owedExitYield += accrue(this.exit, a.exit, a.exitFractions, "yield");
+    a.owedExitQuote += accrue(this.exit, a.exit, a.exitFractions, "quote");
+    a.active = this.active.take(this.active.principalX36(a.active));
+    a.exit = this.exit.take(this.exit.principalX36(a.exit));
     return a;
   }
   supply(who: string, x: bigint) {

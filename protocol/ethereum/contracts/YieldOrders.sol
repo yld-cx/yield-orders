@@ -8,6 +8,7 @@ import {Multicall} from "@openzeppelin/contracts/utils/Multicall.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {TickMath} from "./libraries/TickMath.sol";
 import {ProductSumMath, Invariant} from "./libraries/ProductSumMath.sol";
+import {YieldMath} from "./libraries/YieldMath.sol";
 
 /// @notice yld.cx v0.2 exact-tick, fixed-term Product-Sum liquidity protocol.
 contract YieldOrders is Multicall, ReentrancyGuard {
@@ -108,6 +109,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 owedExitAsset;
         uint256 owedExitYieldAsset;
         uint256 owedExitQuote;
+        // Independent X36 sub-raw-unit entitlements for Active Yield/Quote and Exit Asset/Yield/Quote.
+        uint256[5] fractionalGainX36;
         uint256 timestamp;
     }
     enum Status {
@@ -127,16 +130,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 openedAt;
         uint256 maturity;
         Status status;
-    }
-    struct UsePreview {
-        uint256 assetAmount;
-        uint256 quotePrincipal;
-        uint256 activeUtilizationBeforeX128;
-        uint256 activeUtilizationAfterX128;
-        uint256 fullTermYieldAsset;
-        uint256 closeFee;
-        uint256 dailyRateX128;
-        uint256 maturity;
     }
     struct WithdrawPreview {
         uint256 providerPrincipal;
@@ -215,21 +208,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 activePrincipal;
         uint64 settleCursor;
     }
-    struct Projection {
-        Tick tick;
-        ScaleSums activeOverride;
-        ScaleSums exitOverride;
-        uint64 activeOldGeneration;
-        uint64 activeOldScale;
-        uint64 exitOldGeneration;
-        uint64 exitOldScale;
-        bool activeChanged;
-        bool exitChanged;
-    }
-
     mapping(uint256 => Pair) public pairs;
     mapping(uint256 => Position) private _positions;
     mapping(address => uint256) public tokenLiability;
+    mapping(address => uint256) public accruedProtocolFees;
     mapping(uint256 => mapping(uint8 => mapping(uint64 => mapping(uint64 => ScaleSums)))) public scaleSums;
     mapping(uint256 => mapping(uint8 => mapping(uint64 => GenerationMeta))) public generationMeta;
     mapping(uint256 => mapping(uint64 => uint256)) public tickPositionId;
@@ -337,9 +319,11 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint64 generation,
         uint64 finalScale
     );
+    event ProtocolFeesAccrued(address indexed token, uint256 amount);
+    event ProtocolFeesCollected(address indexed token, uint256 amount);
 
     constructor(address feeTo) {
-        if (feeTo == address(0)) {
+        if (feeTo == address(0) || feeTo == address(this)) {
             revert InvalidInput();
         }
         FEE_TO = feeTo;
@@ -442,16 +426,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     function _activePrincipal(Tick memory t) internal pure returns (uint256) {
         return t.availableSupply + t.workingSupply - t.exitWorking;
     }
-    function _pow4(uint256 utilizationX128) internal pure returns (uint256) {
-        if (utilizationX128 == Q128) {
-            return Q128;
-        }
-        // The endpoint is handled above. Below Q128, both square products fit uint256.
-        unchecked {
-            uint256 utilizationSquared = (utilizationX128 * utilizationX128) / Q128;
-            return (utilizationSquared * utilizationSquared) / Q128;
-        }
-    }
     function _quote(Tick memory t, uint256 x) internal pure returns (uint256 q) {
         q = Math.mulDiv(x, t.priceX128, Q128, Math.Rounding.Ceil);
         if (q == 0) {
@@ -460,28 +434,16 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _bound(q);
     }
     function _fullTermYield(Tick memory t, uint256 assetAmount) internal pure returns (uint256 result) {
-        uint256 activeWorking = t.workingSupply - t.exitWorking;
-        uint256 activePrincipal = t.availableSupply + activeWorking;
-        if (assetAmount == 0 || assetAmount > t.availableSupply || activePrincipal == 0) {
+        if (assetAmount == 0 || assetAmount > t.availableSupply) {
             revert InsufficientLiquidity();
         }
-        uint256 utilizationBeforeX128;
-        uint256 utilizationAfterX128;
-        // Active principal and the requested amount are each bounded by 1e30; Q128 products fit uint256.
-        unchecked {
-            utilizationBeforeX128 = (activeWorking * Q128) / activePrincipal;
-            utilizationAfterX128 = ((activeWorking + assetAmount) * Q128) / activePrincipal;
-        }
-        uint256 curve =
-            4 * MIN_DAILY_BPS * (utilizationAfterX128 - utilizationBeforeX128) +
-                (MAX_DAILY_BPS - MIN_DAILY_BPS) * (_pow4(utilizationAfterX128) - _pow4(utilizationBeforeX128));
-        result = Math.mulDiv(activePrincipal, uint256(t.durationDays) * curve, 4 * BPS * Q128, Math.Rounding.Ceil);
+        result = YieldMath.fullTermYield(t.availableSupply, t.workingSupply - t.exitWorking, t.durationDays, assetAmount);
         if (result == 0) {
             revert InvalidInput();
         }
         _bound(result);
     }
-    function _swapPreview(Tick memory t, uint256 x) internal pure returns (SwapPreview memory q) {
+    function _swapAmounts(Tick memory t, uint256 x) internal pure returns (SwapPreview memory q) {
         if (x == 0 || x > t.availableSupply) {
             revert InsufficientLiquidity();
         }
@@ -490,7 +452,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.quotePrincipal = _quote(t, x);
         q.swapFee = q.quotePrincipal / 100;
         // The fixed fee is at most the quoted principal.
-        unchecked {
+        {
             q.providerSwapProceeds = q.quotePrincipal - q.swapFee;
         }
     }
@@ -511,6 +473,18 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (IERC20(token).balanceOf(address(this)) < total) {
             revert Invariant();
         }
+    }
+    function _accrueFee(address token, uint256 amount) internal {
+        accruedProtocolFees[token] += amount;
+        tokenLiability[token] += amount;
+        emit ProtocolFeesAccrued(token, amount);
+    }
+    function collectProtocolFees(address token) external nonReentrant returns (uint256 amount) {
+        amount = accruedProtocolFees[token];
+        accruedProtocolFees[token] = 0;
+        tokenLiability[token] -= amount;
+        _push(IERC20(token), FEE_TO, amount);
+        emit ProtocolFeesCollected(token, amount);
     }
     function _checkAsset(uint256 id, Tick storage t) internal {
         uint256 current = t.availableSupply + t.exitAssetReserve + t.yieldAssetReserve;
@@ -568,26 +542,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             d.quoteSum += ProductSumMath.fundingDelta(quoteGain, d.P, principal);
         }
     }
-    function _fundMemory(
-        Domain memory d,
-        uint256 principal,
-        uint256 assetGain,
-        uint256 yieldGain,
-        uint256 quoteGain
-    ) internal pure {
-        if (principal == 0) {
-            revert Invariant();
-        }
-        if (assetGain != 0) {
-            d.assetSum += ProductSumMath.fundingDelta(assetGain, d.P, principal);
-        }
-        if (yieldGain != 0) {
-            d.yieldSum += ProductSumMath.fundingDelta(yieldGain, d.P, principal);
-        }
-        if (quoteGain != 0) {
-            d.quoteSum += ProductSumMath.fundingDelta(quoteGain, d.P, principal);
-        }
-    }
     function _deplete(
         uint256 id,
         DomainKind kind,
@@ -619,89 +573,20 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         d.P = newP;
     }
-    function _depleteMemory(
-        Domain memory d,
-        uint256 beforePrincipal,
-        uint256 afterPrincipal
-    ) internal pure returns (bool changed, ScaleSums memory oldSums, uint64 oldGeneration, uint64 oldScale) {
-        oldGeneration = d.generation;
-        oldScale = d.scale;
-        if (afterPrincipal == 0) {
-            oldSums = ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, true);
-            changed = true;
-            d.generation += 1;
-            d.scale = 0;
-            d.P = P_PRECISION;
-            d.assetSum = 0;
-            d.yieldSum = 0;
-            d.quoteSum = 0;
-            return (changed, oldSums, oldGeneration, oldScale);
-        }
-        (uint256 newP, uint64 jump) = ProductSumMath.depletedProduct(d.P, beforePrincipal, afterPrincipal);
-        if (jump != 0) {
-            oldSums = ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, true);
-            changed = true;
-            d.scale += jump;
-            d.assetSum = 0;
-            d.yieldSum = 0;
-            d.quoteSum = 0;
-        }
-        d.P = newP;
-    }
-    function _scaleValue(
-        uint256 id,
-        DomainKind kind,
-        uint64 generation,
-        uint64 scale,
-        Projection memory v
-    ) internal view returns (ScaleSums memory s) {
-        Domain memory d = kind == DomainKind.Active ? v.tick.active : v.tick.exit;
+    function _scaleValue(uint256 id, DomainKind kind, uint64 generation, uint64 scale)
+        internal view returns (ScaleSums memory)
+    {
+        Domain storage d = kind == DomainKind.Active ? _ticks[id].active : _ticks[id].exit;
         if (generation == d.generation && scale == d.scale) {
             return ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, false);
         }
-        if (
-            kind == DomainKind.Active &&
-            v.activeChanged &&
-            generation == v.activeOldGeneration &&
-            scale == v.activeOldScale
-        ) {
-            return v.activeOverride;
-        }
-        if (kind == DomainKind.Exit && v.exitChanged && generation == v.exitOldGeneration && scale == v.exitOldScale) {
-            return v.exitOverride;
-        }
         return scaleSums[id][uint8(kind)][generation][scale];
     }
-    function _endScale(
-        uint256 id,
-        DomainKind kind,
-        uint64 generation,
-        Projection memory v
-    ) internal view returns (uint64) {
-        Domain memory d = kind == DomainKind.Active ? v.tick.active : v.tick.exit;
-        if (generation == d.generation) {
-            return d.scale;
-        }
-        if (
-            kind == DomainKind.Active &&
-            v.activeChanged &&
-            generation == v.activeOldGeneration &&
-            v.tick.active.generation != generation
-        ) {
-            return v.activeOldScale;
-        }
-        if (
-            kind == DomainKind.Exit &&
-            v.exitChanged &&
-            generation == v.exitOldGeneration &&
-            v.tick.exit.generation != generation
-        ) {
-            return v.exitOldScale;
-        }
+    function _endScale(uint256 id, DomainKind kind, uint64 generation) internal view returns (uint64) {
+        Domain storage d = kind == DomainKind.Active ? _ticks[id].active : _ticks[id].exit;
+        if (generation == d.generation) return d.scale;
         GenerationMeta memory m = generationMeta[id][uint8(kind)][generation];
-        if (!m.finalized) {
-            revert Invariant();
-        }
+        if (!m.finalized) revert Invariant();
         return m.finalScale;
     }
     function _sumField(ScaleSums memory s, uint8 stream) internal pure returns (uint256) {
@@ -713,24 +598,23 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         return s.quoteSum;
     }
-    /// @dev Reads the current or projected scale sums; ProductSumMath handles the rational floor.
+    /// @dev Reads current and persisted historical scale sums.
     function _accrued(
         uint256 id,
         DomainKind kind,
         Snapshot memory snap,
-        uint8 stream,
-        Projection memory v
+        uint8 stream
     ) internal view returns (uint256 gain) {
         if (snap.initialPrincipalX36 == 0) {
             return 0;
         }
-        uint64 finalScale = _endScale(id, kind, snap.generation, v);
+        uint64 finalScale = _endScale(id, kind, snap.generation);
         if (finalScale < snap.scale) {
             revert Invariant();
         }
         uint256 span = Math.min(MAX_SCALE_SPAN, uint256(finalScale - snap.scale));
         uint256[9] memory scaleDeltas;
-        uint256 currentSum = _sumField(_scaleValue(id, kind, snap.generation, snap.scale, v), stream);
+        uint256 currentSum = _sumField(_scaleValue(id, kind, snap.generation, snap.scale), stream);
         uint256 checkpoint =
             stream == 0
                 ? snap.assetSum
@@ -739,9 +623,9 @@ contract YieldOrders is Multicall, ReentrancyGuard {
                     : snap.quoteSum;
         scaleDeltas[0] = currentSum - checkpoint;
         for (uint256 i = 1; i <= span; ++i) {
-            scaleDeltas[i] = _sumField(_scaleValue(id, kind, snap.generation, snap.scale + uint64(i), v), stream);
+            scaleDeltas[i] = _sumField(_scaleValue(id, kind, snap.generation, snap.scale + uint64(i)), stream);
         }
-        gain = ProductSumMath.accruedGain(snap.initialPrincipalX36, snap.P, span, scaleDeltas);
+        gain = ProductSumMath.accruedGainX36(snap.initialPrincipalX36, snap.P, span, scaleDeltas);
     }
     // Provider checkpoints and realized claims remain under protocol storage control.
     function _snapshot(Snapshot memory s, Domain memory d, uint256 principalX36) internal pure {
@@ -765,7 +649,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     function _syncProvider(
         uint256 tickId,
         ProviderPosition memory position,
-        Projection memory projection
+        Tick memory tick
     ) internal view returns (ProviderPosition memory) {
         for (uint8 domainIndex = 0; domainIndex < 2; ++domainIndex) {
             bool isActive = domainIndex == 0;
@@ -778,7 +662,11 @@ contract YieldOrders is Multicall, ReentrancyGuard {
                 if (isActive && streamIndex == 0) {
                     continue;
                 }
-                uint256 gain = _accrued(tickId, domainKind, snapshot, streamIndex, projection);
+                uint256 fractionIndex = isActive ? streamIndex - 1 : streamIndex + 2;
+                uint256 accruedX36 = _accrued(tickId, domainKind, snapshot, streamIndex);
+                uint256 combinedX36 = position.fractionalGainX36[fractionIndex] + accruedX36;
+                uint256 gain = combinedX36 / PRINCIPAL_PRECISION;
+                position.fractionalGainX36[fractionIndex] = combinedX36 % PRINCIPAL_PRECISION;
                 if (isActive) {
                     if (streamIndex == 1) {
                         position.owedActiveYieldAsset += gain;
@@ -795,7 +683,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
                     }
                 }
             }
-            Domain memory currentDomain = isActive ? projection.tick.active : projection.tick.exit;
+            Domain memory currentDomain = isActive ? tick.active : tick.exit;
             _snapshot(
                 snapshot,
                 currentDomain,
@@ -813,9 +701,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         return position;
     }
     function _sync(uint256 id, address owner) internal returns (ProviderPosition storage ps) {
-        Projection memory v;
-        v.tick = _ticks[id];
-        _providers[id][owner] = _syncProvider(id, _providers[id][owner], v);
+        _providers[id][owner] = _syncProvider(id, _providers[id][owner], _ticks[id]);
         return _providers[id][owner];
     }
     function _addEarn(address owner, uint256 id) internal {
@@ -834,7 +720,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             p.owedActiveQuote != 0 ||
             p.owedExitAsset != 0 ||
             p.owedExitYieldAsset != 0 ||
-            p.owedExitQuote != 0
+            p.owedExitQuote != 0 ||
+            p.fractionalGainX36[0] != 0 || p.fractionalGainX36[1] != 0 ||
+            p.fractionalGainX36[2] != 0 || p.fractionalGainX36[3] != 0 ||
+            p.fractionalGainX36[4] != 0
         ) {
             return;
         }
@@ -928,11 +817,11 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             revert Invariant();
         }
         // Both raw amounts are bounded by 1e30, so their product fits uint256.
-        unchecked {
+        {
             q.availableAssetOut = (q.principalAmount * t.availableSupply) / activePrincipal;
         }
         // The proportional Available part cannot exceed the withdrawn principal.
-        unchecked {
+        {
             q.workingToExit = q.principalAmount - q.availableAssetOut;
         }
         if (q.workingToExit > t.workingSupply - t.exitWorking) {
@@ -940,13 +829,13 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         _bound(t.exitWorking + q.workingToExit);
         // principalAmount <= floor(principalX36 / X36), so subtraction cannot underflow.
-        unchecked {
+        {
             q.remainingActivePrincipal = (principalX36 - q.principalAmount * PRINCIPAL_PRECISION) / PRINCIPAL_PRECISION;
         }
     }
     function _vesting(Tick memory t, uint256 timestamp) internal view returns (uint256 elapsed, uint256 duration) {
         // Valid Tick duration is below MAX_TIMESTAMP; EVM block time never precedes a stored provider timestamp.
-        unchecked {
+        {
             duration = uint256(t.durationDays) * SECONDS_PER_DAY;
             elapsed = Math.min(block.timestamp - timestamp, duration);
         }
@@ -954,18 +843,21 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     function _withdrawYield(Tick memory t, ProviderPosition memory p, WithdrawPreview memory q) internal view {
         uint256 withdrawnX36;
         // The whole-raw withdrawal is bounded by 1e30, so its X36 conversion fits uint256.
-        unchecked {
+        {
             withdrawnX36 = q.principalAmount * PRINCIPAL_PRECISION;
         }
         uint256 yieldForWithdraw = Math.mulDiv(p.owedActiveYieldAsset, withdrawnX36, p.active.initialPrincipalX36);
         (uint256 elapsed, uint256 duration) = _vesting(t, p.timestamp);
         q.yieldAssetOut = Math.mulDiv(yieldForWithdraw, elapsed, duration);
         // elapsed <= duration, hence the vested amount cannot exceed its attributable Yield.
-        unchecked {
+        {
             q.forfeitedYield = yieldForWithdraw - q.yieldAssetOut;
         }
     }
-    function withdraw(uint256 id, uint256 principalAmount) external nonReentrant returns (WithdrawPreview memory q) {
+    function withdraw(uint256 id, uint256 principalAmount, uint256 minImmediateAssetOut, uint256 deadline)
+        external nonReentrant returns (WithdrawPreview memory q)
+    {
+        if (block.timestamp > deadline) revert Expired();
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
         ProviderPosition storage p = _sync(id, msg.sender);
@@ -975,8 +867,9 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         Tick memory tm = t;
         q = _withdrawNumbers(tm, p.active.initialPrincipalX36, principalAmount);
         _withdrawYield(tm, p, q);
+        if (q.availableAssetOut < minImmediateAssetOut) revert Slippage();
         // These two outputs partition yieldForWithdraw, which is at most the synced owed balance.
-        unchecked {
+        {
             p.owedActiveYieldAsset -= q.yieldAssetOut + q.forfeitedYield;
         }
         t.availableSupply -= q.availableAssetOut;
@@ -998,7 +891,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             uint256 providerPrincipalCeil = remainingProviderX36 / PRINCIPAL_PRECISION;
             if (remainingProviderX36 % PRINCIPAL_PRECISION != 0) {
                 // One extra raw unit covers the provider's positive fractional remainder.
-                unchecked {
+                {
                     ++providerPrincipalCeil;
                 }
             }
@@ -1006,14 +899,14 @@ contract YieldOrders is Multicall, ReentrancyGuard {
                 // ceil((remainingActive * X36 - remainingProviderX36) / X36)
                 uint256 eligiblePrincipal;
                 // The branch proves that other Active principal remains, so the subtraction is nonnegative.
-                unchecked {
+                {
                     eligiblePrincipal = remainingActive - remainingProviderX36 / PRINCIPAL_PRECISION;
                 }
                 t.active.yieldSum += Math.mulDiv(q.forfeitedYield, t.active.P, eligiblePrincipal);
                 p.active.yieldSum = t.active.yieldSum;
             } else {
                 t.yieldAssetReserve -= q.forfeitedYield;
-                _push(IERC20(t.asset), FEE_TO, q.forfeitedYield);
+                _accrueFee(t.asset, q.forfeitedYield);
             }
         }
         q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
@@ -1031,7 +924,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             q.forfeitedYield
         );
     }
-    function _collectPreview(Tick memory t, ProviderPosition memory p) internal view returns (CollectPreview memory q) {
+    function _collectAmounts(Tick memory t, ProviderPosition memory p) internal view returns (CollectPreview memory q) {
         (uint256 elapsed, uint256 duration) = _vesting(t, p.timestamp);
         q.exitAsset = p.owedExitAsset;
         q.activeYieldAsset = Math.mulDiv(p.owedActiveYieldAsset, elapsed, duration);
@@ -1042,7 +935,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.totalQuoteOut = q.exitQuote + q.activeQuote;
         q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
         // The vesting fraction is at most one for each independent Yield balance.
-        unchecked {
+        {
             q.outstandingActiveYieldAsset = p.owedActiveYieldAsset - q.activeYieldAsset;
             q.outstandingExitYieldAsset = p.owedExitYieldAsset - q.exitYieldAsset;
         }
@@ -1052,14 +945,14 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
         ProviderPosition storage p = _sync(id, msg.sender);
-        q = _collectPreview(t, p);
+        q = _collectAmounts(t, p);
         t.exitAssetReserve -= q.exitAsset;
         t.yieldAssetReserve -= q.activeYieldAsset + q.exitYieldAsset;
         t.exitQuoteReserve -= q.exitQuote;
         t.activeQuoteReserve -= q.activeQuote;
         p.owedExitAsset = 0;
         // Collect deducts only the vested portions, each no greater than its owed balance.
-        unchecked {
+        {
             p.owedActiveYieldAsset -= q.activeYieldAsset;
             p.owedExitYieldAsset -= q.exitYieldAsset;
         }
@@ -1098,7 +991,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             revert Expired();
         }
         Tick memory tm = t;
-        SwapPreview memory q = _swapPreview(tm, assetAmount);
+        SwapPreview memory q = _swapAmounts(tm, assetAmount);
         uint256 fullYield = _fullTermYield(tm, assetAmount);
         if (fullYield > maxFullTermYieldAsset) {
             revert Slippage();
@@ -1145,7 +1038,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             referrer
         );
     }
-    function _repayPreview(Position memory p, Tick memory t) internal view returns (RepayPreview memory q) {
+    function _repayAmounts(Position memory p, Tick memory t) internal view returns (RepayPreview memory q) {
         if (p.status != Status.ACTIVE || block.timestamp >= p.maturity) {
             revert InvalidState();
         }
@@ -1154,9 +1047,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 termSeconds = p.maturity - p.openedAt;
         // Full-term Yield is at most 1e30, elapsed <= termSeconds <= MAX_TIMESTAMP,
         // and the rounding numerator is therefore far below uint256.max.
-        unchecked {
-            q.grossYieldAsset =
-                (p.fullTermYieldAsset * Math.max(MIN_BILLABLE_SECONDS, elapsed) + termSeconds - 1) / termSeconds;
+        {
+            q.grossYieldAsset = YieldMath.accruedRepayYield(p.fullTermYieldAsset, elapsed, termSeconds);
         }
         if (q.grossYieldAsset == 0 || q.grossYieldAsset > p.fullTermYieldAsset) {
             revert Invariant();
@@ -1167,16 +1059,16 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.exitFill = Math.min(p.assetAmount, t.exitWorking);
         uint256 netYield;
         // exitFill <= assetAmount and the 1% fee <= gross Yield.
-        unchecked {
+        {
             q.activeReturn = p.assetAmount - q.exitFill;
             netYield = q.grossYieldAsset - q.yieldFeeAsset;
         }
         // Both factors are at most 1e30, so their product fits uint256.
-        unchecked {
+        {
             q.exitYieldAsset = (netYield * q.exitFill) / p.assetAmount;
         }
         // The Exit allocation cannot exceed the net funded Yield.
-        unchecked {
+        {
             q.activeYieldAsset = netYield - q.exitYieldAsset;
         }
         q.quotePrincipalUnlocked = p.quotePrincipal;
@@ -1195,7 +1087,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         Tick memory tm = t;
         Position memory pm = p;
-        q = _repayPreview(pm, tm);
+        q = _repayAmounts(pm, tm);
         if (q.grossYieldAsset > maxYieldAsset) {
             revert Slippage();
         }
@@ -1221,7 +1113,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (p.tickSeq == t.settleCursor) {
             t.settleCursor += 1;
         }
-        _push(IERC20(t.asset), FEE_TO, q.yieldFeeAsset);
+        _accrueFee(t.asset, q.yieldFeeAsset);
         _push(IERC20(t.quote), msg.sender, p.quotePrincipal);
         _checkAsset(p.tickId, t);
         _checkQuote(p.tickId, t);
@@ -1253,7 +1145,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             revert Expired();
         }
         Tick memory tm = t;
-        q = _swapPreview(tm, assetAmount);
+        q = _swapAmounts(tm, assetAmount);
         if (q.quotePrincipal > maxQuoteIn) {
             revert Slippage();
         }
@@ -1263,13 +1155,13 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         t.availableSupply -= assetAmount;
         t.activeQuoteReserve += q.providerSwapProceeds;
         _deplete(id, DomainKind.Active, t.active, oldActive, oldActive - assetAmount);
-        _push(IERC20(t.quote), FEE_TO, q.swapFee);
+        _accrueFee(t.quote, q.swapFee);
         _push(IERC20(t.asset), msg.sender, assetAmount);
         _checkAsset(id, t);
         _checkQuote(id, t);
         emit ImmediateSwap(id, msg.sender, assetAmount, q.quotePrincipal, q.swapFee, q.providerSwapProceeds, referrer);
     }
-    /// @dev Shared by execution and the one-step preview projection.
+    /// @dev Shared by direct and automatic Close execution.
     function _closeAmounts(
         uint256 assetAmount,
         uint256 quotePrincipal,
@@ -1280,7 +1172,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         amounts.exitFill = Math.min(assetAmount, exitWorking);
         amounts.activeFill = assetAmount - amounts.exitFill;
         // Both factors are at most 1e30, so their product fits uint256.
-        unchecked {
+        {
             amounts.exitQuote = (amounts.quoteProceeds * amounts.exitFill) / assetAmount;
         }
         amounts.activeQuote = amounts.quoteProceeds - amounts.exitQuote;
@@ -1310,7 +1202,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             _deplete(p.tickId, DomainKind.Active, t.active, oldActive, oldActive - amounts.activeFill);
         }
         p.status = Status.CLOSED;
-        _push(IERC20(t.quote), FEE_TO, p.closeFee);
+        _accrueFee(t.quote, p.closeFee);
         _checkAsset(p.tickId, t);
         _checkQuote(p.tickId, t);
         emit TermClosed(
@@ -1342,77 +1234,11 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             t.settleCursor += 1;
         }
     }
-    // View projection and public previews. Execution persists historical sums and transfers tokens;
-    // the projection changes a memory Tick and carries historical overrides. Both use _closeAmounts.
-    /// @dev Simulates exactly the cursor step that an economic action would run, without mutating storage.
-    function _projectTick(uint256 tickId, bool skipSettle) internal view returns (Projection memory projection) {
-        projection.tick = _ticks[tickId];
-        Tick memory beforeTick = projection.tick;
-        if (skipSettle || beforeTick.settleCursor == beforeTick.nextPositionSeq) {
-            return projection;
-        }
-        Position storage cursorPosition = _positions[tickPositionId[tickId][beforeTick.settleCursor]];
-        if (cursorPosition.status != Status.ACTIVE) {
-            projection.tick.settleCursor += 1;
-            return projection;
-        }
-        if (block.timestamp < cursorPosition.maturity) {
-            return projection;
-        }
-        CloseAmounts memory amounts = _closeAmounts(
-            cursorPosition.assetAmount,
-            cursorPosition.quotePrincipal,
-            cursorPosition.closeFee,
-            beforeTick.exitWorking
-        );
-        uint256 exitPrincipalBefore = beforeTick.exitWorking;
-        uint256 activePrincipalBefore = _activePrincipal(beforeTick);
-        if (amounts.exitFill != 0 && amounts.exitQuote != 0) {
-            _fundMemory(projection.tick.exit, exitPrincipalBefore, 0, 0, amounts.exitQuote);
-        }
-        if (amounts.activeFill != 0 && amounts.activeQuote != 0) {
-            _fundMemory(projection.tick.active, activePrincipalBefore, 0, 0, amounts.activeQuote);
-        }
-        projection.tick.workingSupply -= cursorPosition.assetAmount;
-        projection.tick.exitWorking -= amounts.exitFill;
-        projection.tick.quoteEscrow -= cursorPosition.quotePrincipal;
-        projection.tick.exitQuoteReserve += amounts.exitQuote;
-        projection.tick.activeQuoteReserve += amounts.activeQuote;
-        if (amounts.exitFill != 0) {
-            (
-                projection.exitChanged,
-                projection.exitOverride,
-                projection.exitOldGeneration,
-                projection.exitOldScale
-            ) = _depleteMemory(projection.tick.exit, exitPrincipalBefore, exitPrincipalBefore - amounts.exitFill);
-        }
-        if (amounts.activeFill != 0) {
-            (
-                projection.activeChanged,
-                projection.activeOverride,
-                projection.activeOldGeneration,
-                projection.activeOldScale
-            ) = _depleteMemory(
-                projection.tick.active,
-                activePrincipalBefore,
-                activePrincipalBefore - amounts.activeFill
-            );
-        }
-        projection.tick.settleCursor += 1;
-    }
-    function _previewProvider(
-        uint256 id,
-        address owner,
-        Projection memory v
-    ) internal view returns (ProviderPosition memory) {
-        return _syncProvider(id, _providers[id][owner], v);
-    }
     function getEarnPosition(address owner, uint256 id) external view returns (EarnPositionView memory q) {
         _requireTick(id);
-        Projection memory v;
-        v.tick = _ticks[id];
-        ProviderPosition memory p = _previewProvider(id, owner, v);
-        return _earnPosition(v.tick, p);
+        Tick memory tick = _ticks[id];
+        ProviderPosition memory p = _syncProvider(id, _providers[id][owner], tick);
+        return _earnPosition(tick, p);
     }
     function _earnPosition(Tick memory t, ProviderPosition memory p) internal view returns (EarnPositionView memory q) {
         q.activePrincipal = p.active.initialPrincipalX36 / PRINCIPAL_PRECISION;
@@ -1421,12 +1247,12 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 activePrincipal = _activePrincipal(t);
         if (activePrincipal != 0) {
             // Both raw amounts are bounded by 1e30, so their product fits uint256.
-            unchecked {
+            {
                 q.activeAvailable = (q.activePrincipal * t.availableSupply) / activePrincipal;
             }
         }
         // The Available fraction cannot exceed the provider's Active principal.
-        unchecked {
+        {
             q.activeWorking = q.activePrincipal - q.activeAvailable;
         }
         q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
@@ -1448,88 +1274,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.claimableActiveQuote = p.owedActiveQuote;
         q.claimableExitQuote = p.owedExitQuote;
     }
-    struct SupplyPreview {
-        uint256 resultingActivePrincipal;
-        uint256 marketAvailable;
-    }
-    function previewSupply(uint256 id, uint256 assetAmount) external view returns (SupplyPreview memory q) {
-        _requireTick(id);
-        Projection memory v = _projectTick(id, false);
-        if (assetAmount == 0) {
-            revert InvalidInput();
-        }
-        _bound(assetAmount);
-        _bound(_activePrincipal(v.tick) + assetAmount);
-        ProviderPosition memory p = _previewProvider(id, msg.sender, v);
-        q.resultingActivePrincipal =
-            (p.active.initialPrincipalX36 + assetAmount * PRINCIPAL_PRECISION) / PRINCIPAL_PRECISION;
-        // Available is a subset of Active, whose post-Supply bound was checked above.
-        unchecked {
-            q.marketAvailable = v.tick.availableSupply + assetAmount;
-        }
-    }
-    function previewWithdraw(
-        uint256 id,
-        address owner,
-        uint256 principalAmount
-    ) external view returns (WithdrawPreview memory q) {
-        _requireTick(id);
-        Projection memory v = _projectTick(id, false);
-        ProviderPosition memory p = _previewProvider(id, owner, v);
-        if (block.timestamp <= p.timestamp) {
-            revert Cooldown();
-        }
-        q = _withdrawNumbers(v.tick, p.active.initialPrincipalX36, principalAmount);
-        _withdrawYield(v.tick, p, q);
-        // Existing Exit principal plus the newly resolving portion is bounded by Tick accounting.
-        unchecked {
-            q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION + q.workingToExit;
-        }
-    }
-    function previewUse(uint256 id, uint256 amount) external view returns (UsePreview memory q) {
-        _requireTick(id);
-        Tick memory t = _projectTick(id, false).tick;
-        SwapPreview memory s = _swapPreview(t, amount);
-        uint256 activeWorking = t.workingSupply - t.exitWorking;
-        uint256 activePrincipal = _activePrincipal(t);
-        q.assetAmount = amount;
-        q.quotePrincipal = s.quotePrincipal;
-        // Active principal and the requested amount are bounded by 1e30; Q128 products fit uint256.
-        unchecked {
-            q.activeUtilizationBeforeX128 = (activeWorking * Q128) / activePrincipal;
-            q.activeUtilizationAfterX128 = ((activeWorking + amount) * Q128) / activePrincipal;
-        }
-        q.fullTermYieldAsset = _fullTermYield(t, amount);
-        q.closeFee = s.swapFee;
-        uint256 utilizationSquared;
-        uint256 utilizationCubed;
-        // A positive Use leaves pre-Use utilization below Q128, so these products fit uint256.
-        unchecked {
-            utilizationSquared = (q.activeUtilizationBeforeX128 * q.activeUtilizationBeforeX128) / Q128;
-            utilizationCubed = (utilizationSquared * q.activeUtilizationBeforeX128) / Q128;
-        }
-        // The rate numerator is at most 100 * Q128.
-        unchecked {
-            q.dailyRateX128 = (MIN_DAILY_BPS * Q128 + (MAX_DAILY_BPS - MIN_DAILY_BPS) * utilizationCubed) / BPS;
-        }
-        q.maturity = _maturity(t);
-    }
-    function previewRepay(uint256 positionId) external view returns (RepayPreview memory) {
-        Position memory p = _positions[positionId];
-        if (p.status != Status.ACTIVE) {
-            revert InvalidState();
-        }
-        Tick storage t = _ticks[p.tickId];
-        Projection memory v = _projectTick(p.tickId, p.tickSeq == t.settleCursor);
-        return _repayPreview(p, v.tick);
-    }
-    function previewSwap(uint256 id, uint256 amount) external view returns (SwapPreview memory) {
-        _requireTick(id);
-        return _swapPreview(_projectTick(id, false).tick, amount);
-    }
-    function previewCollect(uint256 id, address owner) external view returns (CollectPreview memory) {
-        _requireTick(id);
-        Projection memory v = _projectTick(id, false);
-        return _collectPreview(v.tick, _previewProvider(id, owner, v));
+    /// @notice A current-state, pre-approval Use quote. Execution can differ after settlement or market changes.
+    function quoteUse(uint256 id, uint256 assetAmount) external view returns (uint256 quotePrincipal, uint256 fullTermYieldAsset) {
+        Tick memory t = _requireTick(id);
+        quotePrincipal = _quote(t, assetAmount);
+        fullTermYieldAsset = _fullTermYield(t, assetAmount);
     }
 }

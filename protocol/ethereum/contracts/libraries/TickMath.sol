@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.36;
 
+/// @dev The unchecked block is required for its intentional 256-bit modular fixed-point products.
 library TickMath {
     error InvalidTick();
 
