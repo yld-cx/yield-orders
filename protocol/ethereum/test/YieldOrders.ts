@@ -6,7 +6,7 @@ import protocolAbiJson from "../abi/YieldOrders.json" with { type: "json" };
 import type { YieldOrders$Type } from "../artifacts/contracts/YieldOrders.sol/artifacts.js";
 import { SALT_NAMESPACE } from "../hardhat.config.js";
 import { feeOnTransferTokenAbi, mockERC20Abi, reentrantTokenAbi } from "./abi/mocks.js";
-import { TickModel, X, P0, F, MAX } from "./reference.js";
+import { TickModel, X, P0, F, MAX, fullTermYield } from "./reference.js";
 import { candidateSalt, guardSalt, NETWORKS, predict, readArtifact } from "../scripts/deployment.js";
 import { withSimulatedActions } from "./simulation.js";
 
@@ -475,8 +475,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       const model = new TickModel();
       const providers = [a, b, keeper] as const;
       const takers = [taker, keeper] as const;
-      let expectedAssetFee = 0n;
-      let expectedQuoteFee = 0n;
+      const positions = new Map<bigint, { amount: bigint; full: bigint; opened: bigint; maturity: bigint; quote: bigint; closeFee: bigint }>();
       let seed = initialSeed;
       const draw = () => {
         seed = (seed * 1103515245n + 12345n) % 2n ** 31n;
@@ -505,16 +504,24 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         }
         let activeX36 = 0n;
         let exitX36 = 0n;
+        const now = (await client.getBlock()).timestamp;
         for (const who of providers) {
           const ref = model.get(who.account.address);
           const v = await market.read.getEarnPosition([who.account.address, tickId]);
+          const activeYield = ref.owedActiveYield + model.active.gainWithFraction(ref.active, "yield", ref.activeFractions.yield);
+          const exitYield = ref.owedExitYield + model.exit.gainWithFraction(ref.exit, "yield", ref.exitFractions.yield);
           assert.equal(v.activePrincipalX36, model.active.principalX36(ref.active));
           assert.equal(v.exitPrincipalX36, model.exit.principalX36(ref.exit));
-          assert.equal(v.outstandingActiveYieldAsset, ref.owedActiveYield + model.active.gainWithFraction(ref.active, "yield", ref.activeFractions.yield));
+          assert.equal(v.outstandingActiveYieldAsset, activeYield);
           assert.equal(v.claimableActiveQuote, ref.owedActiveQuote + model.active.gainWithFraction(ref.active, "quote", ref.activeFractions.quote));
           assert.equal(v.claimableExitAsset, ref.owedExitAsset + model.exit.gainWithFraction(ref.exit, "asset", ref.exitFractions.asset));
-          assert.equal(v.outstandingExitYieldAsset, ref.owedExitYield + model.exit.gainWithFraction(ref.exit, "yield", ref.exitFractions.yield));
+          assert.equal(v.outstandingExitYieldAsset, exitYield);
           assert.equal(v.claimableExitQuote, ref.owedExitQuote + model.exit.gainWithFraction(ref.exit, "quote", ref.exitFractions.quote));
+          const elapsed = now - ref.timestamp < DAY ? now - ref.timestamp : DAY;
+          assert.equal(v.timestamp, ref.timestamp);
+          assert.equal(v.vestingElapsedSeconds, elapsed);
+          assert.equal(v.claimableActiveYieldAsset, activeYield * elapsed / DAY);
+          assert.equal(v.claimableExitYieldAsset, exitYield * elapsed / DAY);
           activeX36 += v.activePrincipalX36;
           exitX36 += v.exitPrincipalX36;
           if (v.activePrincipalX36 > 0n && v.activePrincipalX36 < X)
@@ -522,16 +529,21 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         }
         assert.ok(activeX36 <= model.active.principal * X);
         assert.ok(exitX36 <= model.exit.principal * X);
-        assert.equal(await market.read.accruedProtocolFees([ast.address]), expectedAssetFee);
-        assert.equal(await market.read.accruedProtocolFees([quo.address]), expectedQuoteFee);
+        assert.equal(await market.read.accruedProtocolFees([ast.address]), model.assetFees);
+        assert.equal(await market.read.accruedProtocolFees([quo.address]), model.quoteFees);
+        assert.equal(await market.read.tokenLiability([ast.address]), model.assetLiability());
+        assert.equal(await market.read.tokenLiability([quo.address]), model.quoteLiability());
+        assert.equal(await ast.read.balanceOf([market.address]), model.assetLiability());
+        assert.equal(await quo.read.balanceOf([market.address]), model.quoteLiability());
         await checkCustody();
       }
       for (const [who, amount] of [
         [a, 700n * E],
         [b, 300n * E],
       ] as const) {
-        model.supply(who.account.address, amount);
-        await market.write.supply([tickId, amount, zeroAddress], { account: who.account });
+        const hash = await market.write.supply([tickId, amount, zeroAddress], { account: who.account });
+        const receipt = await client.getTransactionReceipt({ hash });
+        model.supply(who.account.address, amount, (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
         await check();
       }
       for (let round = 0; round < 12; round++) {
@@ -539,8 +551,9 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
           const amount = (10n + (draw() % 31n)) * E;
           const supplier = providers[Number(draw() % 3n)];
           const beforeP = (await market.read.getDomain([tickId, 0])).P;
-          model.supply(supplier.account.address, amount);
-          await market.write.supply([tickId, amount, zeroAddress], { account: supplier.account });
+          const hash = await market.write.supply([tickId, amount, zeroAddress], { account: supplier.account });
+          const receipt = await client.getTransactionReceipt({ hash });
+          model.supply(supplier.account.address, amount, (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
           assert.equal((await market.read.getDomain([tickId, 0])).P, beforeP);
           await check();
         }
@@ -549,8 +562,11 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
           const amount = requested < model.available ? requested : model.available;
           const q = await market.simulate.previewSwap([tickId, amount]);
           const before = model.active.principal;
-          model.swap(amount, q.providerSwapProceeds);
-          expectedQuoteFee += q.swapFee;
+          const fee = amount / 100n;
+          assert.equal(q.quotePrincipal, amount);
+          assert.equal(q.swapFee, fee);
+          model.swap(amount, amount - fee);
+          model.quoteFees += fee;
           const buyer = takers[Number(draw() % 2n)];
           await market.write.swap([tickId, amount, q.quotePrincipal, await deadline(), zeroAddress], {
             account: buyer.account,
@@ -560,14 +576,18 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         }
         if (model.available > 50n * E && round % 2 === 0) {
           const amount = (20n + (draw() % 30n)) * E;
-          const q = await market.simulate.previewUse([tickId, amount]);
+          const full = fullTermYield(model.available, model.working - model.exitWorking, amount);
+          assert.deepEqual(await market.read.quoteUse([tickId, amount]), [amount, full]);
           const beforeP = (await market.read.getDomain([tickId, 0])).P;
           model.use(amount);
           const positionId = await market.read.nextPositionId();
           const positionTaker = takers[Number(draw() % 2n)];
-          await market.write.use([tickId, amount, q.fullTermYieldAsset, await deadline(), zeroAddress], {
+          const useHash = await market.write.use([tickId, amount, full, await deadline(), zeroAddress], {
             account: positionTaker.account,
           });
+          const useReceipt = await client.getTransactionReceipt({ hash: useHash });
+          const opened = (await client.getBlock({ blockNumber: useReceipt.blockNumber })).timestamp;
+          positions.set(positionId, { amount, full, opened, maturity: opened + DAY, quote: amount, closeFee: amount / 100n });
           assert.equal((await market.read.getDomain([tickId, 0])).P, beforeP);
           await check();
           const withdrawer = providers[Number(draw() % 3n)];
@@ -576,23 +596,13 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
             const requested = providerRaw / 5n;
             const beforePrincipal = model.active.principal;
             const beforeX36 = model.active.principalX36(model.get(withdrawer.account.address).active);
-            const withdrawn = model.withdraw(withdrawer.account.address, requested);
             const hash = await market.write.withdraw([tickId, requested], { account: withdrawer.account });
             const receipt = await client.getTransactionReceipt({ hash });
+            const now = (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp;
+            const withdrawn = model.withdraw(withdrawer.account.address, requested, now);
             const event = parseEventLogs({ abi, logs: receipt.logs, eventName: "Withdrawn" })[0].args;
-            const ref = model.get(withdrawer.account.address);
-            ref.owedActiveYield -= event.yieldAssetOut + event.forfeitedYield;
-            if (event.forfeitedYield > 0n) {
-              const remainingProvider = ref.active.initial;
-              const providerCeil = (remainingProvider + X - 1n) / X;
-              if (model.active.principal > providerCeil) {
-                const eligible = (model.active.principal * X - remainingProvider + X - 1n) / X;
-                model.active.sums.yield += (event.forfeitedYield * model.active.P) / eligible;
-                ref.active.sums.yield = model.active.sums.yield;
-              } else {
-                expectedAssetFee += event.forfeitedYield;
-              }
-            }
+            assert.equal(event.yieldAssetOut, withdrawn.yieldOut);
+            assert.equal(event.forfeitedYield, withdrawn.forfeited);
             assert.equal((await market.read.getTick([tickId])).activePrincipal, beforePrincipal - withdrawn.x);
             assert.equal(
               (await market.read.getEarnPosition([withdrawer.account.address, tickId])).activePrincipalX36,
@@ -601,12 +611,12 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
             await check();
           }
           if (round % 4 === 0) {
-            const p = await market.read.getPosition([positionId]);
+            const p = positions.get(positionId)!;
             await networkHelpers.time.setNextBlockTimestamp(Number(p.maturity));
             const beforeActive = model.active.principal;
             const beforeExit = model.exit.principal;
-            model.close(amount, BigInt(p.quotePrincipal) - BigInt(p.closeFee));
-            expectedQuoteFee += BigInt(p.closeFee);
+            model.close(amount, p.quote - p.closeFee);
+            model.quoteFees += p.closeFee;
             await market.write.settle([tickId], { account: keeper.account });
             assert.equal(
               (await market.read.getTick([tickId])).activePrincipal,
@@ -614,17 +624,17 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
             );
             await check();
           } else {
-            const p = await market.read.getPosition([positionId]);
-            const hash = await market.write.repay([positionId, p.fullTermYieldAsset], {
+            const p = positions.get(positionId)!;
+            const hash = await market.write.repay([positionId, p.full], {
               account: positionTaker.account,
             });
             const receipt = await client.getTransactionReceipt({ hash });
             const block = await client.getBlock({ blockNumber: receipt.blockNumber });
-            const elapsed = block.timestamp - BigInt(p.openedAt);
+            const elapsed = block.timestamp - p.opened;
             const billable = elapsed > 0n ? elapsed : 1n;
-            const term = BigInt(p.maturity) - BigInt(p.openedAt);
-            const gross = (BigInt(p.fullTermYieldAsset) * billable + term - 1n) / term;
-            expectedAssetFee += gross / 100n;
+            const term = p.maturity - p.opened;
+            const gross = (p.full * billable + term - 1n) / term;
+            model.assetFees += gross / 100n;
             const beforeP = (await market.read.getDomain([tickId, 0])).P;
             model.repay(amount, gross - gross / 100n);
             assert.equal((await market.read.getDomain([tickId, 0])).P, beforeP);
@@ -633,18 +643,16 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         }
         if (round % 3 === 0) {
           const who = providers[Number(draw() % 3n)];
-          const ref = model.sync(who.account.address);
-          const q = await market.simulate.previewCollect([tickId, who.account.address]);
-          assert.equal(q.exitAsset, ref.owedExitAsset);
-          assert.equal(q.totalQuoteOut, ref.owedActiveQuote + ref.owedExitQuote);
           const hash = await market.write.collect([tickId], { account: who.account });
           const receipt = await client.getTransactionReceipt({ hash });
+          const now = (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp;
+          const predicted = model.collect(who.account.address, now);
           const event = parseEventLogs({ abi, logs: receipt.logs, eventName: "Collected" })[0].args;
-          ref.owedActiveYield -= event.activeYieldAsset;
-          ref.owedExitAsset = 0n;
-          ref.owedExitYield -= event.exitYieldAsset;
-          ref.owedActiveQuote = 0n;
-          ref.owedExitQuote = 0n;
+          assert.equal(event.activeYieldAsset, predicted.activeYield);
+          assert.equal(event.exitYieldAsset, predicted.exitYield);
+          assert.equal(event.exitAsset, predicted.exitAsset);
+          assert.equal(event.activeQuote, predicted.activeQuote);
+          assert.equal(event.exitQuote, predicted.exitQuote);
           await check();
         }
         await market.write.settle([tickId], { account: keeper.account });
@@ -652,15 +660,17 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         if (round % 6 === 5 && model.working === 0n && model.available > 0n) {
           const amount = model.available;
           const q = await market.simulate.previewSwap([tickId, amount]);
-          model.swap(amount, q.providerSwapProceeds);
-          expectedQuoteFee += q.swapFee;
+          const fee = amount / 100n;
+          model.swap(amount, amount - fee);
+          model.quoteFees += fee;
           await market.write.swap([tickId, amount, q.quotePrincipal, await deadline(), zeroAddress], {
             account: taker.account,
           });
           await check();
           for (const supplier of [a, keeper]) {
-            model.supply(supplier.account.address, 1n);
-            await market.write.supply([tickId, 1n, zeroAddress], { account: supplier.account });
+            const hash = await market.write.supply([tickId, 1n, zeroAddress], { account: supplier.account });
+            const receipt = await client.getTransactionReceipt({ hash });
+            model.supply(supplier.account.address, 1n, (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
             await check();
           }
           model.swap(1n, 1n);

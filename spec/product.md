@@ -401,7 +401,7 @@ Taker pays exactly Quote Principal.
 
 Fee is deducted from provider Quote proceeds.
 
-Providers receive at least 99% of posted Quote, subject to raw-unit fee rounding.
+At the market-wide proceeds level, providers receive at least 99% of posted Quote, subject to raw-unit fee rounding. Individual Active/Resolving allocations round to whole raw units; a very small Exit allocation may round to zero. Display the actual simulated result for the entered amount rather than implying every individual provider receives exactly 99%.
 
 ---
 
@@ -474,7 +474,7 @@ Controls:
 25%   50%   75%   Max
 ```
 
-The adapter obtains current provider active principal from `getEarnPosition` or a simulated action and converts percentage to Asset-denominated principal.
+The adapter obtains current provider active principal from `getEarnPosition` or a simulated action and converts percentage to Asset-denominated principal. Both EVM and Solana execution use a deadline and minimum immediate Asset output; the minimum excludes the Yield paid in the same Withdraw. The adapter should surface the expected amount and execution bounds before signing.
 
 No raw shares.
 
@@ -485,13 +485,13 @@ Withdraw                 50%
 
 Receive principal now   200 TOKEN
 Collectible Yield out   [preview] TOKEN
-Redistributed Yield     [preview] TOKEN
+Forfeited Yield         [preview] TOKEN
 Move to Resolving       300 TOKEN-equivalent
 ```
 
 Explanation:
 
-> Available liquidity and the vested Yield attributable to the withdrawn principal are received now. The uncollectible remainder is redistributed to other remaining Active providers, or `FEE_TO` if none are eligible. Liquidity currently In Use moves to Resolving; Repay resolves it as Asset + Yield, Close as Quote.
+> Available liquidity and vested Yield attributable to withdrawn principal are received now. Unvested Yield attributable to the withdrawal is forfeited: it is allocated to other eligible Active provider positions or becomes a protocol fee if none qualify. Recipients use their existing Yield vesting schedules. In Use principal moves to Resolving; Repay resolves it as Asset + Yield and Close as Quote.
 
 For Max:
 
@@ -542,7 +542,7 @@ Withdraw first
 Collect later
 ```
 
-Withdraw releases the currently collectible Yield attributable to withdrawn Active principal and redistributes its uncollectible remainder. Previously settled principal/Quote proceeds and outstanding Yield not attributable to withdrawn principal remain claimable according to the existing rules.
+Withdraw releases the currently collectible Yield attributable to withdrawn Active principal and redistributes its forfeited remainder to other eligible Active provider positions, or reclassifies it as a protocol fee when no other position meets the eligibility threshold. Previously settled principal/Quote proceeds and outstanding Yield not attributable to withdrawn principal remain claimable according to the existing rules.
 
 After Max Withdraw:
 
@@ -660,7 +660,7 @@ The future TypeScript SDK in `product/` will call the single deployed EVM contra
 
 The SDK may use `quoteUse(tickId, assetAmount)` before approval for Quote Principal and full-term Yield. This read-only quotation uses current state and does not simulate an expired cursor settlement. Quote, simulation, and transaction execution can see different market state or timestamps. Preserve `maxFullTermYieldAsset`, `maxYieldAsset`, `maxQuoteIn`, Withdraw’s `minImmediateAssetOut`, and deadlines. Passing zero minimum and a permissive deadline keeps an unrestricted Withdraw option.
 
-The SDK must decode `bytes[]` with each call’s ABI entry and verify that `eth_call` did not commit changes. The tests in `protocol/ethereum/test/PreviewIntegration.ts` are the reference integration workflow. No production SDK implementation is part of this protocol task.
+The EVM SDK must decode `bytes[]` with each call’s ABI entry and verify that `eth_call` did not commit changes. The tests in `protocol/ethereum/test/PreviewIntegration.ts` are the reference integration workflow. The Solana adapter instead simulates the corresponding instructions with the canonical PDA/account bundle, computes any ScaleState creation cost, and decodes instruction data, events, and resulting account state. Both adapters expose the same economic preview fields, minimum-immediate-output protection, and deadlines where relevant. No production SDK implementation is part of this protocol task.
 
 Internal Product-Sum P/scale/generation and fractional remainders remain hidden from normal UX. A zero-value Collect must retain fractional Active and Exit entitlements for future distributions.
 
@@ -738,7 +738,7 @@ global history
 
 Settlement never depends on indexer/yieldlist.
 
-Connected-wallet portfolio discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`.
+Connected-wallet portfolio discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, nonzero fractional gain carry, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`. Fractional gain carry is not independently withdrawable and remains hidden from normal UX.
 
 ---
 

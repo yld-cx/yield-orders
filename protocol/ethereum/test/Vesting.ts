@@ -274,7 +274,7 @@ describe("provider Yield vesting", async () => {
     await checkAsset();
   });
 
-  it("rounds the other-provider denominator up with fractional principal", async () => {
+  it("uses the exact X36 other-provider denominator with fractional principal", async () => {
     const { market, ast, tickId, fund, deadline, withdrawn, checkAsset } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 2n * E, zeroAddress], { account: alice.account });
     await market.write.supply([tickId, 1n * E, zeroAddress], { account: bob.account });
@@ -290,9 +290,9 @@ describe("provider Yield vesting", async () => {
     const after = await market.read.getEarnPosition([alice.account.address, tickId]);
     const tick = await market.read.getTick([tickId]);
     const d = await market.read.getDomain([tickId, 0]);
-    const eligible = tick.activePrincipal - after.activePrincipalX36 / X;
+    const eligibleX36 = tick.activePrincipal * X - after.activePrincipalX36;
     assert.ok(w.forfeitedYield > 0n);
-    assert.equal(d.yieldSum - sumBefore, (w.forfeitedYield * d.P) / eligible);
+    assert.equal(d.yieldSum - sumBefore, (w.forfeitedYield * d.P * X) / eligibleX36);
     assert.equal(await ast.read.balanceOf([fee.account.address]), feeBefore);
     assert.equal(
       await market.read.tokenLiability([ast.address]),

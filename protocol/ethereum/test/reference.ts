@@ -17,6 +17,7 @@ export type Account = {
   owedExitQuote: bigint;
   activeFractions: Sums;
   exitFractions: Sums;
+  timestamp: bigint;
 };
 const zero = (): Sums => ({ asset: 0n, yield: 0n, quote: 0n });
 const snap = (): Snapshot => ({ initial: 0n, generation: 0, scale: 0, P: P0, sums: zero() });
@@ -30,8 +31,23 @@ export const account = (): Account => ({
   owedExitQuote: 0n,
   activeFractions: zero(),
   exitFractions: zero(),
+  timestamp: 0n,
 });
 const min = (a: bigint, b: bigint) => (a < b ? a : b);
+const Q128 = 1n << 128n;
+export function fullTermYield(available: bigint, activeWorking: bigint, amount: bigint, durationDays = 1n): bigint {
+  const principal = available + activeWorking;
+  const before = activeWorking * Q128 / principal;
+  const after = (activeWorking + amount) * Q128 / principal;
+  const fourth = (u: bigint) => {
+    const square = u * u / Q128;
+    return square * square / Q128;
+  };
+  const curve = 4n * (after - before) + 99n * (fourth(after) - fourth(before));
+  const numerator = principal * durationDays * curve;
+  const denominator = 40_000n * Q128;
+  return (numerator + denominator - 1n) / denominator;
+}
 
 export class DomainModel {
   P = P0;
@@ -137,6 +153,15 @@ export class TickModel {
   working = 0n;
   exitWorking = 0n;
   accounts = new Map<string, Account>();
+  assetFees = 0n;
+  quoteFees = 0n;
+  fundedYield = 0n;
+  paidYield = 0n;
+  forfeitureFees = 0n;
+  exitAssetReserve = 0n;
+  activeQuoteReserve = 0n;
+  exitQuoteReserve = 0n;
+  quoteEscrow = 0n;
   get(who: string) {
     let a = this.accounts.get(who);
     if (!a) {
@@ -161,20 +186,28 @@ export class TickModel {
     a.exit = this.exit.take(this.exit.principalX36(a.exit));
     return a;
   }
-  supply(who: string, x: bigint) {
+  supply(who: string, x: bigint, now = 0n) {
     const a = this.sync(who);
     this.active.deposit(x);
     this.available += x;
     a.active = this.active.take(a.active.initial + x * X);
+    a.timestamp = now;
   }
   swap(x: bigint, proceeds: bigint) {
     this.active.fund({ asset: 0n, yield: 0n, quote: proceeds });
     this.available -= x;
+    this.activeQuoteReserve += proceeds;
     this.active.deplete(x);
   }
-  withdraw(who: string, requested: bigint) {
+  withdraw(who: string, requested: bigint, now = 0n, duration = 86_400n) {
     const a = this.sync(who);
     const x = min(requested, a.active.initial / X);
+    const beforeX36 = a.active.initial;
+    const attributable = x === 0n ? 0n : (a.owedActiveYield * x * X) / beforeX36;
+    const elapsed = min(now - a.timestamp, duration);
+    const yieldOut = (attributable * elapsed) / duration;
+    const forfeited = attributable - yieldOut;
+    a.owedActiveYield -= attributable;
     const availableOut = (x * this.available) / this.active.principal;
     const workingToExit = x - availableOut;
     this.available -= availableOut;
@@ -184,11 +217,23 @@ export class TickModel {
     a.active = this.active.take(a.active.initial - x * X);
     a.exit = this.exit.take(a.exit.initial + workingToExit * X);
     this.active.finishEmpty();
-    return { x, availableOut, workingToExit };
+    if (forfeited > 0n) {
+      const otherX36 = this.active.principal * X - a.active.initial;
+      if (otherX36 >= X) {
+        this.active.sums.yield += (forfeited * this.active.P * X) / otherX36;
+        a.active.sums.yield = this.active.sums.yield;
+      } else {
+        this.assetFees += forfeited;
+        this.forfeitureFees += forfeited;
+      }
+    }
+    this.paidYield += yieldOut;
+    return { x, availableOut, workingToExit, yieldOut, forfeited };
   }
   use(x: bigint) {
     this.available -= x;
     this.working += x;
+    this.quoteEscrow += x;
   }
   repay(x: bigint, netYield: bigint) {
     const e = min(x, this.exitWorking),
@@ -202,6 +247,33 @@ export class TickModel {
     this.working -= x;
     this.exitWorking -= e;
     this.available += active;
+    this.exitAssetReserve += e;
+    this.quoteEscrow -= x;
+    this.fundedYield += netYield;
+  }
+  collect(who: string, now: bigint, duration = 86_400n) {
+    const a = this.sync(who);
+    const elapsed = min(now - a.timestamp, duration);
+    const activeYield = (a.owedActiveYield * elapsed) / duration;
+    const exitYield = (a.owedExitYield * elapsed) / duration;
+    const result = {
+      activeYield,
+      exitYield,
+      exitAsset: a.owedExitAsset,
+      activeQuote: a.owedActiveQuote,
+      exitQuote: a.owedExitQuote,
+    };
+    a.owedActiveYield -= activeYield;
+    a.owedExitYield -= exitYield;
+    a.owedExitAsset = 0n;
+    a.owedActiveQuote = 0n;
+    a.owedExitQuote = 0n;
+    a.timestamp = now;
+    this.paidYield += activeYield + exitYield;
+    this.exitAssetReserve -= result.exitAsset;
+    this.activeQuoteReserve -= result.activeQuote;
+    this.exitQuoteReserve -= result.exitQuote;
+    return result;
   }
   close(x: bigint, proceeds: bigint) {
     const e = min(x, this.exitWorking),
@@ -217,5 +289,14 @@ export class TickModel {
     }
     this.working -= x;
     this.exitWorking -= e;
+    this.quoteEscrow -= x;
+    this.exitQuoteReserve += eq;
+    this.activeQuoteReserve += proceeds - eq;
+  }
+  assetLiability() {
+    return this.available + this.exitAssetReserve + this.fundedYield - this.paidYield - this.forfeitureFees + this.assetFees;
+  }
+  quoteLiability() {
+    return this.quoteEscrow + this.activeQuoteReserve + this.exitQuoteReserve + this.quoteFees;
   }
 }

@@ -888,21 +888,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (q.forfeitedYield != 0) {
             uint256 remainingActive = _activePrincipal(t);
             uint256 remainingProviderX36 = p.active.initialPrincipalX36;
-            uint256 providerPrincipalCeil = remainingProviderX36 / PRINCIPAL_PRECISION;
-            if (remainingProviderX36 % PRINCIPAL_PRECISION != 0) {
-                // One extra raw unit covers the provider's positive fractional remainder.
-                {
-                    ++providerPrincipalCeil;
-                }
-            }
-            if (remainingActive > providerPrincipalCeil) {
-                // ceil((remainingActive * X36 - remainingProviderX36) / X36)
-                uint256 eligiblePrincipal;
-                // The branch proves that other Active principal remains, so the subtraction is nonnegative.
-                {
-                    eligiblePrincipal = remainingActive - remainingProviderX36 / PRINCIPAL_PRECISION;
-                }
-                t.active.yieldSum += Math.mulDiv(q.forfeitedYield, t.active.P, eligiblePrincipal);
+            uint256 otherActiveX36 = remainingActive * PRINCIPAL_PRECISION - remainingProviderX36;
+            if (otherActiveX36 >= PRINCIPAL_PRECISION) {
+                t.active.yieldSum +=
+                    Math.mulDiv(q.forfeitedYield, t.active.P * PRINCIPAL_PRECISION, otherActiveX36);
                 p.active.yieldSum = t.active.yieldSum;
             } else {
                 t.yieldAssetReserve -= q.forfeitedYield;

@@ -20,12 +20,14 @@
   "exports": {
     ".": "./abi/YieldOrders.json",
     "./abi/*": "./abi/*",
+    "./vectors/*": "./vectors/*",
     "./contracts/*": "./contracts/*",
     "./package.json": "./package.json"
   },
   "files": [
     "README.md",
     "abi/YieldOrders.json",
+    "vectors/golden-v02.json",
     "contracts/YieldOrders.sol",
     "contracts/libraries/ProductSumMath.sol",
     "contracts/libraries/YieldMath.sol",

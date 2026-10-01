@@ -150,6 +150,7 @@ struct Tick {
     uint64 durationDays;
 
     uint256 priceX128;
+    bool exists;
 
     uint256 availableSupply;
     uint256 workingSupply;
@@ -157,6 +158,13 @@ struct Tick {
 
     Domain active;
     Domain exit;
+
+    // Funded provider reserves and active Use escrow; separate from global fees.
+    uint256 exitAssetReserve;
+    uint256 yieldAssetReserve;
+    uint256 exitQuoteReserve;
+    uint256 activeQuoteReserve;
+    uint256 quoteEscrow;
 
     uint64 nextPositionSeq;
     uint64 settleCursor;
@@ -299,6 +307,10 @@ struct ProviderPosition {
     uint256 owedExitYieldAsset;
     uint256 owedExitQuote;
 
+    // Persistent sub-raw gains: Active Yield/Quote; Exit Asset/Yield/Quote.
+    // Each element is strictly less than PRINCIPAL_PRECISION.
+    uint256[5] fractionalGainX36;
+
     uint256 timestamp;
 }
 ```
@@ -355,9 +367,9 @@ Do not floor each scale's provider gain independently. The EVM implementation MU
 
 All realization rounds DOWN.
 
-A sync computes gains in X36 sub-raw units, adds each stream’s independent stored fractional remainder, credits whole raw units to `owed*`, retains the remainder, then refreshes snapshots. Active Yield/Quote and Exit Asset/Yield/Quote have separate remainders. A positive sub-raw `principalX36` MUST remain snapshotted even when `principalRaw == 0`. The per-checkpoint precision loss is less than `1e-36` raw unit per stream; see the canonical dust bound in `spec/protocol.md` §9.
+A sync computes gains in X36 sub-raw units, adds each stream’s independent stored fractional remainder, credits whole raw units to `owed*`, retains the remainder, then refreshes snapshots. Array indices are fixed: `0=Active Yield`, `1=Active Quote`, `2=Exit Asset`, `3=Exit Yield`, `4=Exit Quote`. A positive sub-raw `principalX36` MUST remain snapshotted even when `principalRaw == 0`. Remainders also persist when principal reaches zero. The per-checkpoint precision loss is less than `1e-36` raw unit per stream; see the canonical dust bound in `spec/protocol.md` §9.
 
-The existing provider `timestamp` replaces the prior block cooldown field. Supply and Collect reset it to `block.timestamp`; Withdraw checks `block.timestamp > timestamp` and does not reset it. Both chains implement the canonical vested-Yield calculations from `spec/protocol.md` §§19 and 22.
+The provider `timestamp` also enforces the withdrawal cooldown. Supply and Collect reset it to `block.timestamp`; Withdraw checks `block.timestamp > timestamp` and does not reset it. Both chains implement the canonical vested-Yield calculations from `spec/protocol.md` §§19 and 22.
 
 ---
 
@@ -570,7 +582,7 @@ providerPrincipal =
 x = min(principalAmount, providerPrincipal)
 ```
 
-Preview MUST return whole-raw-unit `providerPrincipal`.
+The simulated Withdraw return MUST expose whole-raw-unit `providerPrincipal`; `getEarnPosition` provides current transferable principal before the simulation.
 
 A positive sub-raw remainder in `providerPrincipalX36` remains economically owned after a Max withdrawal and MUST NOT be cleared.
 
@@ -619,7 +631,7 @@ forfeitedYield = yieldForWithdraw - yieldAssetOut
 owedActiveYieldAsset -= yieldForWithdraw
 ```
 
-Use the canonical §19 redistribution rule: subtract the withdrawing provider's **remaining X36 principal** from post-withdrawal Active principal, round the other providers' denominator UP to whole raw units, and fund the existing Active Yield sum only if at least one raw unit of other Active exposure remains. Otherwise add forfeited Yield to the Asset-denominated accrued protocol fee balance. After funding, refresh the withdrawing provider's Active gain checkpoint so their retained principal cannot reclaim their own forfeiture. The existing Yield reserve already covers the redistribution: do not add new funded Yield or charge a second fee.
+Apply the canonical §19 X36 redistribution rule. After withdrawing principal, calculate `otherActiveX36 = activePrincipal * PRINCIPAL_PRECISION - remainingProviderX36`. For positive `forfeitedYield`, when `otherActiveX36 >= PRINCIPAL_PRECISION`, fund the Active Yield sum using `Math.mulDiv(forfeitedYield, activeP * PRINCIPAL_PRECISION, otherActiveX36)` with floor rounding; otherwise reclassify the amount as accrued Asset protocol fees, reducing the funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding to exclude its retained principal. Eligible recipients use their existing vesting timestamps. No new Yield reserve, additional fee or separate vesting state is created.
 
 Transfer `availableOut + yieldAssetOut`. The `withdraw` return and `Withdrawn` event include `yieldAssetOut` and `forfeitedYield`. Preserve the existing Exit principal split and sub-raw remainder.
 
@@ -832,6 +844,8 @@ physical token balance >= aggregate token liability
 
 Unexpected donations create no claim.
 
+Accrued protocol fees are additional global per-token liabilities, **not** part of any Tick's Asset/Quote reserve. For each token, the accounting identity is `tokenLiability[token] = Σ all Tick liabilities denominated in token + accruedProtocolFees[token]`. When the same token acts as Asset in one Tick and Quote in another, include both. `collectProtocolFees(token)` reduces the accrued balance and aggregate liability before paying immutable `FEE_TO`; any transfer failure atomically restores both.
+
 ---
 
 # 21. Token support
@@ -1043,6 +1057,7 @@ Debug/SDK views MAY expose P/scale/generation/sums.
 activePrincipalX36 > 0
 exitPrincipalX36 > 0
 any owed* > 0
+any fractionalGainX36[i] > 0
 unsynchronized historical gain exists
 ```
 
@@ -1097,11 +1112,20 @@ Collect before top-up / top-up without Collect
 partial/full Withdraw Yield release and post-withdrawal redistribution
 all Working yet Active > 0; no eligible other Active -> accrued Asset protocol fee
 Swap/Close exhaust Active; outstanding Yield still vests
-partial withdrawal self-recapture prevented by donor exclusion
+partial withdrawal cannot reclaim forfeiture through withdrawing position's residual principal
+redistribution excludes withdrawing position, while eligible recipients use existing timestamps
+exact-X36 redistribution with fractional eligible principal and eligibility boundaries
+funded Yield conservation after nearly depleted principal and complete claim collection
+independent reference timestamps/vesting/forfeiture; do not seed expected state from emitted values
+funded Yield reserve/fee/claim conservation after generation rollover and every claim
+both directional price ticks and mixed-decimal reciprocal price vectors
+out-of-order Repay/Close with pooled Exit-first funding and already-terminal cursor skips
 fractional Yield rounding and repeated Collect
+fraction-only provider Tick stays discoverable after all whole-raw claims are paid
+future Supply retains its fractional carry without inheriting other providers' history
 ```
 
-Stateful fuzz tests MUST compare against a high-precision reference model.
+Stateful fuzz tests MUST compare against a high-precision reference model that independently computes timestamps, vesting, forfeiture, principal, gains, fees, and complete reserve conservation. Include all canonical acceptance requirements in `spec/protocol.md` §29.1.
 
 ---
 
@@ -1111,13 +1135,13 @@ Production remains disabled until:
 
 ```text
 Product-Sum implementation complete
-full unit + fuzz suite passes
-production runtime passes the EIP-170 24,576-byte size gate
-EVM/Solana golden vectors frozen
+full unit + fuzz suite passes, including independent vesting and reserve modeling
+production runtime passes the EIP-170 24,576-byte size gate **after** final economic changes
+EVM/Solana/reference SDK exact-X36 and directional-price golden vectors frozen
 FEE_TO frozen
 bytecode frozen
 CREATE2 address frozen
 independent security review complete
 ```
 
-All prior share-based deployment hashes/salts/addresses are obsolete.
+Deployment hashes, salts, and predicted addresses MUST be derived from the final production creation code and constructor arguments.

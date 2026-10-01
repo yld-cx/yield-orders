@@ -51,6 +51,8 @@ The immutable protocol fee is **1%** of Quote Principal on Swap and Close, and *
 
 Funded Asset Yield vests over the Tick duration from the provider's timestamp. Supply and Collect reset that timestamp, including when Collect pays nothing. Asset principal and Quote proceeds remain immediately collectible. Swap and Close do not reset vesting. Provider checkpoints retain independent X36 fractions for Active Yield/Quote and Exit Asset/Yield/Quote, so a zero-value Collect does not discard a later whole-unit claim.
 
+Withdraw pays the vested Yield attributable to the withdrawn principal. It distributes the unvested remainder across other Active positions using their exact X36 principal, excluding the withdrawing position's retained principal. Recipients keep their existing vesting timestamps. When other Active exposure is below one raw Asset unit, the already funded remainder becomes an Asset protocol fee and leaves the Yield reserve. The [raw-unit vectors](vectors/golden-v02.json) capture the rounding and boundary cases for cross-chain integrations.
+
 A later block may change a time-dependent Repay amount or close an expired cursor position. Preserve execution-time slippage bounds and deadlines after simulation.
 
 ### Token and custody policy
