@@ -1,8 +1,8 @@
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
 import { configVariable, defineConfig } from "hardhat/config";
 
-export const PROTOCOL_VERSION = "0.2" as const;
-export const SALT_NAMESPACE = "yld.cx-v0.2" as const;
+export const PROTOCOL_VERSION = "0.3" as const;
+export const SALT_NAMESPACE = `yld.cx-v${PROTOCOL_VERSION}` as const;
 export const COMPILER_DESCRIPTION = "solc 0.8.36; cancun; optimizer 200; viaIR" as const;
 export const ETHEREUM_RPC_URL = process.env.ETHEREUM_RPC_URL || "https://ethereum-rpc.publicnode.com";
 export const BASE_RPC_URL = process.env.BASE_RPC_URL || "https://mainnet.base.org";

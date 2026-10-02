@@ -10,7 +10,7 @@ import {TickMath} from "./libraries/TickMath.sol";
 import {ProductSumMath, Invariant} from "./libraries/ProductSumMath.sol";
 import {YieldMath} from "./libraries/YieldMath.sol";
 
-/// @notice yld.cx v0.2 exact-tick, fixed-term Product-Sum liquidity protocol.
+/// @notice yld.cx v0.3 exact-tick, fixed-term Product-Sum liquidity protocol.
 contract YieldOrders is Multicall, ReentrancyGuard {
     using SafeERC20 for IERC20;
     uint256 public constant BPS = 10_000;
@@ -115,9 +115,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     }
     enum Status {
         INVALID,
-        ACTIVE,
-        REPAID,
-        CLOSED
+        ACTIVE
     }
     struct Position {
         uint256 tickId;
@@ -141,7 +139,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 yieldAssetOut;
         uint256 forfeitedYield;
     }
-    struct RepayPreview {
+    struct RepayResult {
+        uint256 positionId;
+        uint256 tickId;
+        uint64 tickSeq;
         uint256 assetPrincipal;
         uint256 grossYieldAsset;
         uint256 yieldFeeAsset;
@@ -160,6 +161,17 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     }
     struct CloseAmounts {
         uint256 quoteProceeds;
+        uint256 exitFill;
+        uint256 activeFill;
+        uint256 exitQuote;
+        uint256 activeQuote;
+    }
+    struct CloseResult {
+        uint256 positionId;
+        uint256 tickId;
+        uint64 tickSeq;
+        uint256 closeFee;
+        uint256 providerSwapProceeds;
         uint256 exitFill;
         uint256 activeFill;
         uint256 exitQuote;
@@ -222,6 +234,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     mapping(address => uint256[]) private _userEarnTicks;
     mapping(address => mapping(uint256 => uint256)) private _earnIndexPlusOne;
     mapping(address => uint256[]) private _userPositions;
+    mapping(uint256 => uint256) private _userPositionIndexPlusOne;
     uint256 public nextPositionId = 1;
 
     event PairCreated(uint256 indexed pairId, address indexed token0, address indexed token1);
@@ -293,6 +306,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 closeFee,
         uint256 providerSwapProceeds,
         uint256 exitFill,
+        uint256 activeFill,
         uint256 exitQuote,
         uint256 activeQuote
     );
@@ -753,7 +767,27 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         return _page(_userPositions[owner], offset, limit);
     }
     function getPosition(uint256 id) external view returns (Position memory) {
+        if (_positions[id].status != Status.ACTIVE) revert NotFound();
         return _positions[id];
+    }
+    function _addUsePosition(address owner, uint256 positionId) internal {
+        _userPositions[owner].push(positionId);
+        _userPositionIndexPlusOne[positionId] = _userPositions[owner].length;
+    }
+    function _removeUsePosition(address owner, uint256 positionId) internal {
+        uint256 indexPlusOne = _userPositionIndexPlusOne[positionId];
+        if (indexPlusOne == 0) revert Invariant();
+        uint256[] storage list = _userPositions[owner];
+        uint256 last = list[list.length - 1];
+        list[indexPlusOne - 1] = last;
+        _userPositionIndexPlusOne[last] = indexPlusOne;
+        list.pop();
+        delete _userPositionIndexPlusOne[positionId];
+    }
+    function _removePosition(uint256 positionId, Position memory p) internal {
+        _removeUsePosition(p.user, positionId);
+        delete tickPositionId[p.tickId][p.tickSeq];
+        delete _positions[positionId];
     }
 
     // Economic actions execute at most one settlement-cursor step.
@@ -762,13 +796,16 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             return;
         }
         uint256 positionId = tickPositionId[id][t.settleCursor];
-        Position storage p = _positions[positionId];
-        if (p.status == Status.ACTIVE) {
-            if (block.timestamp < p.maturity) {
-                return;
-            }
-            _close(positionId, p, t);
+        if (positionId == 0) {
+            t.settleCursor += 1;
+            return;
         }
+        Position storage p = _positions[positionId];
+        if (p.status != Status.ACTIVE) revert Invariant();
+        if (block.timestamp < p.maturity) {
+            return;
+        }
+        _close(positionId, p, t);
         t.settleCursor += 1;
     }
     function settle(uint256 id) external nonReentrant {
@@ -809,7 +846,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         q.providerPrincipal = principalX36 / PRINCIPAL_PRECISION;
         q.principalAmount = Math.min(requested, q.providerPrincipal);
-        if (q.principalAmount == 0) {
+        if (q.principalAmount == 0 || principalX36 == 0) {
             revert InvalidInput();
         }
         uint256 activePrincipal = _activePrincipal(t);
@@ -885,10 +922,11 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (t.availableSupply + t.workingSupply == t.exitWorking) {
             _deplete(id, DomainKind.Active, t.active, _activePrincipal(tm), 0);
         }
+        uint256 domainActiveX36 = _activePrincipal(t) * PRINCIPAL_PRECISION;
+        uint256 remainingProviderX36 = p.active.initialPrincipalX36;
+        if (remainingProviderX36 > domainActiveX36) revert Invariant();
+        uint256 otherActiveX36 = domainActiveX36 - remainingProviderX36;
         if (q.forfeitedYield != 0) {
-            uint256 remainingActive = _activePrincipal(t);
-            uint256 remainingProviderX36 = p.active.initialPrincipalX36;
-            uint256 otherActiveX36 = remainingActive * PRINCIPAL_PRECISION - remainingProviderX36;
             if (otherActiveX36 >= PRINCIPAL_PRECISION) {
                 t.active.yieldSum +=
                     Math.mulDiv(q.forfeitedYield, t.active.P * PRINCIPAL_PRECISION, otherActiveX36);
@@ -974,6 +1012,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 deadline,
         address referrer
     ) external nonReentrant returns (uint256 positionId) {
+        if (assetAmount == 0) revert InvalidInput();
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
         if (block.timestamp > deadline) {
@@ -1005,7 +1044,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             maturity,
             Status.ACTIVE
         );
-        _userPositions[msg.sender].push(positionId);
+        _addUsePosition(msg.sender, positionId);
         t.availableSupply -= assetAmount;
         t.workingSupply += assetAmount;
         t.quoteEscrow += q.quotePrincipal;
@@ -1027,7 +1066,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             referrer
         );
     }
-    function _repayAmounts(Position memory p, Tick memory t) internal view returns (RepayPreview memory q) {
+    function _repayAmounts(Position memory p, Tick memory t) internal view returns (RepayResult memory q) {
         if (p.status != Status.ACTIVE || block.timestamp >= p.maturity) {
             revert InvalidState();
         }
@@ -1062,13 +1101,14 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         q.quotePrincipalUnlocked = p.quotePrincipal;
     }
-    function repay(uint256 positionId, uint256 maxYieldAsset) external nonReentrant returns (RepayPreview memory q) {
+    function repay(uint256 positionId, uint256 maxYieldAsset) external nonReentrant returns (RepayResult memory q) {
         Position storage p = _positions[positionId];
         if (p.status != Status.ACTIVE) {
             revert InvalidState();
         }
         Tick storage t = _ticks[p.tickId];
-        if (p.tickSeq != t.settleCursor) {
+        bool cursorTarget = p.tickSeq == t.settleCursor;
+        if (!cursorTarget) {
             _settleOne(p.tickId, t);
         }
         if (p.user != msg.sender) {
@@ -1077,6 +1117,9 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         Tick memory tm = t;
         Position memory pm = p;
         q = _repayAmounts(pm, tm);
+        q.positionId = positionId;
+        q.tickId = pm.tickId;
+        q.tickSeq = pm.tickSeq;
         if (q.grossYieldAsset > maxYieldAsset) {
             revert Slippage();
         }
@@ -1089,30 +1132,26 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (q.activeYieldAsset != 0) {
             _fund(t.active, oldActive, 0, q.activeYieldAsset, 0);
         }
-        t.workingSupply -= p.assetAmount;
+        t.workingSupply -= pm.assetAmount;
         t.exitWorking -= q.exitFill;
         t.availableSupply += q.activeReturn;
         t.exitAssetReserve += q.exitFill;
         t.yieldAssetReserve += q.grossYieldAsset - q.yieldFeeAsset;
-        t.quoteEscrow -= p.quotePrincipal;
+        t.quoteEscrow -= pm.quotePrincipal;
         if (q.exitFill != 0) {
-            _deplete(p.tickId, DomainKind.Exit, t.exit, oldExit, t.exitWorking);
-        }
-        p.status = Status.REPAID;
-        if (p.tickSeq == t.settleCursor) {
-            t.settleCursor += 1;
+            _deplete(pm.tickId, DomainKind.Exit, t.exit, oldExit, t.exitWorking);
         }
         _accrueFee(t.asset, q.yieldFeeAsset);
-        _push(IERC20(t.quote), msg.sender, p.quotePrincipal);
-        _checkAsset(p.tickId, t);
-        _checkQuote(p.tickId, t);
+        _push(IERC20(t.quote), msg.sender, pm.quotePrincipal);
+        _checkAsset(pm.tickId, t);
+        _checkQuote(pm.tickId, t);
         emit TermRepaid(
             positionId,
-            p.tickId,
-            p.tickSeq,
-            p.user,
-            p.assetAmount,
-            p.quotePrincipal,
+            pm.tickId,
+            pm.tickSeq,
+            pm.user,
+            pm.assetAmount,
+            pm.quotePrincipal,
             q.grossYieldAsset,
             q.yieldFeeAsset,
             q.exitFill,
@@ -1120,6 +1159,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             q.exitYieldAsset,
             q.activeYieldAsset
         );
+        _removePosition(positionId, pm);
+        if (cursorTarget) t.settleCursor += 1;
     }
     function swap(
         uint256 id,
@@ -1166,11 +1207,14 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         amounts.activeQuote = amounts.quoteProceeds - amounts.exitQuote;
     }
-    function _close(uint256 positionId, Position storage p, Tick storage t) internal {
+    function _close(uint256 positionId, Position storage p, Tick storage t) internal returns (CloseResult memory q) {
         if (p.status != Status.ACTIVE || block.timestamp < p.maturity) {
             revert InvalidState();
         }
-        CloseAmounts memory amounts = _closeAmounts(p.assetAmount, p.quotePrincipal, p.closeFee, t.exitWorking);
+        Position memory pm = p;
+        CloseAmounts memory amounts = _closeAmounts(pm.assetAmount, pm.quotePrincipal, pm.closeFee, t.exitWorking);
+        q = CloseResult(positionId, pm.tickId, pm.tickSeq, pm.closeFee, amounts.quoteProceeds,
+            amounts.exitFill, amounts.activeFill, amounts.exitQuote, amounts.activeQuote);
         uint256 oldExit = t.exitWorking;
         uint256 oldActive = t.availableSupply + t.workingSupply - oldExit;
         if (amounts.exitFill != 0 && amounts.exitQuote != 0) {
@@ -1179,49 +1223,49 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (amounts.activeFill != 0 && amounts.activeQuote != 0) {
             _fund(t.active, oldActive, 0, 0, amounts.activeQuote);
         }
-        t.workingSupply -= p.assetAmount;
+        t.workingSupply -= pm.assetAmount;
         t.exitWorking -= amounts.exitFill;
-        t.quoteEscrow -= p.quotePrincipal;
+        t.quoteEscrow -= pm.quotePrincipal;
         t.exitQuoteReserve += amounts.exitQuote;
         t.activeQuoteReserve += amounts.activeQuote;
         if (amounts.exitFill != 0) {
-            _deplete(p.tickId, DomainKind.Exit, t.exit, oldExit, oldExit - amounts.exitFill);
+            _deplete(pm.tickId, DomainKind.Exit, t.exit, oldExit, oldExit - amounts.exitFill);
         }
         if (amounts.activeFill != 0) {
-            _deplete(p.tickId, DomainKind.Active, t.active, oldActive, oldActive - amounts.activeFill);
+            _deplete(pm.tickId, DomainKind.Active, t.active, oldActive, oldActive - amounts.activeFill);
         }
-        p.status = Status.CLOSED;
-        _accrueFee(t.quote, p.closeFee);
-        _checkAsset(p.tickId, t);
-        _checkQuote(p.tickId, t);
+        _accrueFee(t.quote, pm.closeFee);
+        _checkAsset(pm.tickId, t);
+        _checkQuote(pm.tickId, t);
         emit TermClosed(
             positionId,
-            p.tickId,
-            p.tickSeq,
-            p.user,
+            pm.tickId,
+            pm.tickSeq,
+            pm.user,
             msg.sender,
-            p.assetAmount,
-            p.quotePrincipal,
-            p.closeFee,
+            pm.assetAmount,
+            pm.quotePrincipal,
+            pm.closeFee,
             amounts.quoteProceeds,
             amounts.exitFill,
+            amounts.activeFill,
             amounts.exitQuote,
             amounts.activeQuote
         );
+        _removePosition(positionId, pm);
     }
-    function close(uint256 positionId) external nonReentrant {
+    function close(uint256 positionId) external nonReentrant returns (CloseResult memory q) {
         Position storage p = _positions[positionId];
         if (p.status != Status.ACTIVE) {
             revert InvalidState();
         }
         Tick storage t = _ticks[p.tickId];
-        if (p.tickSeq != t.settleCursor) {
+        bool cursorTarget = p.tickSeq == t.settleCursor;
+        if (!cursorTarget) {
             _settleOne(p.tickId, t);
         }
-        _close(positionId, p, t);
-        if (p.tickSeq == t.settleCursor) {
-            t.settleCursor += 1;
-        }
+        q = _close(positionId, p, t);
+        if (cursorTarget) t.settleCursor += 1;
     }
     function getEarnPosition(address owner, uint256 id) external view returns (EarnPositionView memory q) {
         _requireTick(id);

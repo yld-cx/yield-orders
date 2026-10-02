@@ -106,7 +106,7 @@ describe("Multicall product previews", async () => {
 
     await networkHelpers.time.increase(3_600);
     const repay = await simulate(taker, [call("repay", [newId, maximumYield]),
-      call("getPosition", [newId]), call("getTick", [tickId])]);
+      call("getTick", [tickId])]);
     const repayHash = await market.write.repay([newId, maximumYield], { account: taker.account });
     const repayEvent = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: repayHash })).logs,
       eventName: "TermRepaid" })[0].args;
@@ -114,9 +114,10 @@ describe("Multicall product previews", async () => {
     assert.equal(repayEvent.yieldFeeAsset, repay[0].yieldFeeAsset);
     assert.equal(repay[0].totalAssetIn, repay[0].assetPrincipal + repay[0].grossYieldAsset);
     assert.equal(repay[0].quotePrincipalUnlocked, position.quotePrincipal);
-    assert.equal(repay[1].status, 2);
-    assert.deepEqual(await market.read.getPosition([newId]), repay[1]);
-    assert.deepEqual(await market.read.getTick([tickId]), repay[2]);
+    assert.equal(repay[0].positionId, newId);
+    assert.equal(repay[0].tickId, tickId);
+    await assert.rejects(market.read.getPosition([newId]), /NotFound/);
+    assert.deepEqual(await market.read.getTick([tickId]), repay[1]);
 
     const collect = await simulate(alice, [call("collect", [tickId]),
       call("getEarnPosition", [alice.account.address, tickId]), call("getTick", [tickId])]);
@@ -143,14 +144,15 @@ describe("Multicall product previews", async () => {
     const [, nextYield] = await market.read.quoteUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, nextYield, await deadline(), zeroAddress], { account: taker.account });
     await networkHelpers.time.increase(Number(DAY));
-    const closed = await simulate(keeper, [call("close", [nextId]), call("getPosition", [nextId]),
+    const closed = await simulate(keeper, [call("close", [nextId]),
       call("getTick", [tickId]), call("getDomain", [tickId, 0])]);
-    assert.equal(closed[0], undefined); // Close has no return; position and Tick getters describe its result.
+    assert.equal(closed[0].positionId, nextId);
+    assert.equal(closed[0].tickId, tickId);
+    assert.equal(closed[0].exitFill + closed[0].activeFill, 100n * E);
     await market.write.close([nextId], { account: keeper.account });
-    assert.equal(closed[1].status, 3);
-    assert.deepEqual(await market.read.getPosition([nextId]), closed[1]);
-    assert.deepEqual(await market.read.getTick([tickId]), closed[2]);
-    assert.deepEqual(await market.read.getDomain([tickId, 0]), closed[3]);
+    await assert.rejects(market.read.getPosition([nextId]), /NotFound/);
+    assert.deepEqual(await market.read.getTick([tickId]), closed[1]);
+    assert.deepEqual(await market.read.getDomain([tickId, 0]), closed[2]);
   });
 
   it("simulates exactly one automatic settlement step and enforces withdrawal execution limits", async () => {
@@ -172,11 +174,10 @@ describe("Multicall product previews", async () => {
 
     await networkHelpers.time.increase(Number(DAY));
     const cursorBefore = (await market.read.getTick([tickId])).settleCursor;
-    const settled = await simulate(alice, [call("collect", [tickId]), call("getTick", [tickId]),
-      call("getPosition", [1n])]);
+    const settled = await simulate(alice, [call("collect", [tickId]), call("getTick", [tickId])]);
     assert.equal(settled[1].settleCursor, cursorBefore + 1n);
-    assert.equal(settled[2].status, 3);
     await market.write.collect([tickId], { account: alice.account });
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
     assert.deepEqual(await market.read.getTick([tickId]), settled[1]);
   });
 

@@ -117,9 +117,9 @@ describe("audit regressions", async () => {
     }
     await networkHelpers.time.increase(Number(DAY));
     await market.write.close([1n], { account: keeper.account });
-    assert.equal((await market.read.getPosition([1n])).status, 3);
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
     const withdrawal = await market.write.withdraw([tickId, 100n * E, 0n, MAX], { account: alice.account });
-    assert.equal((await market.read.getPosition([2n])).status, 3, "Withdraw auto-closed the next expired Use");
+    await assert.rejects(market.read.getPosition([2n]), /NotFound/);
     assert.equal((await market.read.getTick([tickId])).settleCursor, 2n);
     assert.equal(parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: withdrawal })).logs,
       eventName: "Withdrawn" }).length, 1);

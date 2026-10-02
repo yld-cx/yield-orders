@@ -1,6 +1,6 @@
 {
   "name": "@yld-cx/ethereum-protocol",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "yld.cx — Ethereum / EVM L2s Yield Orders Protocol",
   "keywords": [
     "ethereum",

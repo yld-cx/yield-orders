@@ -153,6 +153,8 @@ describe("final X36 withdrawal redistribution", async () => {
     assert.equal(closed[0].args.exitFill, 25_000_000n);
     assert.equal(closed[1].args.positionId, 2n);
     assert.equal(closed[1].args.exitFill, 0n);
+    assert.equal((await market.read.getTick([tickId])).settleCursor, 1n);
+    await market.write.settle([tickId]);
     assert.equal((await market.read.getTick([tickId])).settleCursor, 2n);
     await market.write.settle([tickId]);
     assert.equal((await market.read.getTick([tickId])).settleCursor, 3n);
@@ -183,7 +185,7 @@ describe("final X36 withdrawal redistribution", async () => {
     const repayFee = gross / 100n;
     model.assetFees += repayFee;
     model.repay(useAmount, gross - repayFee);
-    assert.equal((await market.read.getPosition([1n])).fullTermYieldAsset, expectedFull);
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
     assert.equal(await market.read.accruedProtocolFees([f.ast.address]), repayFee);
     const swapAmount = TOTAL - remaining;
     const swapFee = swapAmount / 100n;

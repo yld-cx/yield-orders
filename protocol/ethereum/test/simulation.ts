@@ -36,7 +36,19 @@ export function withSimulatedActions(market: any, client: any, abi: any, supplie
     },
     previewRepay: async ([positionId]) => {
       const position = await market.read.getPosition([positionId]);
-      return simulate("repay", [positionId, 2n ** 256n - 1n], position.user);
+      const [result] = await batch([
+        { functionName: "repay", args: [positionId, 2n ** 256n - 1n] },
+        { functionName: "getTick", args: [position.tickId] },
+      ], position.user);
+      return result;
+    },
+    previewClose: async ([positionId]) => {
+      const position = await market.read.getPosition([positionId]);
+      const [result] = await batch([
+        { functionName: "close", args: [positionId] },
+        { functionName: "getTick", args: [position.tickId] },
+      ], taker);
+      return result;
     },
     previewSwap: async ([id, amount]) => simulate("swap", [id, amount, 2n ** 256n - 1n, 2n ** 256n - 1n, zeroAddress], taker),
     previewCollect: async ([id, owner]) => simulate("collect", [id], owner),

@@ -451,6 +451,12 @@
       {
         "indexed": false,
         "internalType": "uint256",
+        "name": "activeFill",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
         "name": "exitQuote",
         "type": "uint256"
       },
@@ -976,7 +982,60 @@
       }
     ],
     "name": "close",
-    "outputs": [],
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "positionId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "tickId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "tickSeq",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint256",
+            "name": "closeFee",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "providerSwapProceeds",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "exitFill",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "activeFill",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "exitQuote",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "activeQuote",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct YieldOrders.CloseResult",
+        "name": "q",
+        "type": "tuple"
+      }
+    ],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -1677,6 +1736,21 @@
         "components": [
           {
             "internalType": "uint256",
+            "name": "positionId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "tickId",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "tickSeq",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint256",
             "name": "assetPrincipal",
             "type": "uint256"
           },
@@ -1721,7 +1795,7 @@
             "type": "uint256"
           }
         ],
-        "internalType": "struct YieldOrders.RepayPreview",
+        "internalType": "struct YieldOrders.RepayResult",
         "name": "q",
         "type": "tuple"
       }
