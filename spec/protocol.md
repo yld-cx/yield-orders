@@ -43,7 +43,7 @@ The protocol has no oracle, LTV, liquidation, health factor, mutable fee governa
 
 Liquidity remains pooled per Tick.
 
-v0.3 retains the Product-Sum principal index introduced in v0.2:
+The protocol retains the Product-Sum principal index:
 
 ```text
 P          → cumulative proportional principal depletion
@@ -1300,6 +1300,7 @@ require remainingProviderX36 <= domainActiveX36
 otherActiveX36 = checkedSub(domainActiveX36, remainingProviderX36)
 
 if forfeitedYield > 0 and otherActiveX36 >= PRINCIPAL_PRECISION:
+    require forfeitedYield <= MAX_ACCOUNTING_AMOUNT
     activeYieldSum += floor(
         forfeitedYield * activeP * PRINCIPAL_PRECISION
         / otherActiveX36
@@ -1308,6 +1309,8 @@ if forfeitedYield > 0 and otherActiveX36 >= PRINCIPAL_PRECISION:
 else if forfeitedYield > 0:
     forfeitedYield -> accrued Asset protocol fees
 ```
+
+Redistribution above `MAX_ACCOUNTING_AMOUNT` MUST revert the entire Withdraw using the canonical amount-bound error. This bound applies only when eligible other Active principal exists.
 
 The `otherActiveX36` subtraction MUST be checked. `remainingProviderX36 > domainActiveX36` is an invariant violation and MUST hard-revert; it MUST NOT be interpreted as zero eligible liquidity or reclassified as a protocol fee. The denominator MUST retain full X36 precision, and the multiplication/division MUST use full-precision checked arithmetic. EVM, Solana, and the reference SDK MUST produce identical integer results. The eligible exposure threshold is one raw Asset unit. The withdrawing position cannot accrue its own redistribution; other eligible positions receive it using their existing vesting timestamps. Wallets are independent provider identities. Redistribution creates no new funded liability or vesting clock.
 

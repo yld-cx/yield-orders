@@ -24,21 +24,29 @@ describe("audit regressions", async () => {
   });
 
   async function setup(blocked: "quote" | "asset" | "none" = "none") {
-    const makeToken = async (name: string, symbol: string, shouldBlock: boolean) => shouldBlock
-      ? viem.deployContract("BlockingRecipientToken", [fee.account.address])
-      : viem.deployContract("MockERC20", [name, symbol, 18]);
+    const makeToken = async (name: string, symbol: string, shouldBlock: boolean) =>
+      shouldBlock
+        ? viem.deployContract("BlockingRecipientToken", [fee.account.address])
+        : viem.deployContract("MockERC20", [name, symbol, 18]);
     const asset: any = await makeToken("Asset", "AST", blocked === "asset");
     const quote: any = await makeToken("Quote", "QUO", blocked === "quote");
-    const market = getContract({ address: (await viem.deployContract("YieldOrders", [fee.account.address])).address,
-      abi, client: { public: client, wallet: fee } });
+    const market = getContract({
+      address: (await viem.deployContract("YieldOrders", [fee.account.address])).address,
+      abi,
+      client: { public: client, wallet: fee },
+    });
     await market.write.createPair([asset.address, quote.address]);
     const [pairId] = await market.read.getPair([asset.address, quote.address]);
     const direction = asset.address.toLowerCase() < quote.address.toLowerCase() ? 0 : 1;
     const createTick = async (days: bigint) => {
-      const id = BigInt(keccak256(encodeAbiParameters(
-        [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
-        [pairId, direction, 0, days],
-      )));
+      const id = BigInt(
+        keccak256(
+          encodeAbiParameters(
+            [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
+            [pairId, direction, 0, days],
+          ),
+        ),
+      );
       await market.write.createTick([pairId, direction, 0, days]);
       return id;
     };
@@ -52,8 +60,8 @@ describe("audit regressions", async () => {
     }
     const deadline = async () => (await client.getBlock()).timestamp + 3n * DAY;
     const backed = async () => {
-      assert.ok(await asset.read.balanceOf([market.address]) >= await market.read.tokenLiability([asset.address]));
-      assert.ok(await quote.read.balanceOf([market.address]) >= await market.read.tokenLiability([quote.address]));
+      assert.ok((await asset.read.balanceOf([market.address])) >= (await market.read.tokenLiability([asset.address])));
+      assert.ok((await quote.read.balanceOf([market.address])) >= (await market.read.tokenLiability([quote.address])));
     };
     return { market, asset, quote, tickId, secondTick, deadline, backed };
   }
@@ -110,19 +118,27 @@ describe("audit regressions", async () => {
     const { market, asset, quote, tickId, secondTick, deadline, backed } = await setup("quote");
     await market.write.supply([tickId, 1_000n * E, zeroAddress], { account: alice.account });
     await market.write.supply([secondTick, 500n * E, zeroAddress], { account: bob.account });
-    await market.write.swap([secondTick, 100n * E, 100n * E, await deadline(), zeroAddress], { account: taker.account });
+    await market.write.swap([secondTick, 100n * E, 100n * E, await deadline(), zeroAddress], {
+      account: taker.account,
+    });
     for (let i = 0; i < 2; i++) {
       const [, maxYield] = await market.read.quoteUse([tickId, 100n * E]);
       await market.write.use([tickId, 100n * E, maxYield, await deadline(), zeroAddress], { account: taker.account });
     }
     await networkHelpers.time.increase(Number(DAY));
     await market.write.close([1n], { account: keeper.account });
-    assert.equal((await market.read.getPosition([1n])).status, 3);
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
     const withdrawal = await market.write.withdraw([tickId, 100n * E, 0n, MAX], { account: alice.account });
-    assert.equal((await market.read.getPosition([2n])).status, 3, "Withdraw auto-closed the next expired Use");
+    await assert.rejects(market.read.getPosition([2n]), /NotFound/);
     assert.equal((await market.read.getTick([tickId])).settleCursor, 2n);
-    assert.equal(parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: withdrawal })).logs,
-      eventName: "Withdrawn" }).length, 1);
+    assert.equal(
+      parseEventLogs({
+        abi,
+        logs: (await client.getTransactionReceipt({ hash: withdrawal })).logs,
+        eventName: "Withdrawn",
+      }).length,
+      1,
+    );
     await market.write.collect([tickId], { account: alice.account });
     assert.equal(await market.read.accruedProtocolFees([quote.address]), 3n * E);
     await backed();
@@ -138,7 +154,7 @@ describe("audit regressions", async () => {
     assert.equal((await quote.read.balanceOf([fee.account.address])) - before, 3n * E);
     assert.equal(await market.read.accruedProtocolFees([quote.address]), 0n);
     await backed();
-    assert.ok(await asset.read.balanceOf([market.address]) >= await market.read.tokenLiability([asset.address]));
+    assert.ok((await asset.read.balanceOf([market.address])) >= (await market.read.tokenLiability([asset.address])));
   });
 
   it("accrues backed Asset Repay fees and forfeited Yield without requiring the fee recipient", async () => {
@@ -148,12 +164,18 @@ describe("audit regressions", async () => {
     await market.write.use([tickId, 500n * E, maxYield, await deadline(), zeroAddress], { account: taker.account });
     await networkHelpers.time.increase(3_600);
     const repayHash = await market.write.repay([1n, maxYield], { account: taker.account });
-    const feeOnRepay = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: repayHash })).logs,
-      eventName: "TermRepaid" })[0].args.yieldFeeAsset;
+    const feeOnRepay = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash: repayHash })).logs,
+      eventName: "TermRepaid",
+    })[0].args.yieldFeeAsset;
     assert.ok(feeOnRepay > 0n);
     const withdrawal = await market.write.withdraw([tickId, MAX, 0n, MAX], { account: alice.account });
-    const forfeited = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: withdrawal })).logs,
-      eventName: "Withdrawn" })[0].args.forfeitedYield;
+    const forfeited = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash: withdrawal })).logs,
+      eventName: "Withdrawn",
+    })[0].args.forfeitedYield;
     assert.ok(forfeited > 0n);
     assert.equal(await market.read.accruedProtocolFees([asset.address]), feeOnRepay + forfeited);
     await backed();

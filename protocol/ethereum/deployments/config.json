@@ -1,7 +1,7 @@
 {
-  "version": "0.2",
+  "version": "0.3",
   "feeTo": null,
-  "saltNamespace": "yld.cx-v0.2",
+  "saltNamespace": "yld.cx-v0.3",
   "rawSalt": null,
   "guardedSalt": null,
   "address": null,

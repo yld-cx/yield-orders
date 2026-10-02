@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ethereum:
+    name: Ethereum protocol
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: protocol/ethereum
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: protocol/ethereum/package-lock.json
+      - run: npm ci
+      - run: npm run build:production
+      - run: npm run typecheck
+      - run: npm test

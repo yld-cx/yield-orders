@@ -9,7 +9,10 @@ contract MathBoundariesTest {
     function testYieldEndpointsAndOneSecondRepay() public pure {
         uint256 full = YieldMath.fullTermYield(1e30, 0, 1, 1e30);
         require(full == 2_575_000_000_000_000_000_000_000_000, "curve endpoint");
-        require(YieldMath.accruedRepayYield(full, 0, 86_400) == YieldMath.accruedRepayYield(full, 1, 86_400), "one second");
+        require(
+            YieldMath.accruedRepayYield(full, 0, 86_400) == YieldMath.accruedRepayYield(full, 1, 86_400),
+            "one second"
+        );
         require(YieldMath.accruedRepayYield(full, 86_400, 86_400) == full, "full term");
     }
 
@@ -23,7 +26,10 @@ contract MathBoundariesTest {
         deltas[1] = 5e47;
         require(ProductSumMath.accruedGainX36(1e36, 1e39, 1, deltas) == 5e35, "cross scale half raw");
         deltas[1] = 1e9 - 1;
-        require(ProductSumMath.accruedGainX36(1e57, 1e39, 1, deltas) == 999_999_999_000_000_000, "large fractional carry");
+        require(
+            ProductSumMath.accruedGainX36(1e57, 1e39, 1, deltas) == 999_999_999_000_000_000,
+            "large fractional carry"
+        );
         deltas[1] = 0;
         deltas[8] = 1e72 - 1;
         require(ProductSumMath.accruedGainX36(1e57, 1e39, 8, deltas) == 1e18 - 1, "eight-scale fraction");

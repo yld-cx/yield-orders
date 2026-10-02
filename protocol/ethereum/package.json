@@ -1,6 +1,6 @@
 {
   "name": "@yld-cx/ethereum-protocol",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "yld.cx — Ethereum / EVM L2s Yield Orders Protocol",
   "keywords": [
     "ethereum",
@@ -27,7 +27,7 @@
   "files": [
     "README.md",
     "abi/YieldOrders.json",
-    "vectors/golden-v02.json",
+    "vectors/golden-v03.json",
     "contracts/YieldOrders.sol",
     "contracts/libraries/ProductSumMath.sol",
     "contracts/libraries/YieldMath.sol",

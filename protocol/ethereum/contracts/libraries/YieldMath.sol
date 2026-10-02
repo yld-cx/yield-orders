@@ -29,14 +29,17 @@ library YieldMath {
         uint256 principal = available + working;
         uint256 beforeX128 = utilization(working, principal);
         uint256 afterX128 = utilization(working + amount, principal);
-        uint256 curve = 4 * MIN_DAILY_BPS * (afterX128 - beforeX128) +
-            (MAX_DAILY_BPS - MIN_DAILY_BPS) * (_pow4(afterX128) - _pow4(beforeX128));
+        uint256 curve =
+            4 * MIN_DAILY_BPS * (afterX128 - beforeX128) +
+                (MAX_DAILY_BPS - MIN_DAILY_BPS) * (_pow4(afterX128) - _pow4(beforeX128));
         return Math.mulDiv(principal, uint256(durationDays) * curve, 4 * BPS * Q128, Math.Rounding.Ceil);
     }
 
-    function accruedRepayYield(uint256 fullTermYieldAsset, uint256 elapsed, uint256 termSeconds)
-        internal pure returns (uint256)
-    {
+    function accruedRepayYield(
+        uint256 fullTermYieldAsset,
+        uint256 elapsed,
+        uint256 termSeconds
+    ) internal pure returns (uint256) {
         return (fullTermYieldAsset * Math.max(1, elapsed) + termSeconds - 1) / termSeconds;
     }
 }

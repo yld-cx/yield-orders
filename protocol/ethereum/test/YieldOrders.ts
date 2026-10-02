@@ -9,18 +9,38 @@ import { feeOnTransferTokenAbi, mockERC20Abi, reentrantTokenAbi } from "./abi/mo
 import { TickModel, X, P0, F, MAX, fullTermYield } from "./reference.js";
 import { candidateSalt, guardSalt, NETWORKS, predict, readArtifact } from "../scripts/deployment.js";
 import { withSimulatedActions } from "./simulation.js";
+import v03 from "../vectors/golden-v03.json" with { type: "json" };
 
 const abi = protocolAbiJson as unknown as YieldOrders$Type["abi"];
 const E = 10n ** 18n;
 const DAY = 86_400n;
 const max = 2n ** 256n - 1n;
 
-describe("Yield Orders v0.2 Product-Sum", async () => {
+describe("Yield Orders Product-Sum", async () => {
   const { viem, networkHelpers } = await network.create();
   const [deployer, a, b, taker, keeper] = await viem.getWalletClients();
   const client = await viem.getPublicClient();
   it("exports the shared Product-Sum invariant error only once", () => {
     assert.equal(abi.filter((entry) => entry.type === "error" && entry.name === "Invariant").length, 1);
+  });
+
+  it("keeps 1% floor fee parity at raw-unit boundaries", async () => {
+    const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
+    await market.write.supply([tickId, MAX, zeroAddress], { account: a.account });
+    assert.equal((0n * 100n) / 10_000n, 0n);
+    await assert.rejects(market.simulate.previewSwap([tickId, 0n]));
+    for (const amount of [1n, 99n, 100n, 101n, MAX]) {
+      const result = await client.simulateContract({
+        address: market.address,
+        abi,
+        functionName: "swap",
+        args: [tickId, amount, max, await deadline(), zeroAddress],
+        account: taker.account,
+      });
+      assert.equal(result.result.quotePrincipal, amount);
+      assert.equal(result.result.swapFee, amount / 100n);
+      assert.equal(result.result.providerSwapProceeds, amount - amount / 100n);
+    }
   });
 
   async function setup() {
@@ -29,7 +49,10 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const deployed = await viem.deployContract("YieldOrders", [deployer.account.address]);
     const market = withSimulatedActions(
       getContract({ address: deployed.address, abi, client: { public: client, wallet: deployer } }),
-      client, abi, a.account.address, taker.account.address,
+      client,
+      abi,
+      a.account.address,
+      taker.account.address,
     );
     const ast = getContract({
       address: asset.address,
@@ -103,7 +126,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await checkCustody();
   });
 
-  it("keeps Use positions permanently in creation order across Repay and Close", async () => {
+  it("keeps only ACTIVE Uses and updates a moved index after middle removal", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
     for (let i = 0; i < 3; i++) {
@@ -113,15 +136,219 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     }
     const owner = taker.account.address;
     assert.deepEqual(await market.read.getUsePositions([owner, 0n, 10n]), [1n, 2n, 3n]);
-    await market.write.repay([1n, max], { account: taker.account });
-    assert.equal((await market.read.getPosition([1n])).status, 2);
+    await market.write.repay([2n, max], { account: taker.account });
+    await assert.rejects(market.read.getPosition([2n]), /NotFound/);
+    assert.deepEqual(await market.read.getUsePositions([owner, 0n, 10n]), [1n, 3n]);
+    assert.equal(await market.read.tickPositionId([tickId, 1n]), 0n);
+    await market.write.repay([3n, max], { account: taker.account });
+    await assert.rejects(market.read.getPosition([3n]), /NotFound/);
+    assert.deepEqual(await market.read.getUsePositions([owner, 0n, 10n]), [1n]);
     await networkHelpers.time.increase(Number(DAY));
+    await market.write.close([1n], { account: keeper.account });
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
+    assert.deepEqual(await market.read.getUsePositions([owner, 0n, 10n]), []);
+    assert.equal(await market.read.tickPositionId([tickId, 0n]), 0n);
+    assert.equal(await market.read.nextPositionId(), 4n);
+  });
+
+  it("returns RepayResult, emits terminal history, and advances deleted cursor gaps one at a time", async () => {
+    const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
+    await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
+    for (let i = 0; i < 5; i++) {
+      await market.write.use([tickId, 10n * E, max, await deadline(), zeroAddress], { account: taker.account });
+      assert.equal((await market.read.getPosition([BigInt(i + 1)])).status, 1);
+      assert.equal(await market.read.tickPositionId([tickId, BigInt(i)]), BigInt(i + 1));
+    }
+    const simulated = await client.simulateContract({
+      address: market.address,
+      abi,
+      functionName: "repay",
+      args: [3n, max],
+      account: taker.account,
+    });
+    assert.equal(simulated.result.positionId, BigInt(v03.terminalRepay.positionId));
+    assert.equal(simulated.result.tickId, tickId);
+    assert.equal(simulated.result.tickSeq, BigInt(v03.terminalRepay.tickSeq));
+    assert.equal(simulated.result.assetPrincipal, BigInt(v03.terminalRepay.assetPrincipal));
+    assert.equal(simulated.result.exitFill, BigInt(v03.terminalRepay.exitFill));
+    assert.equal(simulated.result.activeReturn, BigInt(v03.terminalRepay.activeReturn));
+    assert.equal(simulated.result.yieldFeeAsset, simulated.result.grossYieldAsset / 100n);
+    assert.equal(simulated.result.totalAssetIn, simulated.result.assetPrincipal + simulated.result.grossYieldAsset);
+    assert.equal(simulated.result.exitFill + simulated.result.activeReturn, simulated.result.assetPrincipal);
+    const hash = await market.write.repay([3n, max], { account: taker.account });
+    const event = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash })).logs,
+      eventName: "TermRepaid",
+    })[0].args;
+    assert.equal(event.positionId, simulated.result.positionId);
+    assert.equal(event.tickSeq, simulated.result.tickSeq);
+    assert.equal(event.assetAmount, simulated.result.assetPrincipal);
+    assert.equal(event.exitFill, simulated.result.exitFill);
+    assert.equal(event.activeReturn, simulated.result.activeReturn);
+    await assert.rejects(market.read.getPosition([3n]), /NotFound/);
+    assert.equal(await market.read.tickPositionId([tickId, 2n]), BigInt(v03.terminalRepay.deletedTickPositionId));
+    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [1n, 2n, 5n, 4n]);
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.terminalRepay.cursorAfterOutOfOrder),
+      "live, non-mature cursor stays put",
+    );
+
+    await market.write.repay([2n, max], { account: taker.account });
+    await market.write.repay([4n, max], { account: taker.account });
+    await market.write.repay([1n, max], { account: taker.account });
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.deletedCursorGaps.afterCursorTargetRepay),
+      "cursor-target Repay advances directly",
+    );
+    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [5n]);
+    await market.write.multicall(
+      [[encodeFunctionData({ abi, functionName: "supply", args: [tickId, E, zeroAddress] })]],
+      { account: a.account },
+    );
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.deletedCursorGaps.afterOneGapSkip),
+      "Multicall Supply skips one deleted entry",
+    );
+    await market.write.multicall([[encodeFunctionData({ abi, functionName: "collect", args: [tickId] })]], {
+      account: a.account,
+    });
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.deletedCursorGaps.afterSecondGapSkip),
+      "Multicall Collect skips one deleted entry",
+    );
+    await market.write.repay([5n, max], { account: taker.account });
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.deletedCursorGaps.afterNonCursorRepay),
+      "non-cursor Repay skips one gap before resolving its target",
+    );
+    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), []);
+    await market.write.settle([tickId]);
+    assert.equal((await market.read.getTick([tickId])).settleCursor, BigInt(v03.deletedCursorGaps.afterFinalGapSkip));
+    await market.write.use([tickId, 10n * E, max, await deadline(), zeroAddress], { account: taker.account });
+    assert.equal(await market.read.nextPositionId(), 7n);
+    assert.equal((await market.read.getPosition([6n])).tickSeq, 5n);
+    assert.equal(await market.read.tickPositionId([tickId, 5n]), 6n);
+  });
+
+  it("returns CloseResult, includes activeFill, and deletes both direct and automatic Closes", async () => {
+    const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
+    await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
+    for (let i = 0; i < 3; i++) {
+      await market.write.use([tickId, 10n * E, max, await deadline(), zeroAddress], { account: taker.account });
+    }
+    await networkHelpers.time.increase(Number(DAY));
+    const simulated = await client.simulateContract({
+      address: market.address,
+      abi,
+      functionName: "close",
+      args: [3n],
+      account: keeper.account,
+    });
+    assert.equal(simulated.result.positionId, BigInt(v03.terminalClose.positionId));
+    assert.equal(simulated.result.tickId, tickId);
+    assert.equal(simulated.result.tickSeq, BigInt(v03.terminalClose.tickSeq));
+    assert.equal(simulated.result.exitFill, BigInt(v03.terminalClose.exitFill));
+    assert.equal(simulated.result.activeFill, BigInt(v03.terminalClose.activeFill));
+    assert.equal(simulated.result.exitFill + simulated.result.activeFill, 10n * E);
+    assert.equal(simulated.result.exitQuote + simulated.result.activeQuote, simulated.result.providerSwapProceeds);
+    const hash = await market.write.close([3n], { account: keeper.account });
+    const events = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash })).logs,
+      eventName: "TermClosed",
+    });
+    assert.equal(events.length, 2, "one automatic cursor Close plus requested non-cursor Close");
+    assert.deepEqual(
+      events.map((entry) => entry.args.positionId),
+      [1n, 3n],
+    );
+    assert.equal(events[1].args.activeFill, simulated.result.activeFill);
+    assert.equal(events[1].args.providerSwapProceeds, simulated.result.providerSwapProceeds);
+    assert.equal((await market.read.getTick([tickId])).settleCursor, 1n);
+    for (const [id, seq] of [
+      [1n, 0n],
+      [3n, 2n],
+    ] as const) {
+      await assert.rejects(market.read.getPosition([id]), /NotFound/);
+      assert.equal(await market.read.tickPositionId([tickId, seq]), BigInt(v03.terminalClose.deletedTickPositionId));
+    }
+    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [2n]);
     await market.write.close([2n], { account: keeper.account });
-    assert.equal((await market.read.getPosition([2n])).status, 3);
-    assert.deepEqual(await market.read.getUsePositions([owner, 0n, 10n]), [1n, 2n, 3n]);
-    assert.deepEqual(await market.read.getUsePositions([owner, 1n, 1n]), [2n]);
-    assert.deepEqual(await market.read.getUsePositions([owner, 2n, 2n]), [3n]);
-    assert.deepEqual(await market.read.getUsePositions([owner, 3n, 2n]), []);
+    assert.equal((await market.read.getTick([tickId])).settleCursor, 2n, "cursor-target Close advances once");
+    await assert.rejects(market.read.getPosition([2n]), /NotFound/);
+    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), []);
+    await market.write.settle([tickId]);
+    assert.equal((await market.read.getTick([tickId])).settleCursor, 3n, "deleted non-cursor Close skips once");
+  });
+
+  it("does not double-advance when a non-cursor Close becomes the cursor after one gap skip", async () => {
+    const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
+    await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
+    for (let i = 0; i < 3; i++) {
+      await market.write.use([tickId, 10n * E, max, await deadline(), zeroAddress], { account: taker.account });
+    }
+    await market.write.repay([2n, max], { account: taker.account });
+    await market.write.repay([1n, max], { account: taker.account });
+    assert.equal((await market.read.getTick([tickId])).settleCursor, 1n);
+    await networkHelpers.time.increase(Number(DAY));
+    const hash = await market.write.close([3n], { account: keeper.account });
+    const events = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash })).logs,
+      eventName: "TermClosed",
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].args.positionId, 3n);
+    assert.equal((await market.read.getTick([tickId])).settleCursor, 2n);
+    await assert.rejects(market.read.getPosition([3n]), /NotFound/);
+    await market.write.settle([tickId]);
+    assert.equal((await market.read.getTick([tickId])).settleCursor, 3n);
+  });
+
+  it("matches an independent active-list and cursor model across seeded out-of-order Repays", async () => {
+    for (let seed = 1n; seed <= 8n; seed++) {
+      const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
+      await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
+      const active = new Set<bigint>();
+      const list: bigint[] = [];
+      for (let i = 1n; i <= 8n; i++) {
+        await market.write.use([tickId, 10n * E, max, await deadline(), zeroAddress], { account: taker.account });
+        active.add(i);
+        list.push(i);
+      }
+      let cursor = 0n;
+      let random = seed;
+      while (list.length !== 0) {
+        random = (random * 1_103_515_245n + 12_345n) % (1n << 31n);
+        const index = Number(random % BigInt(list.length));
+        const id = list[index];
+        const seq = id - 1n;
+        if (seq === cursor) cursor += 1n;
+        else if (!active.has(cursor + 1n)) cursor += 1n;
+        const last = list[list.length - 1];
+        list[index] = last;
+        list.pop();
+        active.delete(id);
+        await market.write.repay([id, max], { account: taker.account });
+        assert.equal((await market.read.getTick([tickId])).settleCursor, cursor);
+        assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), list);
+        assert.deepEqual(await market.read.getUsePositions([taker.account.address, 1n, 3n]), list.slice(1, 4));
+        assert.equal(await market.read.tickPositionId([tickId, seq]), 0n);
+        await assert.rejects(market.read.getPosition([id]), /NotFound/);
+      }
+      while (cursor < 8n) {
+        await market.write.settle([tickId]);
+        cursor += 1n;
+        assert.equal((await market.read.getTick([tickId])).settleCursor, cursor);
+      }
+      assert.equal(await market.read.nextPositionId(), 9n);
+    }
   });
 
   it("Supply, Use, Withdraw, Exit-first Repay, Collect and immutable fees", async () => {
@@ -179,7 +406,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await market.write.close([1n], { account: keeper.account });
     d = await market.read.getDomain([tickId, 0]);
     assert.equal(d.P, (((P0 * 600n) / 1000n) * 200n) / 700n);
-    assert.equal((await market.read.getPosition([1n])).status, 3);
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
     const claimA = await market.simulate.previewCollect([tickId, a.account.address]);
     const claimB = await market.simulate.previewCollect([tickId, b.account.address]);
     assert.ok(claimA.activeQuote > claimB.activeQuote);
@@ -290,6 +517,35 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const after = await market.read.getEarnPosition([a.account.address, tickId]);
     assert.ok(after.activePrincipalX36 > 0n && after.activePrincipalX36 < X);
     assert.deepEqual(await market.read.getEarnPositions([a.account.address, 0n, 10n]), [tickId]);
+    await assert.rejects(market.write.withdraw([tickId, max], { account: a.account }), /InvalidInput/);
+  });
+
+  it("hard-reverts Withdraw if the checked X36 domain invariant is corrupted", async () => {
+    const { market, tickId } = await networkHelpers.loadFixture(setup);
+    await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
+    await networkHelpers.time.increase(1);
+    // Locate the first word of the nested provider mapping without depending on
+    // its compiler-assigned root slot. Valid actions cannot create this fault.
+    let providerSlot: `0x${string}` | undefined;
+    for (let mappingSlot = 0n; mappingSlot < 32n; mappingSlot++) {
+      const providerOuter = BigInt(
+        keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [tickId, mappingSlot])),
+      );
+      const candidate = keccak256(
+        encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [a.account.address, providerOuter]),
+      );
+      const word = await client.getStorageAt({ address: market.address, slot: candidate });
+      if (BigInt(word ?? "0x0") === 100n * E * X) {
+        providerSlot = candidate;
+        break;
+      }
+    }
+    assert.ok(providerSlot, "provider principal storage word found");
+    await networkHelpers.setStorageAt(market.address, providerSlot, 101n * E * X);
+    assert.equal((await market.read.getEarnPosition([a.account.address, tickId])).activePrincipal, 101n * E);
+    const before = await market.read.getTick([tickId]);
+    await assert.rejects(market.write.withdraw([tickId, E], { account: a.account }), /Invariant/);
+    assert.deepEqual(await market.read.getTick([tickId]), before);
   });
 
   it("charges each frozen 1% fee exactly once and never charges Collect", async () => {
@@ -357,6 +613,23 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await assert.rejects(market.write.use([id, 1n, max, max, zeroAddress], { account: taker.account }));
   });
 
+  it("rejects zero Asset and stores only positive full-term Yield", async () => {
+    const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
+    await market.write.supply([tickId, 1n, zeroAddress], { account: a.account });
+    const before = await market.read.getTick([tickId]);
+    await assert.rejects(
+      market.write.use([tickId, 0n, max, await deadline(), zeroAddress], { account: taker.account }),
+      /InvalidInput/,
+    );
+    assert.equal(await market.read.nextPositionId(), 1n);
+    assert.deepEqual(await market.read.getTick([tickId]), before);
+    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), []);
+    const [, fullYield] = await market.read.quoteUse([tickId, 1n]);
+    assert.ok(fullYield > 0n, "canonical rounding makes every positive valid Use quote positive");
+    await market.write.use([tickId, 1n, fullYield, await deadline(), zeroAddress], { account: taker.account });
+    assert.equal((await market.read.getPosition([1n])).fullTermYieldAsset, fullYield);
+  });
+
   it("bills one second for same-timestamp Repay, permits near-maturity Repay, and Closes at maturity", async () => {
     const { market, ast, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1000n * E, zeroAddress], { account: a.account });
@@ -375,7 +648,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       ],
       { account: taker.account },
     );
-    assert.equal((await market.read.getPosition([1n])).status, 2);
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
     const oneSecondYield = (q.fullTermYieldAsset + DAY - 1n) / DAY;
     assert.equal(beforeAsset - (await ast.read.balanceOf([taker.account.address])), oneSecondYield);
     const q2 = await market.simulate.previewUse([tickId, 100n * E]);
@@ -385,7 +658,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const p2 = await market.read.getPosition([2n]);
     await networkHelpers.time.setNextBlockTimestamp(Number(p2.maturity - 1n));
     await market.write.repay([2n, q2.fullTermYieldAsset], { account: taker.account });
-    assert.equal((await market.read.getPosition([2n])).status, 2);
+    await assert.rejects(market.read.getPosition([2n]), /NotFound/);
     const q3 = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q3.fullTermYieldAsset, (await deadline()) + DAY, zeroAddress], {
       account: taker.account,
@@ -393,7 +666,7 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     const p3 = await market.read.getPosition([3n]);
     await networkHelpers.time.setNextBlockTimestamp(Number(p3.maturity));
     await market.write.close([3n], { account: keeper.account });
-    assert.equal((await market.read.getPosition([3n])).status, 3);
+    await assert.rejects(market.read.getPosition([3n]), /NotFound/);
     const q4 = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q4.fullTermYieldAsset, (await deadline()) + DAY, zeroAddress], {
       account: taker.account,
@@ -461,8 +734,14 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     for (const who of [a, b]) {
       const ref = model.get(who.account.address);
       const v = await market.read.getEarnPosition([who.account.address, tickId]);
-      assert.equal(v.claimableExitAsset, ref.owedExitAsset + model.exit.gainWithFraction(ref.exit, "asset", ref.exitFractions.asset));
-      assert.equal(v.claimableExitQuote, ref.owedExitQuote + model.exit.gainWithFraction(ref.exit, "quote", ref.exitFractions.quote));
+      assert.equal(
+        v.claimableExitAsset,
+        ref.owedExitAsset + model.exit.gainWithFraction(ref.exit, "asset", ref.exitFractions.asset),
+      );
+      assert.equal(
+        v.claimableExitQuote,
+        ref.owedExitQuote + model.exit.gainWithFraction(ref.exit, "quote", ref.exitFractions.quote),
+      );
     }
     await checkCustody();
   });
@@ -475,7 +754,10 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       const model = new TickModel();
       const providers = [a, b, keeper] as const;
       const takers = [taker, keeper] as const;
-      const positions = new Map<bigint, { amount: bigint; full: bigint; opened: bigint; maturity: bigint; quote: bigint; closeFee: bigint }>();
+      const positions = new Map<
+        bigint,
+        { amount: bigint; full: bigint; opened: bigint; maturity: bigint; quote: bigint; closeFee: bigint }
+      >();
       let seed = initialSeed;
       const draw = () => {
         seed = (seed * 1103515245n + 12345n) % 2n ** 31n;
@@ -508,20 +790,30 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
         for (const who of providers) {
           const ref = model.get(who.account.address);
           const v = await market.read.getEarnPosition([who.account.address, tickId]);
-          const activeYield = ref.owedActiveYield + model.active.gainWithFraction(ref.active, "yield", ref.activeFractions.yield);
+          const activeYield =
+            ref.owedActiveYield + model.active.gainWithFraction(ref.active, "yield", ref.activeFractions.yield);
           const exitYield = ref.owedExitYield + model.exit.gainWithFraction(ref.exit, "yield", ref.exitFractions.yield);
           assert.equal(v.activePrincipalX36, model.active.principalX36(ref.active));
           assert.equal(v.exitPrincipalX36, model.exit.principalX36(ref.exit));
           assert.equal(v.outstandingActiveYieldAsset, activeYield);
-          assert.equal(v.claimableActiveQuote, ref.owedActiveQuote + model.active.gainWithFraction(ref.active, "quote", ref.activeFractions.quote));
-          assert.equal(v.claimableExitAsset, ref.owedExitAsset + model.exit.gainWithFraction(ref.exit, "asset", ref.exitFractions.asset));
+          assert.equal(
+            v.claimableActiveQuote,
+            ref.owedActiveQuote + model.active.gainWithFraction(ref.active, "quote", ref.activeFractions.quote),
+          );
+          assert.equal(
+            v.claimableExitAsset,
+            ref.owedExitAsset + model.exit.gainWithFraction(ref.exit, "asset", ref.exitFractions.asset),
+          );
           assert.equal(v.outstandingExitYieldAsset, exitYield);
-          assert.equal(v.claimableExitQuote, ref.owedExitQuote + model.exit.gainWithFraction(ref.exit, "quote", ref.exitFractions.quote));
+          assert.equal(
+            v.claimableExitQuote,
+            ref.owedExitQuote + model.exit.gainWithFraction(ref.exit, "quote", ref.exitFractions.quote),
+          );
           const elapsed = now - ref.timestamp < DAY ? now - ref.timestamp : DAY;
           assert.equal(v.timestamp, ref.timestamp);
           assert.equal(v.vestingElapsedSeconds, elapsed);
-          assert.equal(v.claimableActiveYieldAsset, activeYield * elapsed / DAY);
-          assert.equal(v.claimableExitYieldAsset, exitYield * elapsed / DAY);
+          assert.equal(v.claimableActiveYieldAsset, (activeYield * elapsed) / DAY);
+          assert.equal(v.claimableExitYieldAsset, (exitYield * elapsed) / DAY);
           activeX36 += v.activePrincipalX36;
           exitX36 += v.exitPrincipalX36;
           if (v.activePrincipalX36 > 0n && v.activePrincipalX36 < X)
@@ -543,7 +835,11 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       ] as const) {
         const hash = await market.write.supply([tickId, amount, zeroAddress], { account: who.account });
         const receipt = await client.getTransactionReceipt({ hash });
-        model.supply(who.account.address, amount, (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
+        model.supply(
+          who.account.address,
+          amount,
+          (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp,
+        );
         await check();
       }
       for (let round = 0; round < 12; round++) {
@@ -553,7 +849,11 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
           const beforeP = (await market.read.getDomain([tickId, 0])).P;
           const hash = await market.write.supply([tickId, amount, zeroAddress], { account: supplier.account });
           const receipt = await client.getTransactionReceipt({ hash });
-          model.supply(supplier.account.address, amount, (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
+          model.supply(
+            supplier.account.address,
+            amount,
+            (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp,
+          );
           assert.equal((await market.read.getDomain([tickId, 0])).P, beforeP);
           await check();
         }
@@ -587,7 +887,14 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
           });
           const useReceipt = await client.getTransactionReceipt({ hash: useHash });
           const opened = (await client.getBlock({ blockNumber: useReceipt.blockNumber })).timestamp;
-          positions.set(positionId, { amount, full, opened, maturity: opened + DAY, quote: amount, closeFee: amount / 100n });
+          positions.set(positionId, {
+            amount,
+            full,
+            opened,
+            maturity: opened + DAY,
+            quote: amount,
+            closeFee: amount / 100n,
+          });
           assert.equal((await market.read.getDomain([tickId, 0])).P, beforeP);
           await check();
           const withdrawer = providers[Number(draw() % 3n)];
@@ -670,13 +977,95 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
           for (const supplier of [a, keeper]) {
             const hash = await market.write.supply([tickId, 1n, zeroAddress], { account: supplier.account });
             const receipt = await client.getTransactionReceipt({ hash });
-            model.supply(supplier.account.address, 1n, (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp);
+            model.supply(
+              supplier.account.address,
+              1n,
+              (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp,
+            );
             await check();
           }
           model.swap(1n, 1n);
           await market.write.swap([tickId, 1n, 1n, await deadline(), zeroAddress], { account: taker.account });
           await check();
         }
+      }
+      // Terminal reconciliation for a fixed subset of the deterministic seeds.
+      if (seedIndex < 8) {
+        await networkHelpers.time.increase(Number(DAY));
+        while ((await market.read.getTick([tickId])).settleCursor < BigInt(positions.size)) {
+          const hash = await market.write.settle([tickId], { account: keeper.account });
+          const receipt = await client.getTransactionReceipt({ hash });
+          for (const event of parseEventLogs({ abi, logs: receipt.logs, eventName: "TermClosed" })) {
+            const p = positions.get(event.args.positionId)!;
+            model.close(p.amount, p.quote - p.closeFee);
+            model.quoteFees += p.closeFee;
+          }
+          await check();
+        }
+        assert.equal(model.working, 0n);
+        assert.equal(model.exitWorking, 0n);
+        for (const who of providers) {
+          const transferable = (await market.read.getEarnPosition([who.account.address, tickId])).activePrincipal;
+          if (transferable === 0n) continue;
+          const hash = await market.write.withdraw([tickId, transferable, 0n, max], { account: who.account });
+          const now = (
+            await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash })).blockNumber })
+          ).timestamp;
+          const predicted = model.withdraw(who.account.address, transferable, now);
+          assert.equal(predicted.x, transferable);
+          await check();
+        }
+        await networkHelpers.time.increase(Number(DAY));
+        for (const who of providers) {
+          const hash = await market.write.collect([tickId], { account: who.account });
+          const receipt = await client.getTransactionReceipt({ hash });
+          const now = (await client.getBlock({ blockNumber: receipt.blockNumber })).timestamp;
+          const predicted = model.collect(who.account.address, now);
+          const event = parseEventLogs({ abi, logs: receipt.logs, eventName: "Collected" })[0].args;
+          assert.equal(event.activeYieldAsset, predicted.activeYield);
+          assert.equal(event.exitYieldAsset, predicted.exitYield);
+          assert.equal(event.exitAsset, predicted.exitAsset);
+          assert.equal(event.activeQuote, predicted.activeQuote);
+          assert.equal(event.exitQuote, predicted.exitQuote);
+          const claim = await market.read.getEarnPosition([who.account.address, tickId]);
+          assert.equal(
+            claim.claimableActiveYieldAsset +
+              claim.claimableExitYieldAsset +
+              claim.claimableExitAsset +
+              claim.claimableActiveQuote +
+              claim.claimableExitQuote,
+            0n,
+          );
+          await check();
+        }
+        await market.write.collectProtocolFees([ast.address]);
+        model.assetFees = 0n;
+        await market.write.collectProtocolFees([quo.address]);
+        model.quoteFees = 0n;
+        await check();
+        const tick = await market.read.getTick([tickId]);
+        assert.equal(tick.workingSupply, 0n);
+        assert.equal(tick.exitWorking, 0n);
+        assert.equal(tick.availableSupply, model.available);
+        // With no escrow or fees, liability is exactly the remaining reserves and principal.
+        assert.equal(
+          await market.read.tokenLiability([ast.address]),
+          model.available + model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees,
+        );
+        assert.equal(
+          await market.read.tokenLiability([quo.address]),
+          model.activeQuoteReserve + model.exitQuoteReserve,
+        );
+        assert.ok(model.available <= BigInt(providers.length), "only fixed-point principal dust may remain");
+        const dustLimit = BigInt(providers.length) * BigInt(positions.size + 24);
+        assert.ok(
+          model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees <= dustLimit,
+          "unclaimed Asset reserves stay within per-distribution fixed-point dust",
+        );
+        assert.ok(
+          model.activeQuoteReserve + model.exitQuoteReserve <= dustLimit,
+          "unclaimed Quote reserves stay within per-distribution fixed-point dust",
+        );
       }
     });
   }
@@ -715,9 +1104,9 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       ],
       { account: keeper.account },
     );
-    assert.equal((await market.read.getPosition([1n])).status, 3);
-    assert.equal((await market.read.getPosition([2n])).status, 3);
-    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [1n, 2n]);
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
+    await assert.rejects(market.read.getPosition([2n]), /NotFound/);
+    assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), []);
     await market.write.multicall(
       [
         [
@@ -824,8 +1213,8 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
       encodeFunctionData({ abi, functionName: "repay", args: [2n, max] }),
     ];
     await market.write.multicall([calls], { account: taker.account });
-    assert.equal((await market.read.getPosition([1n])).status, 2);
-    assert.equal((await market.read.getPosition([2n])).status, 2);
+    await assert.rejects(market.read.getPosition([1n]), /NotFound/);
+    await assert.rejects(market.read.getPosition([2n]), /NotFound/);
     assert.equal((await market.read.getTick([tickId])).settleCursor, 2n);
     assert.equal((await market.read.getTick([tickId])).activePrincipal, 960n * E);
     assert.ok(useQuote.fullTermYieldAsset > 0n);
@@ -910,17 +1299,23 @@ describe("Yield Orders v0.2 Product-Sum", async () => {
     await assert.rejects(protocol.write.supply([id, 1n, zeroAddress], { account: a.account }));
   });
 
-  it("uses v0.2 initcode and guarded salt for equal cross-chain CREATE2 predictions", async () => {
+  it("uses deterministic initcode and guarded salt for equal cross-chain CREATE2 predictions", async () => {
     const artifact = await readArtifact();
     assert.deepEqual((artifact as any).linkReferences, {});
     assert.deepEqual((artifact as any).deployedLinkReferences, {});
-    const salt = candidateSalt(42n, `${SALT_NAMESPACE}-test`);
+    const salt = candidateSalt(42n);
+    assert.equal(
+      salt,
+      keccak256(encodeAbiParameters([{ type: "string" }, { type: "uint256" }], [SALT_NAMESPACE, 42n])),
+    );
     const one = predict(artifact, deployer.account.address, salt);
     const perNetwork = Object.values(NETWORKS).map(() => predict(artifact, deployer.account.address, salt));
     const two = perNetwork[1];
     assert.equal(one.address, two.address);
     assert.equal(one.guardedSalt, guardSalt(salt));
     assert.equal(one.creationCodeHash, two.creationCodeHash);
-    assert.ok(perNetwork.every((entry) => entry.address === one.address && entry.runtimeCodeHash === one.runtimeCodeHash));
+    assert.ok(
+      perNetwork.every((entry) => entry.address === one.address && entry.runtimeCodeHash === one.runtimeCodeHash),
+    );
   });
 });
