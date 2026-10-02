@@ -1,7 +1,7 @@
 # yld.cx — Yield Orders Protocol
 
 **Ethereum / EVM Implementation Specification**  
-**Version:** 0.2
+**Version:** 0.3
 **Depends on:** `spec/protocol.md`
 
 ---
@@ -510,7 +510,7 @@ use(
 repay(
     uint256 positionId,
     uint256 maxYieldAsset
-)
+) returns (RepayResult memory)
 
 swap(
     uint256 tickId,
@@ -522,7 +522,7 @@ swap(
 
 close(
     uint256 positionId
-)
+) returns (CloseResult memory)
 
 settle(
     uint256 tickId
@@ -532,6 +532,12 @@ settle(
 `withdraw` now uses Asset-denominated active principal, not shares.
 
 `referrer` in `supply`, `use`, and `swap` is metadata-only. Zero address is allowed. It MUST NOT alter fees, provider proceeds, Yield, settlement priority, ownership, or any protocol right. Implementations may emit it for attribution and analytics only.
+
+
+
+`RepayResult` and `CloseResult` expose the canonical economic result required by integrators and simulation before the resolved Term Position storage is deleted. At minimum, `CloseResult` exposes the resolved position identity / Tick / sequence plus `closeFee`, provider Quote proceeds, `exitFill`, `activeFill`, `exitQuote`, and `activeQuote`. Exact struct naming MAY differ if the ABI exposes equivalent return fields.
+
+`getPosition(positionId)` is an ACTIVE-state view only. A successfully Repayed or Closed position is no longer readable from Term Position storage.
 
 ---
 
@@ -582,6 +588,16 @@ providerPrincipal =
 x = min(principalAmount, providerPrincipal)
 ```
 
+Require after the `min` calculation:
+
+```text
+DproviderX36 = providerPrincipalX36
+x > 0
+DproviderX36 > 0
+```
+
+A provider with only sub-raw fixed-point principal cannot execute a zero-effect Withdraw. Max continues to use the whole-raw `providerPrincipal` preview.
+
 The simulated Withdraw return MUST expose whole-raw-unit `providerPrincipal`; `getEarnPosition` provides current transferable principal before the simulation.
 
 A positive sub-raw remainder in `providerPrincipalX36` remains economically owned after a Max withdrawal and MUST NOT be cleared.
@@ -631,7 +647,7 @@ forfeitedYield = yieldForWithdraw - yieldAssetOut
 owedActiveYieldAsset -= yieldForWithdraw
 ```
 
-Apply the canonical §19 X36 redistribution rule. After withdrawing principal, calculate `otherActiveX36 = activePrincipal * PRINCIPAL_PRECISION - remainingProviderX36`. For positive `forfeitedYield`, when `otherActiveX36 >= PRINCIPAL_PRECISION`, fund the Active Yield sum using `Math.mulDiv(forfeitedYield, activeP * PRINCIPAL_PRECISION, otherActiveX36)` with floor rounding; otherwise reclassify the amount as accrued Asset protocol fees, reducing the funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding to exclude its retained principal. Eligible recipients use their existing vesting timestamps. No new Yield reserve, additional fee or separate vesting state is created.
+Apply the canonical §19 X36 redistribution rule. After withdrawing principal, calculate `domainActiveX36 = activePrincipal * PRINCIPAL_PRECISION`, require `remainingProviderX36 <= domainActiveX36`, then calculate `otherActiveX36 = domainActiveX36 - remainingProviderX36` with checked subtraction. An invariant violation MUST revert and MUST NOT fall through to protocol-fee reclassification. For positive `forfeitedYield`, when `otherActiveX36 >= PRINCIPAL_PRECISION`, fund the Active Yield sum using `Math.mulDiv(forfeitedYield, activeP * PRINCIPAL_PRECISION, otherActiveX36)` with floor rounding; otherwise reclassify the amount as accrued Asset protocol fees, reducing the funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding to exclude its retained principal. Eligible recipients use their existing vesting timestamps. No new Yield reserve, additional fee or separate vesting state is created.
 
 Transfer `availableOut + yieldAssetOut`. The `withdraw` return and `Withdrawn` event include `yieldAssetOut` and `forfeitedYield`. Preserve the existing Exit principal split and sub-raw remainder.
 
@@ -652,13 +668,20 @@ workingSupply += assetAmount
 
 Active principal and active P are unchanged.
 
-Store:
+Store an ACTIVE Term Position containing the fields required for Repay / Close, including:
 
 ```text
+Tick / sequence
+user
+assetAmount
 quotePrincipal
 fullTermYieldAsset
 closeFee
+openedAt
+maturity
 ```
+
+The position storage exists only while ACTIVE.
 
 Close fee:
 
@@ -671,14 +694,16 @@ closeFee =
     );
 ```
 
-Future Repay arithmetic representability MUST be checked at Use.
+Future Repay arithmetic representability MUST be checked at Use. The implementation MUST apply every canonical Use admission predicate from `spec/protocol.md` §17, including positive `assetAmount`, positive Quote Principal, positive full-term Yield, deadline validity, Available-liquidity bounds, and the shared timestamp domain.
 
 At minimum, require before mutation:
 
 ```text
 durationDays <= MAX_DURATION_DAYS
 openedAt + durationDays * SECONDS_PER_DAY <= MAX_TIMESTAMP
+quotePrincipal > 0
 quotePrincipal <= MAX_ACCOUNTING_AMOUNT
+fullTermYieldAsset > 0
 fullTermYieldAsset <= MAX_ACCOUNTING_AMOUNT
 ```
 
@@ -748,6 +773,12 @@ active P unchanged
 
 Only net Yield enters provider liabilities.
 
+
+
+After computing the return value and terminal event fields, remove the position from the user's active-position index in O(1), delete `tickPositionId[tickId][tickSeq]`, and `delete` the Term Position storage. If the target sequence equals `settleCursor`, advance the cursor exactly once as defined by `spec/protocol.md` §25.
+
+No separate keeper payment or protocol-fee split is introduced. Any EVM storage refund resulting from deletion follows normal EVM transaction semantics and belongs to the transaction execution implicitly.
+
 ---
 
 # 17. Swap
@@ -779,6 +810,12 @@ Fund Quote sums before each domain's principal depletion.
 Then update Exit and active P independently.
 
 A single Close may finalize both domains.
+
+
+
+Return the canonical `CloseResult`, emit `TermClosed` using values captured before deletion, remove the position from the user's active-position index in O(1), delete `tickPositionId[tickId][tickSeq]`, and `delete` the Term Position storage. Cursor advancement follows `spec/protocol.md` §25.
+
+There is no explicit keeper reward and no protocol-fee split for closing. Position deletion only removes no-longer-needed storage.
 
 ---
 
@@ -886,9 +923,11 @@ multiple Swaps
 multiple Repays / Closes
 ```
 
+Multicall MAY batch additional explicit `settle(tickId)` calls, but it MUST NOT replace the mandatory one-sequence settlement path inside each economic action. Each explicit `settle` and each automatic settlement step remains independently bounded O(1).
+
 ---
 
-# 23. Position order
+# 23. Position order and active storage
 
 Keep:
 
@@ -896,12 +935,64 @@ Keep:
 global nextPositionId
 per-Tick nextPositionSeq
 per-Tick settleCursor
-tickPositionId[tickId][tickSeq]
+tickPositionId[tickId][tickSeq]   // ACTIVE positions only
 ```
 
-Position IDs are permanent.
+Identifiers and Tick sequences are monotonically increasing and never reused. **Resolved Term Position storage is not permanent.**
 
-Cursor settlement stays O(1).
+On Use:
+
+```text
+positionId = nextPositionId++
+tickSeq = nextPositionSeq++
+tickPositionId[tickId][tickSeq] = positionId
+create ACTIVE Position
+append positionId to user's active-position list
+```
+
+On successful Repay / Close:
+
+```text
+capture return/event fields
+remove positionId from user's active list via swap-and-pop
+delete userPositionIndexPlusOne[positionId]
+delete tickPositionId[tickId][tickSeq]
+delete Position storage
+```
+
+The active user list MUST have an index mapping such as:
+
+```text
+userPositionIndexPlusOne[positionId]
+```
+
+so removal is O(1); no array scan is permitted.
+
+When `settleCursor < nextPositionSeq`, `tickPositionId[tickId][settleCursor] == 0` means that sequence was created and has already been resolved / removed. `_settleOne` increments the cursor once and stops. It MUST NOT loop forward to find another live position.
+
+For an ACTIVE cursor entry:
+
+```text
+not mature → no-op
+mature     → canonical Close + delete position + cursor++
+```
+
+For Repay / Close:
+
+```text
+target seq == cursor
+→ resolve target directly
+→ delete target
+→ cursor++
+
+target seq != cursor
+→ _settleOne() exactly once
+→ resolve target
+→ delete target
+→ stop
+```
+
+Cursor settlement and active-list maintenance remain O(1). Historical position activity is reconstructed from events.
 
 ---
 
@@ -984,6 +1075,7 @@ TermClosed(
     closeFee,
     providerSwapProceeds,
     exitFill,
+    activeFill,
     exitQuote,
     activeQuote
 )
@@ -1017,13 +1109,35 @@ DomainGenerationFinalized(
 
 Scale/generation events are accounting metadata, not product actions.
 
+
+
+`UseOpened`, `TermRepaid`, and `TermClosed` are the canonical onchain history for Term Positions. Terminal events MUST be emitted from values captured before resolved Position storage is deleted and MUST contain sufficient identity / sequence and economic fields for offchain history reconstruction.
+
 ---
 
 # 25. Views and product simulations
 
 Required views include `getPair`, `getTick`, `getEarnPosition`, `getPosition`, `getEarnPositions`, `getUsePositions`, `getDomain`, `nextPositionId`, `tokenLiability`, `accruedProtocolFees`, and `quoteUse`.
 
-The six Solidity `preview*` methods and hypothetical settlement projection are removed. The product simulates real economic calls through OpenZeppelin `multicall(bytes[])` in one `eth_call`: action first, then post-action getters. **Never prepend `settle()`**; each economic action already attempts one settlement-cursor step. `supply` and `close` return no result, so use getters. For Use, read `nextPositionId` before the simulation and append `getPosition(positionId)`. The call must use the intended caller and sufficient token balances and allowances. A failed call can mean allowance, balance, maturity, cooldown, slippage, or deadline failure.
+`getPosition(positionId)` exposes only an ACTIVE Term Position. Resolved IDs have no retained Term Position state. `getUsePositions(owner, ...)` enumerates ACTIVE position IDs only and MUST use O(1) add/remove bookkeeping; it is not a historical ledger.
+
+The Solidity `preview*` methods and hypothetical settlement projection remain removed. The product simulates real economic calls through OpenZeppelin `multicall(bytes[])` in one `eth_call`. **Never prepend `settle()` as a requirement**; each economic action already attempts its mandatory one-sequence cursor step. Additional explicit `settle()` calls MAY be batched only when the caller intentionally wants extra cursor progress.
+
+Simulation rules:
+
+```text
+Supply   → supply + getEarnPosition + getTick
+Withdraw → withdraw + getEarnPosition + getTick
+Collect  → collect + getEarnPosition
+Use      → use + getPosition(newPositionId) + getTick
+Repay    → repay return data + getTick / getDomain as needed
+Swap     → swap + getTick
+Close    → close return data + getTick / getDomain as needed
+```
+
+Because Repay and Close delete their Term Position storage, simulations MUST NOT depend on `getPosition(positionId)` after those calls. `repay` and `close` return the canonical result fields needed by the adapter. For Use, read `nextPositionId` before the simulation and append `getPosition(positionId)` for the newly ACTIVE position.
+
+The call must use the intended caller and sufficient token balances and allowances. A failed call can mean allowance, balance, maturity, cooldown, slippage, deadline, or changed settlement state.
 
 `quoteUse(tickId, assetAmount)` provides only current-state Quote Principal and full-term Yield before approval. It does not project an expired cursor Close. Market state can change between quotation, simulation, and execution; retain all execution-time limits and deadlines. `withdraw(tickId, principalAmount, minImmediateAssetOut, deadline)` may use zero minimum and a permissive deadline for unrestricted execution.
 
@@ -1123,6 +1237,22 @@ out-of-order Repay/Close with pooled Exit-first funding and already-terminal cur
 fractional Yield rounding and repeated Collect
 fraction-only provider Tick stays discoverable after all whole-raw claims are paid
 future Supply retains its fractional carry without inheriting other providers' history
+
+Use rejects zero full-term Yield before mutation
+Withdraw rejects x == 0 after whole-raw min calculation
+Withdraw redistribution invariant violation hard-reverts on checked subtraction
+TermClosed event includes activeFill
+active Term Position removed after Repay
+active Term Position removed after Close
+resolved position removed from getUsePositions in O(1)
+position IDs / Tick sequences never reused
+tickPositionId deleted on out-of-order resolution
+deleted cursor sequence advances exactly once and stops
+many deleted cursor gaps require one step per action, never a loop
+non-cursor Repay/Close attempts exactly one _settleOne before target resolution
+cursor-target Repay/Close advances directly exactly once
+Multicall cannot bypass mandatory per-action settlement
+Repay/Close simulations use return data, never deleted getPosition state
 ```
 
 Stateful fuzz tests MUST compare against a high-precision reference model that independently computes timestamps, vesting, forfeiture, principal, gains, fees, and complete reserve conservation. Include all canonical acceptance requirements in `spec/protocol.md` §29.1.
