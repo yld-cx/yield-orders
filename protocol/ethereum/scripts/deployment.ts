@@ -103,8 +103,7 @@ export function assertManifest(manifest: DeploymentManifest, prediction: ReturnT
   if (manifest.version !== PROTOCOL_VERSION) throw new Error("Wrong protocol version");
   if (manifest.saltNamespace !== SALT_NAMESPACE) throw new Error("Wrong salt namespace");
   if (manifest.compiler !== COMPILER_DESCRIPTION) throw new Error("Wrong compiler configuration");
-  if (!manifest.networks ||
-    Object.keys(manifest.networks).sort().join(",") !== Object.keys(NETWORKS).sort().join(","))
+  if (!manifest.networks || Object.keys(manifest.networks).sort().join(",") !== Object.keys(NETWORKS).sort().join(","))
     throw new Error("Wrong network entries");
   if (!prediction.address.toLowerCase().startsWith("0x0000"))
     throw new Error("Protocol address must start with 0x0000");

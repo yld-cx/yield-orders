@@ -451,7 +451,12 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (assetAmount == 0 || assetAmount > t.availableSupply) {
             revert InsufficientLiquidity();
         }
-        result = YieldMath.fullTermYield(t.availableSupply, t.workingSupply - t.exitWorking, t.durationDays, assetAmount);
+        result = YieldMath.fullTermYield(
+            t.availableSupply,
+            t.workingSupply - t.exitWorking,
+            t.durationDays,
+            assetAmount
+        );
         if (result == 0) {
             revert InvalidInput();
         }
@@ -587,9 +592,12 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         d.P = newP;
     }
-    function _scaleValue(uint256 id, DomainKind kind, uint64 generation, uint64 scale)
-        internal view returns (ScaleSums memory)
-    {
+    function _scaleValue(
+        uint256 id,
+        DomainKind kind,
+        uint64 generation,
+        uint64 scale
+    ) internal view returns (ScaleSums memory) {
         Domain storage d = kind == DomainKind.Active ? _ticks[id].active : _ticks[id].exit;
         if (generation == d.generation && scale == d.scale) {
             return ScaleSums(d.assetSum, d.yieldSum, d.quoteSum, false);
@@ -735,8 +743,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             p.owedExitAsset != 0 ||
             p.owedExitYieldAsset != 0 ||
             p.owedExitQuote != 0 ||
-            p.fractionalGainX36[0] != 0 || p.fractionalGainX36[1] != 0 ||
-            p.fractionalGainX36[2] != 0 || p.fractionalGainX36[3] != 0 ||
+            p.fractionalGainX36[0] != 0 ||
+            p.fractionalGainX36[1] != 0 ||
+            p.fractionalGainX36[2] != 0 ||
+            p.fractionalGainX36[3] != 0 ||
             p.fractionalGainX36[4] != 0
         ) {
             return;
@@ -891,9 +901,12 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             q.forfeitedYield = yieldForWithdraw - q.yieldAssetOut;
         }
     }
-    function withdraw(uint256 id, uint256 principalAmount, uint256 minImmediateAssetOut, uint256 deadline)
-        external nonReentrant returns (WithdrawPreview memory q)
-    {
+    function withdraw(
+        uint256 id,
+        uint256 principalAmount,
+        uint256 minImmediateAssetOut,
+        uint256 deadline
+    ) external nonReentrant returns (WithdrawPreview memory q) {
         if (block.timestamp > deadline) revert Expired();
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
@@ -929,8 +942,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (q.forfeitedYield != 0) {
             if (otherActiveX36 >= PRINCIPAL_PRECISION) {
                 _bound(q.forfeitedYield);
-                t.active.yieldSum +=
-                    Math.mulDiv(q.forfeitedYield, t.active.P * PRINCIPAL_PRECISION, otherActiveX36);
+                t.active.yieldSum += Math.mulDiv(q.forfeitedYield, t.active.P * PRINCIPAL_PRECISION, otherActiveX36);
                 p.active.yieldSum = t.active.yieldSum;
             } else {
                 t.yieldAssetReserve -= q.forfeitedYield;
@@ -1214,8 +1226,17 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         Position memory pm = p;
         CloseAmounts memory amounts = _closeAmounts(pm.assetAmount, pm.quotePrincipal, pm.closeFee, t.exitWorking);
-        q = CloseResult(positionId, pm.tickId, pm.tickSeq, pm.closeFee, amounts.quoteProceeds,
-            amounts.exitFill, amounts.activeFill, amounts.exitQuote, amounts.activeQuote);
+        q = CloseResult(
+            positionId,
+            pm.tickId,
+            pm.tickSeq,
+            pm.closeFee,
+            amounts.quoteProceeds,
+            amounts.exitFill,
+            amounts.activeFill,
+            amounts.exitQuote,
+            amounts.activeQuote
+        );
         uint256 oldExit = t.exitWorking;
         uint256 oldActive = t.availableSupply + t.workingSupply - oldExit;
         if (amounts.exitFill != 0 && amounts.exitQuote != 0) {
@@ -1309,7 +1330,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.claimableExitQuote = p.owedExitQuote;
     }
     /// @notice A current-state, pre-approval Use quote. Execution can differ after settlement or market changes.
-    function quoteUse(uint256 id, uint256 assetAmount) external view returns (uint256 quotePrincipal, uint256 fullTermYieldAsset) {
+    function quoteUse(
+        uint256 id,
+        uint256 assetAmount
+    ) external view returns (uint256 quotePrincipal, uint256 fullTermYieldAsset) {
         Tick memory t = _requireTick(id);
         quotePrincipal = _quote(t, assetAmount);
         fullTermYieldAsset = _fullTermYield(t, assetAmount);

@@ -27,11 +27,16 @@ describe("Yield Orders Product-Sum", async () => {
   it("keeps 1% floor fee parity at raw-unit boundaries", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, MAX, zeroAddress], { account: a.account });
-    assert.equal(0n * 100n / 10_000n, 0n);
+    assert.equal((0n * 100n) / 10_000n, 0n);
     await assert.rejects(market.simulate.previewSwap([tickId, 0n]));
     for (const amount of [1n, 99n, 100n, 101n, MAX]) {
-      const result = await client.simulateContract({ address: market.address, abi, functionName: "swap",
-        args: [tickId, amount, max, await deadline(), zeroAddress], account: taker.account });
+      const result = await client.simulateContract({
+        address: market.address,
+        abi,
+        functionName: "swap",
+        args: [tickId, amount, max, await deadline(), zeroAddress],
+        account: taker.account,
+      });
       assert.equal(result.result.quotePrincipal, amount);
       assert.equal(result.result.swapFee, amount / 100n);
       assert.equal(result.result.providerSwapProceeds, amount - amount / 100n);
@@ -184,23 +189,38 @@ describe("Yield Orders Product-Sum", async () => {
     await assert.rejects(market.read.getPosition([3n]), /NotFound/);
     assert.equal(await market.read.tickPositionId([tickId, 2n]), BigInt(v03.terminalRepay.deletedTickPositionId));
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [1n, 2n, 5n, 4n]);
-    assert.equal((await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.terminalRepay.cursorAfterOutOfOrder), "live, non-mature cursor stays put");
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.terminalRepay.cursorAfterOutOfOrder),
+      "live, non-mature cursor stays put",
+    );
 
     await market.write.repay([2n, max], { account: taker.account });
     await market.write.repay([4n, max], { account: taker.account });
     await market.write.repay([1n, max], { account: taker.account });
-    assert.equal((await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.deletedCursorGaps.afterCursorTargetRepay), "cursor-target Repay advances directly");
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.deletedCursorGaps.afterCursorTargetRepay),
+      "cursor-target Repay advances directly",
+    );
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [5n]);
-    await market.write.multicall([[encodeFunctionData({ abi, functionName: "supply",
-      args: [tickId, E, zeroAddress] })]], { account: a.account });
-    assert.equal((await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.deletedCursorGaps.afterOneGapSkip), "Multicall Supply skips one deleted entry");
-    await market.write.multicall([[encodeFunctionData({ abi, functionName: "collect",
-      args: [tickId] })]], { account: a.account });
-    assert.equal((await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.deletedCursorGaps.afterSecondGapSkip), "Multicall Collect skips one deleted entry");
+    await market.write.multicall(
+      [[encodeFunctionData({ abi, functionName: "supply", args: [tickId, E, zeroAddress] })]],
+      { account: a.account },
+    );
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.deletedCursorGaps.afterOneGapSkip),
+      "Multicall Supply skips one deleted entry",
+    );
+    await market.write.multicall([[encodeFunctionData({ abi, functionName: "collect", args: [tickId] })]], {
+      account: a.account,
+    });
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(v03.deletedCursorGaps.afterSecondGapSkip),
+      "Multicall Collect skips one deleted entry",
+    );
     await market.write.repay([5n, max], { account: taker.account });
     assert.equal(
       (await market.read.getTick([tickId])).settleCursor,
@@ -278,8 +298,11 @@ describe("Yield Orders Product-Sum", async () => {
     assert.equal((await market.read.getTick([tickId])).settleCursor, 1n);
     await networkHelpers.time.increase(Number(DAY));
     const hash = await market.write.close([3n], { account: keeper.account });
-    const events = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash })).logs,
-      eventName: "TermClosed" });
+    const events = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash })).logs,
+      eventName: "TermClosed",
+    });
     assert.equal(events.length, 1);
     assert.equal(events[0].args.positionId, 3n);
     assert.equal((await market.read.getTick([tickId])).settleCursor, 2n);
@@ -505,12 +528,12 @@ describe("Yield Orders Product-Sum", async () => {
     // its compiler-assigned root slot. Valid actions cannot create this fault.
     let providerSlot: `0x${string}` | undefined;
     for (let mappingSlot = 0n; mappingSlot < 32n; mappingSlot++) {
-      const providerOuter = BigInt(keccak256(encodeAbiParameters(
-        [{ type: "uint256" }, { type: "uint256" }], [tickId, mappingSlot],
-      )));
-      const candidate = keccak256(encodeAbiParameters(
-        [{ type: "address" }, { type: "uint256" }], [a.account.address, providerOuter],
-      ));
+      const providerOuter = BigInt(
+        keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [tickId, mappingSlot])),
+      );
+      const candidate = keccak256(
+        encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [a.account.address, providerOuter]),
+      );
       const word = await client.getStorageAt({ address: market.address, slot: candidate });
       if (BigInt(word ?? "0x0") === 100n * E * X) {
         providerSlot = candidate;
@@ -594,8 +617,10 @@ describe("Yield Orders Product-Sum", async () => {
     const { market, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1n, zeroAddress], { account: a.account });
     const before = await market.read.getTick([tickId]);
-    await assert.rejects(market.write.use([tickId, 0n, max, await deadline(), zeroAddress],
-      { account: taker.account }), /InvalidInput/);
+    await assert.rejects(
+      market.write.use([tickId, 0n, max, await deadline(), zeroAddress], { account: taker.account }),
+      /InvalidInput/,
+    );
     assert.equal(await market.read.nextPositionId(), 1n);
     assert.deepEqual(await market.read.getTick([tickId]), before);
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), []);
@@ -983,7 +1008,9 @@ describe("Yield Orders Product-Sum", async () => {
           const transferable = (await market.read.getEarnPosition([who.account.address, tickId])).activePrincipal;
           if (transferable === 0n) continue;
           const hash = await market.write.withdraw([tickId, transferable, 0n, max], { account: who.account });
-          const now = (await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash })).blockNumber })).timestamp;
+          const now = (
+            await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash })).blockNumber })
+          ).timestamp;
           const predicted = model.withdraw(who.account.address, transferable, now);
           assert.equal(predicted.x, transferable);
           await check();
@@ -1001,8 +1028,14 @@ describe("Yield Orders Product-Sum", async () => {
           assert.equal(event.activeQuote, predicted.activeQuote);
           assert.equal(event.exitQuote, predicted.exitQuote);
           const claim = await market.read.getEarnPosition([who.account.address, tickId]);
-          assert.equal(claim.claimableActiveYieldAsset + claim.claimableExitYieldAsset + claim.claimableExitAsset
-            + claim.claimableActiveQuote + claim.claimableExitQuote, 0n);
+          assert.equal(
+            claim.claimableActiveYieldAsset +
+              claim.claimableExitYieldAsset +
+              claim.claimableExitAsset +
+              claim.claimableActiveQuote +
+              claim.claimableExitQuote,
+            0n,
+          );
           await check();
         }
         await market.write.collectProtocolFees([ast.address]);
@@ -1015,16 +1048,24 @@ describe("Yield Orders Product-Sum", async () => {
         assert.equal(tick.exitWorking, 0n);
         assert.equal(tick.availableSupply, model.available);
         // With no escrow or fees, liability is exactly the remaining reserves and principal.
-        assert.equal(await market.read.tokenLiability([ast.address]),
-          model.available + model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees);
-        assert.equal(await market.read.tokenLiability([quo.address]),
-          model.activeQuoteReserve + model.exitQuoteReserve);
+        assert.equal(
+          await market.read.tokenLiability([ast.address]),
+          model.available + model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees,
+        );
+        assert.equal(
+          await market.read.tokenLiability([quo.address]),
+          model.activeQuoteReserve + model.exitQuoteReserve,
+        );
         assert.ok(model.available <= BigInt(providers.length), "only fixed-point principal dust may remain");
         const dustLimit = BigInt(providers.length) * BigInt(positions.size + 24);
-        assert.ok(model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees <= dustLimit,
-          "unclaimed Asset reserves stay within per-distribution fixed-point dust");
-        assert.ok(model.activeQuoteReserve + model.exitQuoteReserve <= dustLimit,
-          "unclaimed Quote reserves stay within per-distribution fixed-point dust");
+        assert.ok(
+          model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees <= dustLimit,
+          "unclaimed Asset reserves stay within per-distribution fixed-point dust",
+        );
+        assert.ok(
+          model.activeQuoteReserve + model.exitQuoteReserve <= dustLimit,
+          "unclaimed Quote reserves stay within per-distribution fixed-point dust",
+        );
       }
     });
   }
@@ -1263,9 +1304,10 @@ describe("Yield Orders Product-Sum", async () => {
     assert.deepEqual((artifact as any).linkReferences, {});
     assert.deepEqual((artifact as any).deployedLinkReferences, {});
     const salt = candidateSalt(42n);
-    assert.equal(salt, keccak256(encodeAbiParameters(
-      [{ type: "string" }, { type: "uint256" }], [SALT_NAMESPACE, 42n],
-    )));
+    assert.equal(
+      salt,
+      keccak256(encodeAbiParameters([{ type: "string" }, { type: "uint256" }], [SALT_NAMESPACE, 42n])),
+    );
     const one = predict(artifact, deployer.account.address, salt);
     const perNetwork = Object.values(NETWORKS).map(() => predict(artifact, deployer.account.address, salt));
     const two = perNetwork[1];

@@ -20,7 +20,7 @@ function fullYield(amount: bigint): bigint {
   const u = (amount * Q) / TOTAL;
   const square = (u * u) / Q;
   const fourth = (square * square) / Q;
-  const curve = 4n * (u) + 99n * fourth;
+  const curve = 4n * u + 99n * fourth;
   return (TOTAL * curve + 4n * 10_000n * Q - 1n) / (4n * 10_000n * Q);
 }
 
@@ -31,18 +31,18 @@ describe("final X36 withdrawal redistribution", async () => {
 
   it("publishes reproducible raw-unit parity vectors", () => {
     const v = vectors.withdrawal;
-    const attributable = BigInt(v.owedActiveYieldRaw) * BigInt(v.withdrawRaw) * X / BigInt(v.providerBeforeX36);
-    const paid = attributable * BigInt(v.elapsedSeconds) / BigInt(v.durationSeconds);
+    const attributable = (BigInt(v.owedActiveYieldRaw) * BigInt(v.withdrawRaw) * X) / BigInt(v.providerBeforeX36);
+    const paid = (attributable * BigInt(v.elapsedSeconds)) / BigInt(v.durationSeconds);
     const forfeited = attributable - paid;
     assert.equal(attributable, BigInt(v.yieldForWithdrawRaw));
     assert.equal(paid, BigInt(v.yieldOutRaw));
     assert.equal(forfeited, BigInt(v.forfeitedYieldRaw));
     assert.equal(BigInt(v.remainingActiveRaw) * X - BigInt(v.remainingProviderX36), BigInt(v.otherActiveX36));
-    assert.equal(forfeited * BigInt(v.activeP) * X / BigInt(v.otherActiveX36), BigInt(v.yieldSumIncrement));
+    assert.equal((forfeited * BigInt(v.activeP) * X) / BigInt(v.otherActiveX36), BigInt(v.yieldSumIncrement));
     for (const boundary of vectors.eligibility) {
       const other = BigInt(boundary.otherActiveX36);
       const fee = other < X ? BigInt(boundary.forfeitedYieldRaw) : 0n;
-      const increment = other < X ? 0n : BigInt(boundary.forfeitedYieldRaw) * BigInt(boundary.activeP) * X / other;
+      const increment = other < X ? 0n : (BigInt(boundary.forfeitedYieldRaw) * BigInt(boundary.activeP) * X) / other;
       assert.equal(fee, BigInt(boundary.assetFeeRaw));
       assert.equal(increment, BigInt(boundary.yieldSumIncrement));
     }
@@ -55,24 +55,34 @@ describe("final X36 withdrawal redistribution", async () => {
     const exit = vectors.exitFirstRepay;
     assert.equal(BigInt(exit.exitFillRaw), BigInt(exit.exitWorkingRaw));
     assert.equal(BigInt(exit.activeReturnRaw), BigInt(exit.returnedAssetRaw) - BigInt(exit.exitFillRaw));
-    assert.equal(BigInt(exit.exitYieldRaw), BigInt(exit.netYieldRaw) * BigInt(exit.exitFillRaw) / BigInt(exit.returnedAssetRaw));
+    assert.equal(
+      BigInt(exit.exitYieldRaw),
+      (BigInt(exit.netYieldRaw) * BigInt(exit.exitFillRaw)) / BigInt(exit.returnedAssetRaw),
+    );
     assert.equal(BigInt(exit.activeYieldRaw), BigInt(exit.netYieldRaw) - BigInt(exit.exitYieldRaw));
   });
 
   async function setup() {
     const asset = await viem.deployContract("MockERC20", ["Asset", "AST", 18]);
     const quote = await viem.deployContract("MockERC20", ["Quote", "QUO", 6]);
-    const market = getContract({ address: (await viem.deployContract("YieldOrders", [fee.account.address])).address,
-      abi, client: { public: client, wallet: fee } });
+    const market = getContract({
+      address: (await viem.deployContract("YieldOrders", [fee.account.address])).address,
+      abi,
+      client: { public: client, wallet: fee },
+    });
     const ast = getContract({ address: asset.address, abi: mockERC20Abi, client: { public: client, wallet: fee } });
     const quo = getContract({ address: quote.address, abi: mockERC20Abi, client: { public: client, wallet: fee } });
     await market.write.createPair([ast.address, quo.address]);
     const [pairId] = await market.read.getPair([ast.address, quo.address]);
     const direction = ast.address.toLowerCase() < quo.address.toLowerCase() ? 0 : 1;
-    const tickId = BigInt(keccak256(encodeAbiParameters(
-      [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
-      [pairId, direction, 0, 1n],
-    )));
+    const tickId = BigInt(
+      keccak256(
+        encodeAbiParameters(
+          [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
+          [pairId, direction, 0, 1n],
+        ),
+      ),
+    );
     await market.write.createTick([pairId, direction, 0, 1n]);
     for (const who of [alice, bob, taker]) {
       await ast.write.mint([who.account.address, 10n ** 33n]);
@@ -91,10 +101,14 @@ describe("final X36 withdrawal redistribution", async () => {
     const [pairId] = await market.read.getPair([ast.address, quo.address]);
     const ids: bigint[] = [];
     for (const direction of [0, 1] as const) {
-      const id = BigInt(keccak256(encodeAbiParameters(
-        [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
-        [pairId, direction, 1_000, 1n],
-      )));
+      const id = BigInt(
+        keccak256(
+          encodeAbiParameters(
+            [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
+            [pairId, direction, 1_000, 1n],
+          ),
+        ),
+      );
       await market.write.createTick([pairId, direction, 1_000, 1n]);
       ids.push(id);
       await market.write.supply([id, 1_000_000_000n, zeroAddress], { account: alice.account });
@@ -106,17 +120,23 @@ describe("final X36 withdrawal redistribution", async () => {
     assert.equal(first.priceX128, second.priceX128);
     assert.ok(first.priceX128 > Q);
     for (let i = 0; i < ids.length; i++) {
-      assert.equal((await market.read.quoteUse([ids[i], BigInt(vectors.directions[i].assetRaw)]))[0],
-        BigInt(vectors.directions[i].quotePrincipalRaw));
+      assert.equal(
+        (await market.read.quoteUse([ids[i], BigInt(vectors.directions[i].assetRaw)]))[0],
+        BigInt(vectors.directions[i].quotePrincipalRaw),
+      );
     }
     const quotes = await Promise.all(ids.map((id) => market.read.quoteUse([id, 100_000_000n])));
     assert.deepEqual(quotes[0], quotes[1]);
     assert.ok(quotes[0][0] > 100_000_000n);
     for (const id of ids) {
-      const hash = await market.write.swap([id, 100_000_000n, quotes[0][0], await deadline(), zeroAddress],
-        { account: taker.account });
-      const actual = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash })).logs,
-        eventName: "ImmediateSwap" })[0].args;
+      const hash = await market.write.swap([id, 100_000_000n, quotes[0][0], await deadline(), zeroAddress], {
+        account: taker.account,
+      });
+      const actual = parseEventLogs({
+        abi,
+        logs: (await client.getTransactionReceipt({ hash })).logs,
+        eventName: "ImmediateSwap",
+      })[0].args;
       assert.equal(actual.quotePrincipal, quotes[0][0]);
       assert.equal(actual.swapFee, quotes[0][0] / 100n);
     }
@@ -132,22 +152,31 @@ describe("final X36 withdrawal redistribution", async () => {
       await market.write.use([tickId, amount, full, await deadline(), zeroAddress], { account: taker.account });
     }
     const withdrawal = await market.write.withdraw([tickId, 300_000_000n, 0n, MAX], { account: alice.account });
-    const w = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: withdrawal })).logs,
-      eventName: "Withdrawn" })[0].args;
+    const w = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash: withdrawal })).logs,
+      eventName: "Withdrawn",
+    })[0].args;
     assert.equal(w.availableAssetOut, 225_000_000n);
     assert.equal(w.workingToExit, 75_000_000n);
     const third = await market.read.getPosition([3n]);
     const repaid = await market.write.repay([3n, third.fullTermYieldAsset], { account: taker.account });
-    const r = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: repaid })).logs,
-      eventName: "TermRepaid" })[0].args;
+    const r = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash: repaid })).logs,
+      eventName: "TermRepaid",
+    })[0].args;
     assert.equal(r.exitFill, 50_000_000n);
     assert.equal(r.activeReturn, 0n);
     assert.equal((await market.read.getTick([tickId])).settleCursor, 0n);
     assert.equal((await market.read.getTick([tickId])).exitWorking, 25_000_000n);
     await networkHelpers.time.increase(Number(DAY));
     const closeHash = await market.write.close([2n], { account: fee.account });
-    const closed = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash: closeHash })).logs,
-      eventName: "TermClosed" });
+    const closed = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash: closeHash })).logs,
+      eventName: "TermClosed",
+    });
     assert.equal(closed.length, 2);
     assert.equal(closed[0].args.positionId, 1n);
     assert.equal(closed[0].args.exitFill, 25_000_000n);
@@ -175,12 +204,13 @@ describe("final X36 withdrawal redistribution", async () => {
     const expectedFull = fullYield(useAmount);
     assert.deepEqual(await market.read.quoteUse([tickId, useAmount]), [useAmount, expectedFull]);
     model.use(useAmount);
-    const useHash = await market.write.use([tickId, useAmount, expectedFull, await deadline(), zeroAddress],
-      { account: taker.account });
+    const useHash = await market.write.use([tickId, useAmount, expectedFull, await deadline(), zeroAddress], {
+      account: taker.account,
+    });
     const opened = await time(useHash);
     await networkHelpers.time.increase(3_600);
     const repayHash = await market.write.repay([1n, expectedFull], { account: taker.account });
-    const elapsed = await time(repayHash) - opened;
+    const elapsed = (await time(repayHash)) - opened;
     const gross = (expectedFull * elapsed + DAY - 1n) / DAY;
     const repayFee = gross / 100n;
     model.assetFees += repayFee;
@@ -191,43 +221,59 @@ describe("final X36 withdrawal redistribution", async () => {
     const swapFee = swapAmount / 100n;
     model.swap(swapAmount, swapAmount - swapFee);
     model.quoteFees += swapFee;
-    await market.write.swap([tickId, swapAmount, swapAmount, await deadline(), zeroAddress],
-      { account: taker.account });
+    await market.write.swap([tickId, swapAmount, swapAmount, await deadline(), zeroAddress], {
+      account: taker.account,
+    });
     assert.equal((await market.read.getDomain([tickId, 0])).P, model.active.P);
-    assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).activePrincipalX36,
-      model.active.principalX36(model.get(alice.account.address).active));
-    assert.equal((await market.read.getEarnPosition([bob.account.address, tickId])).activePrincipalX36,
-      model.active.principalX36(model.get(bob.account.address).active));
+    assert.equal(
+      (await market.read.getEarnPosition([alice.account.address, tickId])).activePrincipalX36,
+      model.active.principalX36(model.get(alice.account.address).active),
+    );
+    assert.equal(
+      (await market.read.getEarnPosition([bob.account.address, tickId])).activePrincipalX36,
+      model.active.principalX36(model.get(bob.account.address).active),
+    );
     return { ...f, model, repayFee };
   }
 
   it("uses the exact 1.5 raw-unit denominator, excludes retained 0.5 and keeps the older wallet's vesting", async () => {
     const { market, ast, tickId, model, time, deadline, repayFee } = await historicalYield(6n);
-    assert.equal(model.active.principalX36(model.get(alice.account.address).active), 45n * X / 10n);
-    assert.equal(model.active.principalX36(model.get(bob.account.address).active), 15n * X / 10n);
+    assert.equal(model.active.principalX36(model.get(alice.account.address).active), (45n * X) / 10n);
+    assert.equal(model.active.principalX36(model.get(bob.account.address).active), (15n * X) / 10n);
     const beforeSum = model.active.sums.yield;
     const hash = await market.write.withdraw([tickId, 4n, 0n, MAX], { account: alice.account });
     const predicted = model.withdraw(alice.account.address, 4n, await time(hash));
-    const event = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash })).logs,
-      eventName: "Withdrawn" })[0].args;
+    const event = parseEventLogs({
+      abi,
+      logs: (await client.getTransactionReceipt({ hash })).logs,
+      eventName: "Withdrawn",
+    })[0].args;
     assert.equal(event.yieldAssetOut, predicted.yieldOut);
     assert.equal(event.forfeitedYield, predicted.forfeited);
     assert.ok(predicted.forfeited > 0n);
-    assert.equal(model.active.sums.yield - beforeSum,
-      (predicted.forfeited * model.active.P * X) / (15n * X / 10n));
+    assert.equal(model.active.sums.yield - beforeSum, (predicted.forfeited * model.active.P * X) / ((15n * X) / 10n));
     assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
     assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).activePrincipalX36, X / 2n);
-    assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).outstandingActiveYieldAsset,
-      model.get(alice.account.address).owedActiveYield);
+    assert.equal(
+      (await market.read.getEarnPosition([alice.account.address, tickId])).outstandingActiveYieldAsset,
+      model.get(alice.account.address).owedActiveYield,
+    );
     const bobView = await market.read.getEarnPosition([bob.account.address, tickId]);
     const bobModel = model.get(bob.account.address);
-    assert.equal(bobView.outstandingActiveYieldAsset,
-      bobModel.owedActiveYield + model.active.gainWithFraction(bobModel.active, "yield", bobModel.activeFractions.yield));
+    assert.equal(
+      bobView.outstandingActiveYieldAsset,
+      bobModel.owedActiveYield +
+        model.active.gainWithFraction(bobModel.active, "yield", bobModel.activeFractions.yield),
+    );
     assert.equal(bobView.timestamp, bobModel.timestamp);
-    assert.ok(bobView.vestingElapsedSeconds >
-      (await market.read.getEarnPosition([alice.account.address, tickId])).vestingElapsedSeconds);
-    assert.equal(bobView.claimableActiveYieldAsset,
-      bobView.outstandingActiveYieldAsset * bobView.vestingElapsedSeconds / DAY);
+    assert.ok(
+      bobView.vestingElapsedSeconds >
+        (await market.read.getEarnPosition([alice.account.address, tickId])).vestingElapsedSeconds,
+    );
+    assert.equal(
+      bobView.claimableActiveYieldAsset,
+      (bobView.outstandingActiveYieldAsset * bobView.vestingElapsedSeconds) / DAY,
+    );
 
     model.swap(2n, 2n);
     await market.write.swap([tickId, 2n, 2n, await deadline(), zeroAddress], { account: taker.account });
@@ -248,26 +294,37 @@ describe("final X36 withdrawal redistribution", async () => {
     assert.equal(await ast.read.balanceOf([market.address]), await market.read.tokenLiability([ast.address]));
   });
 
-  for (const [remaining, withdrawal, eligible] of [[4n, 2n, true], [3n, 2n, false]] as const) {
+  for (const [remaining, withdrawal, eligible] of [
+    [4n, 2n, true],
+    [3n, 2n, false],
+  ] as const) {
     it(`applies the one raw-unit eligibility boundary with ${remaining} remaining raw units`, async () => {
       const { market, ast, tickId, model, time, repayFee } = await historicalYield(remaining);
       const beforeSum = model.active.sums.yield;
       const hash = await market.write.withdraw([tickId, withdrawal, 0n, MAX], { account: alice.account });
       const expected = model.withdraw(alice.account.address, withdrawal, await time(hash));
-      const actual = parseEventLogs({ abi, logs: (await client.getTransactionReceipt({ hash })).logs,
-        eventName: "Withdrawn" })[0].args;
+      const actual = parseEventLogs({
+        abi,
+        logs: (await client.getTransactionReceipt({ hash })).logs,
+        eventName: "Withdrawn",
+      })[0].args;
       assert.equal(actual.forfeitedYield, expected.forfeited);
       assert.ok(expected.forfeited > 0n);
       assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
       assert.equal(eligible, model.active.sums.yield > beforeSum);
       assert.equal(await market.read.accruedProtocolFees([ast.address]), model.assetFees);
       assert.equal(model.assetFees, repayFee + (eligible ? 0n : expected.forfeited));
-      assert.equal(await market.read.tokenLiability([ast.address]),
-        model.available + model.fundedYield - model.paidYield + repayFee);
+      assert.equal(
+        await market.read.tokenLiability([ast.address]),
+        model.available + model.fundedYield - model.paidYield + repayFee,
+      );
     });
   }
 
-  for (const [remaining, eligible] of [[10n ** 12n + 1n, true], [10n ** 12n - 1n, false]] as const) {
+  for (const [remaining, eligible] of [
+    [10n ** 12n + 1n, true],
+    [10n ** 12n - 1n, false],
+  ] as const) {
     it(`handles other ownership within 10^-12 raw units of the threshold (${eligible ? "above" : "below"})`, async () => {
       const { market, ast, tickId, model, time } = await historicalYield(remaining, 10n ** 18n);
       const bobX36 = model.active.principalX36(model.get(bob.account.address).active);

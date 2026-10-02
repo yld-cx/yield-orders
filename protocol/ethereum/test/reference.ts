@@ -37,11 +37,11 @@ const min = (a: bigint, b: bigint) => (a < b ? a : b);
 const Q128 = 1n << 128n;
 export function fullTermYield(available: bigint, activeWorking: bigint, amount: bigint, durationDays = 1n): bigint {
   const principal = available + activeWorking;
-  const before = activeWorking * Q128 / principal;
-  const after = (activeWorking + amount) * Q128 / principal;
+  const before = (activeWorking * Q128) / principal;
+  const after = ((activeWorking + amount) * Q128) / principal;
   const fourth = (u: bigint) => {
-    const square = u * u / Q128;
-    return square * square / Q128;
+    const square = (u * u) / Q128;
+    return (square * square) / Q128;
   };
   const curve = 4n * (after - before) + 99n * (fourth(after) - fourth(before));
   const numerator = principal * durationDays * curve;
@@ -294,7 +294,9 @@ export class TickModel {
     this.activeQuoteReserve += proceeds - eq;
   }
   assetLiability() {
-    return this.available + this.exitAssetReserve + this.fundedYield - this.paidYield - this.forfeitureFees + this.assetFees;
+    return (
+      this.available + this.exitAssetReserve + this.fundedYield - this.paidYield - this.forfeitureFees + this.assetFees
+    );
   }
   quoteLiability() {
     return this.quoteEscrow + this.activeQuoteReserve + this.exitQuoteReserve + this.quoteFees;

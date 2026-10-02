@@ -34,8 +34,24 @@
     }
   ],
   "directions": [
-    { "direction": 0, "assetDecimals": 18, "quoteDecimals": 6, "priceTick": 1000, "assetRaw": "1000000", "quotePrincipalRaw": "1105166", "swapFeeRaw": "11051" },
-    { "direction": 1, "assetDecimals": 6, "quoteDecimals": 18, "priceTick": 1000, "assetRaw": "1000000", "quotePrincipalRaw": "1105166", "swapFeeRaw": "11051" }
+    {
+      "direction": 0,
+      "assetDecimals": 18,
+      "quoteDecimals": 6,
+      "priceTick": 1000,
+      "assetRaw": "1000000",
+      "quotePrincipalRaw": "1105166",
+      "swapFeeRaw": "11051"
+    },
+    {
+      "direction": 1,
+      "assetDecimals": 6,
+      "quoteDecimals": 18,
+      "priceTick": 1000,
+      "assetRaw": "1000000",
+      "quotePrincipalRaw": "1105166",
+      "swapFeeRaw": "11051"
+    }
   ],
   "exitFirstRepay": {
     "returnedAssetRaw": "12",

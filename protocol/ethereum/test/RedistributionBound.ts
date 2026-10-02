@@ -20,10 +20,14 @@ describe("L-01 Withdraw redistribution bound", async () => {
     await market.write.createPair([asset.address, quote.address]);
     const [pair] = await market.read.getPair([asset.address, quote.address]);
     const direction = asset.address.toLowerCase() < quote.address.toLowerCase() ? 0 : 1;
-    const id = BigInt(keccak256(encodeAbiParameters(
-      [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
-      [pair, direction, 0, 300n],
-    )));
+    const id = BigInt(
+      keccak256(
+        encodeAbiParameters(
+          [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
+          [pair, direction, 0, 300n],
+        ),
+      ),
+    );
     await market.write.createTick([pair, direction, 0, 300n]);
     for (const actor of [alice, bob, taker]) {
       await asset.write.mint([actor.account.address, 10n ** 33n]);
@@ -45,12 +49,13 @@ describe("L-01 Withdraw redistribution bound", async () => {
     assert.ok(position.outstandingActiveYieldAsset > M);
     const nextTime = (await client.getBlock()).timestamp + 1n;
     const forfeiture = (amount: bigint) => {
-      const attributable = position.outstandingActiveYieldAsset * amount * X / position.activePrincipalX36;
-      const vested = attributable * (nextTime - position.timestamp) / (300n * DAY);
+      const attributable = (position.outstandingActiveYieldAsset * amount * X) / position.activePrincipalX36;
+      const vested = (attributable * (nextTime - position.timestamp)) / (300n * DAY);
       return attributable - vested;
     };
     const amountAtLeast = (target: bigint) => {
-      let low = 1n, high = position.activePrincipal;
+      let low = 1n,
+        high = position.activePrincipal;
       while (low < high) {
         const middle = (low + high) / 2n;
         if (forfeiture(middle) >= target) high = middle;
@@ -79,8 +84,12 @@ describe("L-01 Withdraw redistribution bound", async () => {
     it(`${boundary} MAX_ACCOUNTING_AMOUNT`, async () => {
       const { asset, quote, market, id, position, nextTime, forfeiture, amountAtLeast, state } =
         await networkHelpers.loadFixture(reproduction);
-      const amount = boundary === "above" ? position.activePrincipal
-        : boundary === "equal" ? amountAtLeast(M) : amountAtLeast(M) - 1n;
+      const amount =
+        boundary === "above"
+          ? position.activePrincipal
+          : boundary === "equal"
+            ? amountAtLeast(M)
+            : amountAtLeast(M) - 1n;
       assert.ok(amount > 0n);
       const expected = forfeiture(amount);
       if (boundary === "below") assert.ok(expected < M);
@@ -89,21 +98,29 @@ describe("L-01 Withdraw redistribution bound", async () => {
       await networkHelpers.time.setNextBlockTimestamp(Number(nextTime));
       if (boundary === "above") {
         const before = await state();
-        await assert.rejects(market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account }), /InvalidInput/);
+        await assert.rejects(
+          market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account }),
+          /InvalidInput/,
+        );
         assert.deepEqual(await state(), before, "reverted Withdraw changes no economic or custody state");
         await networkHelpers.time.increase(Number(300n * DAY));
         const claim = await market.read.getEarnPosition([alice.account.address, id]);
         assert.equal(claim.claimableActiveYieldAsset, claim.outstandingActiveYieldAsset);
-        const aliceBefore = await asset.read.balanceOf([alice.account.address]) as bigint;
+        const aliceBefore = (await asset.read.balanceOf([alice.account.address])) as bigint;
         await market.write.collect([id], { account: alice.account });
-        assert.equal((await asset.read.balanceOf([alice.account.address]) as bigint) - aliceBefore,
-          claim.outstandingActiveYieldAsset);
+        assert.equal(
+          ((await asset.read.balanceOf([alice.account.address])) as bigint) - aliceBefore,
+          claim.outstandingActiveYieldAsset,
+        );
         await market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account });
         assert.equal((await market.read.getEarnPosition([alice.account.address, id])).outstandingActiveYieldAsset, 0n);
       } else {
         const hash = await market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account });
-        const event = parseEventLogs({ abi: market.abi, logs: (await client.getTransactionReceipt({ hash })).logs,
-          eventName: "Withdrawn" })[0].args;
+        const event = parseEventLogs({
+          abi: market.abi,
+          logs: (await client.getTransactionReceipt({ hash })).logs,
+          eventName: "Withdrawn",
+        })[0].args;
         assert.equal(event.forfeitedYield, expected);
         assert.equal(await asset.read.balanceOf([market.address]), await market.read.tokenLiability([asset.address]));
         assert.equal(await quote.read.balanceOf([market.address]), await market.read.tokenLiability([quote.address]));

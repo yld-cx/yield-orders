@@ -9,22 +9,23 @@ const U256 = (1n << 256n) - 1n;
 // A single rational floor, independent of the Solidity carry recurrence.
 function oracle(initial: bigint, product: bigint, span: number, deltas: bigint[]): bigint {
   const denominator = product * F ** BigInt(span);
-  const numerator = deltas.slice(0, span + 1).reduce(
-    (sum, delta, i) => sum + delta * F ** BigInt(span - i), 0n,
-  );
-  return initial * numerator / denominator;
+  const numerator = deltas.slice(0, span + 1).reduce((sum, delta, i) => sum + delta * F ** BigInt(span - i), 0n);
+  return (initial * numerator) / denominator;
 }
 
 function carries(initial: bigint, product: bigint, span: number, deltas: bigint[]): number[] {
-  let remainder = initial * deltas[0] % product;
+  let remainder = (initial * deltas[0]) % product;
   const result: number[] = [];
   for (let i = 1; i <= span; i++) {
     const power = F ** BigInt(i);
     const whole = deltas[i] / power;
     const fraction = deltas[i] % power;
     const principalWhole = initial / product;
-    const numerator = remainder * F + (initial * whole % product) * power
-      + product * (principalWhole * fraction % power) + (initial % product) * fraction;
+    const numerator =
+      remainder * F +
+      ((initial * whole) % product) * power +
+      product * ((principalWhole * fraction) % power) +
+      (initial % product) * fraction;
     result.push(Number(numerator / (product * power)));
     remainder = numerator % (product * power);
   }
@@ -54,10 +55,10 @@ describe("compiled Solidity Product-Sum differential", async () => {
     for (let vector = 0; vector < 1152; vector++) {
       const span = vector % 9;
       const product = [10n ** 30n, 10n ** 36n, 10n ** 39n][vector % 3];
-      const initial = 1n + draw() % (product * X);
+      const initial = 1n + (draw() % (product * X));
       const deltas = Array.from({ length: 9 }, (_, i) => {
         if (i > span || (i < span && vector % 4 === 0 && i % 2 === 1)) return 0n;
-        return draw() % (10n ** 39n);
+        return draw() % 10n ** 39n;
       });
       if (vector % 7 === 0 && span > 0) deltas[span] = F ** BigInt(span) - 1n;
       const expected = oracle(initial, product, span, deltas);

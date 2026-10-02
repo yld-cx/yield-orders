@@ -49,8 +49,7 @@ function boundedCarryX36(A: bigint, P: bigint, deltas: bigint[]) {
     const fraction = deltas[i] % pow;
     const fractionalWhole = (principalWhole * fraction) / pow;
     const fractionalRemainder = (principalWhole * fraction) % pow;
-    const numerator = remainder * F + ((A * whole) % P) * pow +
-      P * fractionalRemainder + principalRemainder * fraction;
+    const numerator = remainder * F + ((A * whole) % P) * pow + P * fractionalRemainder + principalRemainder * fraction;
     const denominator = P * pow;
     assert.ok(numerator <= U512 && denominator <= U512, "X36 uint512 bound");
     const carry = numerator / denominator;
@@ -103,9 +102,7 @@ describe("canonical cross-scale gain carry", () => {
     for (let vector = 0; vector < 2048; vector++) {
       const span = Number(draw() % 9n);
       const A = 1n + (draw() % B);
-      const deltas = Array.from({ length: span + 1 }, (_, i) =>
-        i !== span && draw() % 4n === 0n ? 0n : draw(),
-      );
+      const deltas = Array.from({ length: span + 1 }, (_, i) => (i !== span && draw() % 4n === 0n ? 0n : draw()));
       assert.equal(boundedCarry(A, B, deltas).gain, rational(A, B, deltas), `vector ${vector}`);
     }
   });
@@ -118,7 +115,7 @@ describe("canonical cross-scale gain carry", () => {
     };
     for (let vector = 0; vector < 2048; vector++) {
       const span = Number(draw() % 9n);
-      const A = 1n + draw() % 10n ** 57n;
+      const A = 1n + (draw() % 10n ** 57n);
       const deltas = Array.from({ length: span + 1 }, (_, i) =>
         i !== span && draw() % 4n === 0n ? 0n : draw() % 10n ** 39n,
       );

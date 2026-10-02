@@ -20,10 +20,14 @@ describe("passive provider beyond the eight-scale gain span", async () => {
     await market.write.createPair([asset.address, quote.address]);
     const [pair] = await market.read.getPair([asset.address, quote.address]);
     const direction = asset.address.toLowerCase() < quote.address.toLowerCase() ? 0 : 1;
-    const id = BigInt(keccak256(encodeAbiParameters(
-      [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
-      [pair, direction, 0, 1n],
-    )));
+    const id = BigInt(
+      keccak256(
+        encodeAbiParameters(
+          [{ type: "uint256" }, { type: "uint8" }, { type: "int32" }, { type: "uint64" }],
+          [pair, direction, 0, 1n],
+        ),
+      ),
+    );
     await market.write.createTick([pair, direction, 0, 1n]);
     for (const who of [passive, active, buyer]) {
       await asset.write.mint([who.account.address, 10n ** 33n]);
@@ -33,7 +37,8 @@ describe("passive provider beyond the eight-scale gain span", async () => {
     }
     for (const who of [passive, active]) {
       const hash = await market.write.supply([id, M / 2n, zeroAddress], { account: who.account });
-      const time = (await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash })).blockNumber })).timestamp;
+      const time = (await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash })).blockNumber }))
+        .timestamp;
       model.supply(who.account.address, M / 2n, time);
     }
     const snapshot = { ...model.get(passive.account.address).active };
@@ -49,34 +54,44 @@ describe("passive provider beyond the eight-scale gain span", async () => {
       assert.equal(domain.scale, BigInt(model.active.scale));
       if (step < 3) {
         const hash = await market.write.supply([id, amount, zeroAddress], { account: active.account });
-        const time = (await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash })).blockNumber })).timestamp;
+        const time = (
+          await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash })).blockNumber })
+        ).timestamp;
         model.supply(active.account.address, amount, time);
       }
     }
     assert.ok(model.active.scale >= 9);
-    const compounded = snapshot.initial * model.active.P / snapshot.P / F ** BigInt(model.active.scale - snapshot.scale);
+    const compounded =
+      (snapshot.initial * model.active.P) / snapshot.P / F ** BigInt(model.active.scale - snapshot.scale);
     assert.ok(compounded < 1n, "canonical compounded principal is below one X36 unit");
     const claim = await market.read.getEarnPosition([passive.account.address, id]);
     assert.equal(claim.activePrincipalX36, 0n);
     const canonicalGain = model.active.gainWithFraction(snapshot, "quote", 0n);
     assert.equal(claim.claimableActiveQuote, canonicalGain, "gain includes only scales k through k+8");
-    const before = await quote.read.balanceOf([passive.account.address]) as bigint;
+    const before = (await quote.read.balanceOf([passive.account.address])) as bigint;
     await market.write.collect([id], { account: passive.account });
-    assert.equal((await quote.read.balanceOf([passive.account.address]) as bigint) - before, canonicalGain);
+    assert.equal(((await quote.read.balanceOf([passive.account.address])) as bigint) - before, canonicalGain);
     assert.equal((await market.read.getEarnPosition([passive.account.address, id])).claimableActiveQuote, 0n);
 
     const topUp = await market.write.supply([id, 2n, zeroAddress], { account: active.account });
-    const topUpTime = (await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash: topUp })).blockNumber })).timestamp;
+    const topUpTime = (
+      await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash: topUp })).blockNumber })
+    ).timestamp;
     model.supply(active.account.address, 2n, topUpTime);
     const withdrawal = await market.write.withdraw([id, 2n, 0n, UNLIMITED], { account: active.account });
-    const withdrawalTime = (await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash: withdrawal })).blockNumber })).timestamp;
+    const withdrawalTime = (
+      await client.getBlock({ blockNumber: (await client.getTransactionReceipt({ hash: withdrawal })).blockNumber })
+    ).timestamp;
     const expected = model.withdraw(active.account.address, 2n, withdrawalTime);
     assert.equal((await market.read.getTick([id])).availableSupply, model.available);
     assert.equal(expected.availableOut, 2n);
     const activeClaim = await market.read.getEarnPosition([active.account.address, id]);
-    const activeBefore = await quote.read.balanceOf([active.account.address]) as bigint;
+    const activeBefore = (await quote.read.balanceOf([active.account.address])) as bigint;
     await market.write.collect([id], { account: active.account });
-    assert.equal((await quote.read.balanceOf([active.account.address]) as bigint) - activeBefore, activeClaim.claimableActiveQuote);
+    assert.equal(
+      ((await quote.read.balanceOf([active.account.address])) as bigint) - activeBefore,
+      activeClaim.claimableActiveQuote,
+    );
     await market.write.collectProtocolFees([quote.address]);
     const residualQuote = await market.read.tokenLiability([quote.address]);
     assert.equal(await quote.read.balanceOf([market.address]), residualQuote);
