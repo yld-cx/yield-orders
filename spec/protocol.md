@@ -1,7 +1,7 @@
 # yld.cx — Yield Orders Protocol
 
 **Canonical Cross-Chain Economic & Accounting Specification**  
-**Version:** 0.2
+**Version:** 0.3
 **Targets:** Ethereum / EVM-compatible chains + Solana
 
 ---
@@ -43,7 +43,7 @@ The protocol has no oracle, LTV, liquidation, health factor, mutable fee governa
 
 Liquidity remains pooled per Tick.
 
-v0.2 replaces supplier shares and per-share growth accounting with a **Product-Sum principal index**:
+v0.3 retains the Product-Sum principal index introduced in v0.2:
 
 ```text
 P          → cumulative proportional principal depletion
@@ -53,6 +53,8 @@ generation → reset when a principal domain reaches zero
 ```
 
 There are **no active shares, Exit shares, MAX_SHARES, share mint formulas, or share-cap admission failures**.
+
+v0.3 also makes Term Positions **active-state only**. A Use stores its Term Position only while it is economically active. Successful Repay or Close emits the canonical terminal event and removes the Term Position state. Position identities and per-Tick sequences are monotonically increasing and never reused; historical activity comes from events / transaction history rather than permanent Term Position storage.
 
 The Product-Sum approach is adapted to YLD's separate active and Exit domains.
 
@@ -806,6 +808,8 @@ If an input or derived amount exceeds the bound, the action MUST reject before c
 
 Aggregate contract balances, reserves, and already-realized provider `owed*` balances remain checked `uint256` values and may exceed one single-action bound.
 
+Cross-chain **executable** golden vectors MUST use amounts representable on every target runtime involved in the vector. In particular, vectors that execute SPL token transfers on Solana MUST keep each token amount within `u64::MAX`, even though the canonical accounting ceiling is `1e30`. Math-only/reference vectors MAY exercise the wider canonical bounds where no chain-native token transfer is required.
+
 All cumulative gain sums use checked `uint256` arithmetic. Under the canonical bounds, one maximum single sum increment is at most `1e69`, leaving more than `1e8` maximum-magnitude increments of headroom below the `uint256` range. Overflow MUST still revert rather than wrap.
 
 ---
@@ -1101,11 +1105,11 @@ activeP unchanged
 all Product-Sum gain sums unchanged
 ```
 
-Create permanent Term Position containing at least:
+Create an **active-only Term Position** containing at least:
 
 ```text
 position identity
-tick
+Tick identity / sequence
 user
 assetAmount
 quotePrincipal
@@ -1113,8 +1117,9 @@ fullTermYieldAsset
 closeFee
 openedAt
 maturity
-status = ACTIVE
 ```
+
+The Term Position exists only while the Use is ACTIVE. Successful Repay or Close removes this position state after all economic effects and terminal event data are finalized. The identity / sequence is never reused.
 
 ---
 
@@ -1205,7 +1210,16 @@ x =
     min(principalAmount, providerPrincipal)
 ```
 
-Require `x > 0` and `now > provider.timestamp`.
+Require:
+
+```text
+DproviderX36 = providerPrincipalX36
+x > 0
+DproviderX36 > 0
+now > provider.timestamp
+```
+
+`x > 0` is checked **after** the `min(principalAmount, providerPrincipal)` calculation. A provider with only sub-raw `principalX36` therefore cannot execute a zero-effect Withdraw; Max continues to use the whole-raw `providerPrincipal` preview.
 
 Withdraw operates only on whole raw Asset units. Any remaining positive `providerPrincipalX36 < PRINCIPAL_PRECISION` stays in the active snapshot as sub-raw accounting principal and is not discarded.
 
@@ -1281,7 +1295,9 @@ After updating the provider's Active and Exit ownership, allocate forfeited Yiel
 ```text
 remainingActive = availableSupply + workingSupply - exitWorking
 remainingProviderX36 = provider's updated active principalX36
-otherActiveX36 = remainingActive * PRINCIPAL_PRECISION - remainingProviderX36
+domainActiveX36 = remainingActive * PRINCIPAL_PRECISION
+require remainingProviderX36 <= domainActiveX36
+otherActiveX36 = checkedSub(domainActiveX36, remainingProviderX36)
 
 if forfeitedYield > 0 and otherActiveX36 >= PRINCIPAL_PRECISION:
     activeYieldSum += floor(
@@ -1293,7 +1309,7 @@ else if forfeitedYield > 0:
     forfeitedYield -> accrued Asset protocol fees
 ```
 
-The denominator MUST retain full X36 precision, and the multiplication/division MUST use full-precision checked arithmetic. EVM, Solana, and the reference SDK MUST produce identical integer results. The eligible exposure threshold is one raw Asset unit. The withdrawing position cannot accrue its own redistribution; other eligible positions receive it using their existing vesting timestamps. Wallets are independent provider identities. Redistribution creates no new funded liability or vesting clock.
+The `otherActiveX36` subtraction MUST be checked. `remainingProviderX36 > domainActiveX36` is an invariant violation and MUST hard-revert; it MUST NOT be interpreted as zero eligible liquidity or reclassified as a protocol fee. The denominator MUST retain full X36 precision, and the multiplication/division MUST use full-precision checked arithmetic. EVM, Solana, and the reference SDK MUST produce identical integer results. The eligible exposure threshold is one raw Asset unit. The withdrawing position cannot accrue its own redistribution; other eligible positions receive it using their existing vesting timestamps. Wallets are independent provider identities. Redistribution creates no new funded liability or vesting clock.
 
 Redistributed Yield is already backed by the Tick's funded Yield reserve. If no eligible other Active principal exists, reduce that reserve and increase the accrued Asset protocol-fee liability by the same amount. Ordinary fixed-point precision loss is bounded by §9; a material portion of funded Yield MUST NOT remain without a claim.
 
@@ -1407,6 +1423,8 @@ Active P does not change.
 
 Only net Yield becomes provider liability.
 
+After all transfers, accounting updates, cursor handling, and terminal event fields are finalized, remove the resolved Term Position state. Repay history is represented by the terminal event / transaction history, not retained Term Position storage. Chain-specific storage or rent recovery is defined by the implementation specifications.
+
 ---
 
 # 21. Close
@@ -1481,6 +1499,8 @@ exitWorking -= exitFill
 Frozen Close fee accrues as a Quote-denominated protocol fee.
 
 A single Close may finalize both domains.
+
+After all transfers, accounting updates, cursor handling, and terminal event fields are finalized, remove the resolved Term Position state. Close history is represented by the terminal event / transaction history, not retained Term Position storage. Chain-specific storage or rent recovery is defined by the implementation specifications.
 
 ---
 
@@ -1581,28 +1601,72 @@ nextPositionSeq
 settleCursor
 ```
 
-All Uses in a Tick share duration, so maturity is non-decreasing with sequence.
-
-`settle(tick)` touches at most one cursor entry:
+Position sequences are monotonically increasing and never reused. Every sequence in:
 
 ```text
-queue empty
-→ no-op
-
-terminal cursor
-→ cursor += 1
-
-ACTIVE not mature
-→ no-op
-
-ACTIVE mature
-→ canonical Close
-→ cursor += 1
+0 <= seq < nextPositionSeq
 ```
 
-Every economic Tick action performs at most one automatic cursor-settlement step before its economics. For `repay(positionId)` or `close(positionId)` aimed at the cursor position itself, the target action resolves that entry directly rather than separately closing it first; a non-cursor target attempts one cursor step before resolving its target. The cursor is FIFO **only for automatic expiry settlement**. A valid Repay before maturity or permissionless Close at/after maturity MAY resolve any ACTIVE Term Position out of creation order. Its proceeds fill the pooled Exit domain first using `min(position.assetAmount, exitWorking)`, regardless of `tickSeq`; a terminal cursor entry is skipped when reached. Exit is a shared principal domain, **not** a per-Use FIFO queue. No out-of-order Repay/Close may be rejected solely because its position is not at `settleCursor`.
+was created exactly once. A sequence whose active Term Position state no longer exists is therefore already resolved.
 
-No provider loop.
+All Uses in a Tick share duration, so maturity is non-decreasing with sequence.
+
+`settle(tick)` processes **at most one cursor sequence**:
+
+```text
+settleCursor == nextPositionSeq
+→ queue empty
+→ no-op
+
+cursor Term Position absent / already removed
+→ settleCursor += 1
+→ stop
+
+cursor Term Position ACTIVE and not mature
+→ no-op
+→ stop
+
+cursor Term Position ACTIVE and mature
+→ canonical Close
+→ remove Term Position
+→ settleCursor += 1
+→ stop
+```
+
+Every economic Tick action MUST enforce the same one-sequence settlement rule at protocol level before applying its own economics, subject to the Repay/Close target rule below. Settlement is not a UI, SDK, keeper, or indexer convention and MUST NOT be bypassable by direct protocol callers.
+
+For `repay(position)` or `close(position)`:
+
+```text
+target sequence == settleCursor
+→ resolve target directly
+→ remove target Term Position
+→ settleCursor += 1
+→ this resolution counts as the action's cursor step
+
+target sequence != settleCursor
+→ process exactly one current cursor sequence using settle_one
+→ then resolve the requested target
+→ remove the requested target
+→ do not process another cursor sequence
+```
+
+A non-cursor target may therefore be resolved in addition to the single cursor sequence touched by the action. This remains bounded O(1): the implementation MUST NOT scan, loop, walk, or recursively advance through multiple cursor sequences.
+
+If the current cursor points to an already-resolved / removed position, one successful settlement step advances exactly once and stops. This prevents a backlog of removed out-of-order positions from forcing an unbounded catch-up operation. If the current cursor position is still ACTIVE and not mature, the cursor legitimately remains blocked there.
+
+The cursor is FIFO **only for automatic expiry settlement**. A valid Repay before maturity or permissionless Close at/after maturity MAY resolve any ACTIVE Term Position out of creation order. Its proceeds fill the pooled Exit domain first using `min(position.assetAmount, exitWorking)`, regardless of `tickSeq`. Exit is a shared principal domain, **not** a per-Use FIFO queue. No out-of-order Repay/Close may be rejected solely because its position is not at `settleCursor`.
+
+Required complexity:
+
+```text
+one cursor sequence per settlement step
+bounded Product-Sum scale work
+no provider loop
+no position scan
+no generation walk
+O(1) with protocol-fixed bounds
+```
 
 No indexer required.
 
@@ -1624,7 +1688,15 @@ unsynchronized historical gain exists
 
 Discovery MUST NOT use only whole-raw-unit / transferable principal. A provider whose raw preview is `0` but whose `principalX36 > 0` remains discoverable and synchronizable.
 
-Term Position history remains permanent.
+Term Position state is **current-state only**:
+
+```text
+ACTIVE Use → discoverable onchain Term Position
+Repay      → Term Position removed
+Close      → Term Position removed
+```
+
+Resolved Term Position history is derived from canonical events / transaction history. An indexer MAY improve historical search and analytics but is never required for current position discovery, settlement, or execution.
 
 ---
 
@@ -1699,6 +1771,11 @@ At minimum:
 33. Historical Yield remains collectible after active principal depletion and generation rollover, subject to its timestamp.
 34. Every positive fractional-gain carry persists across zero-value Collect and principal changes, and keeps the provider Tick discoverable even when whole-raw principal and whole-raw claims are zero.
 35. Fee accrual and collection cannot consume another Tick's funded provider claims; Solana segregates each Tick's fees in its existing Asset and Quote Proceeds vaults.
+36. Successful Repay and Close remove the resolved Term Position state; position identities / sequences are never reused.
+37. Every settlement step processes at most one cursor sequence. A removed cursor entry advances the cursor once and stops; no action scans for the next live position.
+38. Repay and Close participate in cursor progress: a cursor target resolves directly and advances once; a non-cursor target first attempts exactly one cursor step.
+39. Direct callers cannot bypass protocol-level automatic settlement by avoiding the official UI or SDK.
+40. Term Position removal and chain-specific storage/rent recovery do not change provider proceeds, taker principal flows, Yield, or the 1% protocol fee.
 
 ---
 
@@ -1781,8 +1858,28 @@ forfeited Yield and custody conservation across rounding
 fractional gains across repeated synchronization/Collect
 fraction-only position remains discoverable and its carry survives later Supply
 withdrawal min-immediate-output and deadline protection on both chains
+Withdraw with positive principalAmount but providerPrincipal == 0 reverts after x=min(...)
+Withdraw redistribution checked subtraction: remainingProviderX36 > domainActiveX36 hard-reverts
+Use with FullTermYieldAsset == 0 rejects before state mutation on both chains
 fee recipient transfer rejection blocks fee claiming only, not settlement
 Solana per-Tick Asset/Quote fee accounting and claims across shared-mint Ticks
+
+active-only Term Position lifecycle:
+Use creates position
+Repay removes position
+Close removes position
+position identity / sequence never reused
+resolved state remains reconstructable from terminal events
+
+cursor O(1) deletion vectors:
+cursor entry repaid out of order then later reached -> advance exactly one and stop
+cursor entry closed out of order then later reached -> advance exactly one and stop
+many later positions resolved while oldest remains ACTIVE -> no scan and no unbounded action
+after oldest resolves, each successful settlement step advances at most one dead cursor entry
+non-cursor Repay attempts exactly one cursor step then resolves target
+non-cursor Close attempts exactly one cursor step then resolves target
+cursor-target Repay/Close resolves directly and advances exactly once
+direct caller cannot omit / bypass mandatory settlement path
 
 stateful fuzzed action sequences
 ```
@@ -1796,6 +1893,8 @@ The EVM, Solana, and reference SDK implementations MUST agree on shared raw-unit
 - Redistribution to other eligible provider positions, exclusion of the withdrawing position, and recipient vesting at its current timestamp.
 - Exact X36 allocation with fractional eligible principal, including eligibility thresholds and nearly depleted Active principal.
 - Complete settlement and claim collection, independently reconciling funded Yield, provider entitlements, protocol fees, bounded precision dust, and token reserves.
+- Cursor gaps created by out-of-order Repay/Close, including many removed entries; every action advances at most one cursor sequence and remains O(1).
+- Executable EVM/Solana parity vectors restricted to the common native token-amount range, including Solana `u64` limits.
 - Independent directional Quote-per-Asset pricing, mixed token decimals, out-of-order Repay/Close, pooled Exit-first resolution, and settlement cursor advancement.
 
 Golden vectors MUST be frozen before immutable deployment.
@@ -1818,6 +1917,7 @@ Repay
 → active Working → Available
 → active P unchanged
 → net Yield distributed through active Yield sum
+→ resolved Term Position removed
 
 → Exit portion:
    Exit principal depleted
@@ -1837,6 +1937,8 @@ Close
 → active remainder:
    active principal decreases
    Quote becomes active gain
+
+→ resolved Term Position removed after settlement
 
 Withdraw
 → calculate provider compounded active principal

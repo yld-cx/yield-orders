@@ -1,16 +1,20 @@
 # yld.cx — Yield Orders Protocol
 
 **Solana / Anchor Implementation Specification**  
-**Version:** 0.2
+**Version:** 0.3
 **Depends on:** `spec/protocol.md`
 
 ---
 
 # 1. Goal
 
-Implement exactly the canonical YLD Product-Sum economics on Solana.
+Implement exactly the canonical YLD Product-Sum economics on Solana using Solana-native accounts, PDAs, token vaults, instruction composition, and bounded account bundles.
 
 No Solana-specific feature may alter Yield pricing, the 1% fee model, Product-Sum accounting, Exit-first resolution, maturity semantics, rounding, or provider economics.
+
+The Solana implementation is architecturally independent from the EVM implementation. Cross-chain parity applies to canonical economic results and invariants, not to storage layout, instruction internals, custody granularity, account lifecycle, or arithmetic library choice.
+
+v0.3 uses active-only TermPosition PDAs and protocol-enforced one-sequence settlement. Resolved TermPosition PDAs are closed rather than retained as historical state.
 
 ---
 
@@ -211,7 +215,7 @@ bump
 
 No shares. No Exit shares.
 
-ProviderPosition is permanent in v0.2. The single non-negative `timestamp` replaces the slot cooldown field; Supply and Collect reset it from `Clock.unix_timestamp`, and Withdraw requires the current Unix timestamp to be strictly greater.
+ProviderPosition remains persistent in v0.3 while it may contain principal, claims, historical entitlement, or fractional carry. The single non-negative `timestamp` replaces the slot cooldown field; Supply and Collect reset it from `Clock.unix_timestamp`, and Withdraw requires the current Unix timestamp to be strictly greater.
 
 `*_initial_principal_x36` is Asset principal in `PRINCIPAL_PRECISION = 1e36` sub-raw units. It is not a share balance and has no global supply denominator. Positive sub-raw principal remains snapshotted even when its whole-raw-unit preview is zero. Each `fractional_gain_x36` element holds a value in `[0, 1e36)` and therefore fits `u128`; compounded principal and the Product-Sum history still require wider integer types. Preserve nonzero carry even if principal and whole-raw claims reach zero. A residual principal that finally rounds below one fixed-point unit is below `1e-36` raw Asset and, under the shared funded-gain bound, can receive less than `1e-6` raw units from any one funded distribution.
 
@@ -317,12 +321,15 @@ Seeds:
 ["position", tick, position_seq_le]
 ```
 
+A TermPosition PDA exists **only while the Use is ACTIVE**.
+
 Stores:
 
 ```text
 position_seq
 tick
 user
+rent_payer
 
 asset_amount
 quote_principal
@@ -331,12 +338,27 @@ close_fee
 
 opened_at
 maturity
-status
 
 bump
 ```
 
-Permanent in v0.2.
+No terminal status/history is retained in the PDA. Existence of a valid program-owned TermPosition at the canonical PDA means the position is ACTIVE.
+
+`rent_payer` is the account that funded creation of this TermPosition PDA. It receives the reclaimed lamports on successful Repay. The payer MAY equal the user and normally does in the official client.
+
+Successful Repay or Close finalizes all economic effects and event data, then closes the PDA:
+
+```text
+Repay before maturity
+→ TermPosition lamports → stored rent_payer
+
+Close at/after maturity
+→ TermPosition lamports → transaction caller / settlement signer
+```
+
+This reclaimed SOL is storage rent recovery, **not** a protocol fee, provider deduction, or fee split.
+
+Position sequences are monotonically increasing and never reused. Historical position activity is reconstructed from program events / transaction history.
 
 ---
 
@@ -542,6 +564,9 @@ x =
         provider_principal
     )
 
+require x > 0
+require provider_principal_x36 > 0
+
 available_out =
     floor(
         x
@@ -584,7 +609,7 @@ forfeited_yield = yield_for_withdraw - yield_asset_out
 owed_active_yield_asset -= yield_for_withdraw
 ```
 
-Apply canonical §19 X36 redistribution. After withdrawing principal, calculate `other_active_x36 = active_principal * PRINCIPAL_PRECISION - remaining_provider_principal_x36`. For positive `forfeited_yield`, if `other_active_x36 >= PRINCIPAL_PRECISION`, increase the Active Yield sum by `floor(forfeited_yield * active_P * PRINCIPAL_PRECISION / other_active_x36)` using checked wide arithmetic; otherwise reclassify the amount as this Tick's accrued Asset protocol fees and reduce its funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding; other eligible positions retain their existing vesting timestamps. The integer result MUST match EVM. No additional funded liability, fee-recipient ATA or vesting state is created. Preserve outstanding Exit Yield and do not reset `timestamp`.
+Apply canonical §19 X36 redistribution. After withdrawing principal, calculate `domain_active_x36 = active_principal * PRINCIPAL_PRECISION`, require `remaining_provider_principal_x36 <= domain_active_x36`, then calculate `other_active_x36 = domain_active_x36 - remaining_provider_principal_x36` with checked subtraction. An invariant violation MUST hard-revert and MUST NOT be treated as zero eligibility or converted to protocol fees. For positive `forfeited_yield`, if `other_active_x36 >= PRINCIPAL_PRECISION`, increase the Active Yield sum by `floor(forfeited_yield * active_P * PRINCIPAL_PRECISION / other_active_x36)` using checked wide arithmetic; otherwise reclassify the amount as this Tick's accrued Asset protocol fees and reduce its funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding; other eligible positions retain their existing vesting timestamps. The integer result MUST match EVM. No additional funded liability, fee-recipient ATA or vesting state is created. Preserve outstanding Exit Yield and do not reset `timestamp`.
 
 Transfer `available_out + yield_asset_out` from Asset Vault. Previews and events MUST surface `yield_asset_out` and `forfeited_yield`.
 
@@ -615,10 +640,12 @@ full_term_yield_asset
 close_fee
 ```
 
-Before mutation, require:
+Before mutation, apply every canonical Use admission predicate from `spec/protocol.md` §17, including positive `asset_amount`, positive Quote Principal, positive full-term Yield, deadline validity, Available-liquidity bounds, and the shared timestamp domain. At minimum, require:
 
 ```text
+quote_principal > 0
 quote_principal <= MAX_ACCOUNTING_AMOUNT
+full_term_yield_asset > 0
 full_term_yield_asset <= MAX_ACCOUNTING_AMOUNT
 
 duration_days <= MAX_DURATION_DAYS
@@ -627,7 +654,9 @@ opened_at + duration_days * SECONDS_PER_DAY <= MAX_TIMESTAMP
 
 All time and future Repay arithmetic uses checked wide intermediates before conversion to stored/native integer types. Since canonical elapsed Yield is bounded by `full_term_yield_asset`, every future Repay remains representable.
 
-Create TermPosition.
+Create the canonical TermPosition PDA using the next Tick sequence. The instruction records `rent_payer` and funds the PDA's required lamports from that payer.
+
+The PDA is active-state only and MUST be closed on terminal Repay / Close.
 
 ---
 
@@ -671,6 +700,19 @@ add active Yield gain
 active P unchanged
 ```
 
+
+
+Cursor handling follows `spec/protocol.md` §25. If the Repay target is the cursor sequence, Repay itself is the single cursor step and advances `settle_cursor` once. Otherwise the instruction first executes exactly one program-level `settle_one`, then Repays the requested target.
+
+After all Repay transfers, accounting changes, return/event fields, and cursor updates are finalized:
+
+```text
+close target TermPosition PDA
+reclaimed lamports → stored rent_payer
+```
+
+No lamports from the TermPosition become protocol revenue. A non-cursor Repay may therefore close at most two TermPosition PDAs in one instruction: one mature cursor PDA through `settle_one`, plus its own target PDA. Work remains bounded O(1).
+
 ---
 
 # 17. close instruction
@@ -688,6 +730,23 @@ then update P / scale / generation
 ```
 
 Move the **entire** Quote Principal from the Quote Escrow Vault into this Tick's Quote Proceeds Vault. Reserve provider net Quote there and accrue the frozen fee as `accrued_quote_protocol_fees` in the same vault. After this movement no fee remains in Escrow. No `FEE_TO` account is required for direct or automatic Close.
+
+The Close instruction return/event data MUST expose at least `exit_fill`, `active_fill`, `exit_quote`, and `active_quote` together with the position identity/sequence and frozen Close fee, so terminal history can be reconstructed after the TermPosition PDA is closed.
+
+
+
+Cursor handling follows `spec/protocol.md` §25. If the Close target is the cursor sequence, Close itself is the single cursor step and advances `settle_cursor` once. Otherwise the instruction first executes exactly one program-level `settle_one`, then Closes the requested target.
+
+After all Close transfers, accounting changes, return/event fields, and cursor updates are finalized:
+
+```text
+close target TermPosition PDA
+reclaimed lamports → transaction caller / settlement signer
+```
+
+The caller may be the Use owner or any permissionless closer. The reclaimed lamports are the only native settlement incentive; there is no keeper fee and no split of the 1% protocol fee.
+
+A non-cursor Close may close at most two TermPosition PDAs in one instruction: one mature cursor PDA through `settle_one`, plus its own target PDA. Work remains bounded O(1).
 
 ---
 
@@ -799,7 +858,6 @@ The Solana implementation MUST preserve the same exact remainder across scales, 
 
 The program MUST retain a positive `principal_x36` snapshot even when `floor(principal_x36 / PRINCIPAL_PRECISION) == 0`.
 
----
 
 ProviderPosition discovery / filtering MUST keep a provider Tick visible while any of:
 
@@ -824,14 +882,56 @@ Across Active + Exit, a stale provider may therefore require up to **18 ScaleSta
 
 The SDK MUST derive this list canonically, preview any rent/account-creation requirement, and use versioned transactions / address lookup tables where needed by transaction-size constraints. Clients MUST NOT guess or truncate the account bundle.
 
-# 22. Settlement account bundle
+---
 
-The one-position cursor model remains.
+# 22. Protocol-level settlement account bundle
 
-For a mature cursor Close, the transaction includes:
+The one-position cursor model is enforced **inside the program**. It is not delegated to the official UI or SDK.
+
+`settle` itself requires a transaction caller / settlement signer so a mature PDA can return its reclaimed lamports to that signer.
+
+Every economic instruction touching a Tick MUST execute the canonical `settle_one` path before its own economics, except that a Repay/Close whose target sequence equals `settle_cursor` resolves that target directly as its single cursor step.
+
+The caller MUST provide the canonical cursor candidate and any accounts required to settle that candidate. The program derives and validates the expected PDA. Omitting or substituting the required settlement accounts MUST fail the instruction rather than bypass settlement.
+
+The expected cursor PDA is deterministic:
 
 ```text
-cursor TermPosition
+["position", tick, settle_cursor_le]
+```
+
+For one settlement step:
+
+```text
+settle_cursor == next_position_seq
+→ queue empty
+→ no-op
+
+expected cursor PDA has no valid ACTIVE TermPosition
+and settle_cursor < next_position_seq
+→ sequence was already resolved / PDA closed
+→ settle_cursor += 1
+→ stop
+
+valid ACTIVE cursor PDA, not mature
+→ no-op
+→ stop
+
+valid ACTIVE cursor PDA, mature
+→ canonical Close
+→ close cursor PDA
+→ reclaimed lamports → transaction caller
+→ settle_cursor += 1
+→ stop
+```
+
+A non-program-owned / uninitialized account at the exact expected cursor PDA is never treated as an ACTIVE position. The program MUST still validate that the supplied account key is exactly the PDA derived from the current Tick and cursor sequence. A wrong or omitted account is an error.
+
+For a mature cursor Close, the transaction includes as required:
+
+```text
+cursor TermPosition PDA
+caller / settlement signer
 Quote Escrow Vault
 Quote Proceeds Vault
 Tick's accrued_quote_protocol_fees field (no additional fee PDA)
@@ -843,9 +943,23 @@ ActiveGeneration metadata if active reaches zero
 ExitGeneration metadata if Exit reaches zero
 ```
 
-The bundle is canonical and simulation-derived.
+For Repay/Close targeting a different position, the instruction additionally includes the target TermPosition and its action-specific accounts. The cursor candidate MAY alias the target when the target sequence equals `settle_cursor`; the implementation must validate this without requiring a second independent position state.
 
-If state changes make a different bundle necessary before inclusion, the transaction MUST fail and be rebuilt.
+The bundle is canonical and simulation-derived. If state changes make a different bundle necessary before inclusion, the transaction MUST fail and be rebuilt.
+
+Complexity is protocol-bounded:
+
+```text
+at most one cursor sequence per settle_one
+at most one requested Repay/Close target
+no cursor scan
+no provider loop
+no generation walk
+bounded historical scale bundle
+O(1) with protocol-fixed bounds
+```
+
+A client MAY compose additional explicit `settle` instructions in the same transaction, but each instruction independently processes at most one cursor sequence.
 
 ---
 
@@ -886,10 +1000,16 @@ per-Tick protocol-fee amounts and claimable backing, aggregated to equivalent pe
 
 Exit split
 maturity
-settlement
+settlement economics
+active-only TermPosition lifecycle
+one-sequence bounded cursor progression
 ```
 
 Publish shared raw-unit golden vectors for directional price ticks, X36 forfeiture distribution, eligibility boundaries, vesting, Exit resolution and final reserve conservation.
+
+
+
+Storage recovery is chain-native rather than numerically identical: EVM deletes resolved storage under EVM gas semantics; Solana closes the resolved PDA and transfers its lamports according to §9 / §§16–17. This difference MUST NOT alter canonical token economics.
 
 ---
 
@@ -915,7 +1035,10 @@ exact vault solvency
 
 transaction composition
 
-cross-chain Product-Sum vectors
+cross-chain Product-Sum vectors restricted to Solana-representable token amounts for executable parity cases
+Use rejects zero full-term Yield before PDA creation/token mutation
+Withdraw rejects x == 0 after whole-raw min calculation
+Withdraw redistribution invariant violation hard-reverts on checked subtraction
 one provider timestamp per Tick; Supply and Collect reset it
 same-timestamp Withdraw rejection
 partial/full-term Collect and repeat Collect at same timestamp
@@ -938,6 +1061,25 @@ Withdraw minimum-immediate-output and deadline front-run protection
 Close moves full escrowed Quote Principal into Quote Proceeds including accrued fee
 blocked FEE_TO ATA causes fee-claim failure only, never settlement failure
 multiple Ticks with the same mint retain independent fully backed fee claims
+
+TermPosition PDA exists only while ACTIVE
+Repay closes target PDA and refunds lamports to stored rent_payer
+Close closes target PDA and sends lamports to closing caller
+automatic mature cursor Close sends PDA lamports to outer instruction caller
+PDA rent recovery never changes token fee/provider accounting
+position sequences never reused
+
+protocol-level settle_one cannot be bypassed by direct instruction caller
+wrong / omitted cursor PDA rejected
+closed cursor PDA advances settle_cursor exactly once and stops
+many closed cursor gaps are never scanned in one instruction
+ACTIVE non-mature cursor remains blocking
+cursor-target Repay resolves directly and advances once
+cursor-target Close resolves directly and advances once
+non-cursor Repay executes exactly one settle_one then target Repay
+non-cursor Close executes exactly one settle_one then target Close
+worst-case non-cursor Repay/Close touches at most one cursor target plus one requested target
+all economic instructions remain bounded O(1)
 ```
 
 There is no upgrade authority in the final production deployment.

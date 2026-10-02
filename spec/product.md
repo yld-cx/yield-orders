@@ -1,7 +1,7 @@
 # yld.cx — Yield Orders
 
 **Product Specification**  
-**Version:** 0.2
+**Version:** 0.3
 **Targets:** Ethereum / EVM + Solana
 **Depends on:** `spec/protocol.md`
 
@@ -42,7 +42,7 @@ Core protocol framing:
 
 # 2. Internal accounting is invisible
 
-v0.2 uses Product-Sum pooled accounting internally.
+v0.3 retains Product-Sum pooled accounting internally.
 
 Users MUST NOT see:
 
@@ -56,7 +56,7 @@ fixed-point principal remainder
 historical scale state
 ```
 
-There are no provider shares in v0.2.
+There are no provider shares in v0.3.
 
 The product deals only with economic amounts:
 
@@ -141,7 +141,7 @@ Canonical rule:
 
 # 5. Duration
 
-Official v0.2 UI:
+Official v0.3 UI:
 
 ```text
 7D
@@ -179,7 +179,7 @@ Routes:
 ```text
 /                 → Yield / recent markets
 /market/:pair     → symmetric market
-/orders           → permanent Term Position ledger
+/orders           → current ACTIVE Use positions
 /portfolio        → connected-wallet portfolio
 ```
 
@@ -213,13 +213,15 @@ Ask Liquidity
 Ask Yield*
 Bid Liquidity
 Bid Yield*
-Active Uses
+Active Uses†
 Network
 ```
 
 Footnote:
 
 > **\* Yield is earned when Used liquidity Repays. Close/Swap settles Quote instead.**
+
+`Active Uses†` is optional market analytics. If shown, its source MUST be explicit (for example, an optional indexer / event-derived activity view or a future dedicated O(1) counter). The product MUST NOT imply that the protocol scans Term Positions or `tickPositionId` to calculate it, and execution never depends on this metric.
 
 Yield is the marginal current Asset Yield reference.
 
@@ -301,6 +303,7 @@ Current Yield
 Max 7D Yield
 Term
 Maturity
+Solana account deposit (when applicable)
 ```
 
 Example:
@@ -315,6 +318,10 @@ Term                       7D
 ```
 
 Exit / Resolving never disables Use when sufficient active Available exists.
+
+
+
+On Solana, opening a Use creates a temporary TermPosition PDA and therefore locks a small SOL account deposit. The preview MUST surface that deposit separately from Quote Principal and protocol fees. It is returned to the stored rent payer on Repay; if the position expires and is Closed, the reclaimed SOL goes to the caller who performs settlement.
 
 ---
 
@@ -347,6 +354,12 @@ Product wording:
 
 Principal itself is never charged a protocol fee.
 
+
+
+After successful Repay the ACTIVE Use position disappears from current Orders / Portfolio state. Historical Repay activity is event / transaction history.
+
+On Solana, closing the TermPosition PDA returns its SOL account deposit to the stored rent payer.
+
 ---
 
 # 13. Close
@@ -365,12 +378,18 @@ Locked Quote settles
 Asset Yield due      0
 Protocol Fee · 1%
 Provider Net
-status → CLOSED
+position removed from active state
 ```
 
 Close fee was frozen when Use opened.
 
 It is independent of later utilization/Yield state.
+
+
+
+After successful Close the Use position disappears from current Orders / Portfolio state. Historical Close activity is event / transaction history.
+
+On Solana, the closed TermPosition PDA's reclaimed SOL goes to the caller that performs Close, including an automatic Close triggered by another economic action. This is storage recovery, not part of the 1% protocol fee.
 
 ---
 
@@ -576,7 +595,7 @@ Solana:
 atomic instruction composition where limits permit
 ```
 
-Semantics remain two canonical actions. Collect resets the timestamp; collecting first and then withdrawing at the same blockchain timestamp will fail the withdrawal time check.
+Semantics remain two canonical actions. Collect resets the timestamp; collecting first and then withdrawing at the same blockchain timestamp will fail the withdrawal time check. Adapters MUST preserve the `Withdraw → Collect` ordering and surface a dedicated timestamp/cooldown error rather than silently retrying or reversing the calls.
 
 ---
 
@@ -613,19 +632,23 @@ At/after maturity:
 
 Close is permissionless.
 
+
+
+Portfolio — Use is current-state only. Once Repay or Close succeeds, the resolved position is removed rather than displayed with a terminal status. Historical activity may be shown by an optional event / transaction-history surface.
+
 ---
 
 # 22. Orders
 
-Permanent Term Position ledger.
+Orders is a **current position** view, not a permanent historical ledger.
+
+Show ACTIVE Uses only.
 
 Filters:
 
 ```text
 All
 Active
-Repaid
-Closed
 Ask
 Bid
 Market
@@ -633,12 +656,21 @@ Network
 Wallet
 ```
 
-Identity:
+Identity while ACTIVE:
 
 ```text
-EVM     → permanent numeric positionId
-Solana  → permanent TermPosition PDA
+EVM     → numeric positionId
+Solana  → TermPosition PDA / sequence
 ```
+
+Position IDs / sequences are never reused, but resolved Term Position state is removed:
+
+```text
+Repay → disappears from Orders
+Close → disappears from Orders
+```
+
+Historical Repaid / Closed activity belongs to optional transaction / event history, not canonical Orders state.
 
 Always show network context.
 
@@ -646,21 +678,37 @@ Always show network context.
 
 # 23. Product previews and future SDK interface
 
-The future TypeScript SDK in `product/` will call the single deployed EVM contract through simulated OpenZeppelin `multicall(bytes[])`. Each batch starts with **one economic action** and appends getters. Do not add `settle()` before it: the action already attempts one automatic settlement step. The SDK must use the connected caller and check token balances and allowances. It must surface expected allowance, balance, maturity, cooldown, deadline, and slippage failures distinctly from a successful simulation.
+The future TypeScript SDK in `product/` will simulate the real protocol path. Automatic settlement is protocol-enforced: the official client does not prepend `settle()` merely to make an economic action valid, and third-party callers cannot bypass the same one-sequence settlement rule.
+
+For EVM, previews use OpenZeppelin `multicall(bytes[])` in `eth_call` with the connected caller and sufficient balances / allowances. Additional explicit `settle()` calls MAY be composed when the user intentionally wants more cursor progress, but they are not a replacement for per-action settlement.
 
 | SDK preview | Simulated call and decoded result |
 | --- | --- |
 | `previewSupply` | `supply` + `getEarnPosition` + `getTick`; resulting principal and market state. |
 | `previewWithdraw` | `withdraw` + `getEarnPosition` + `getTick`; immediate Asset, Working moved to Exit, vested Yield out, forfeited Yield, remaining claims. |
 | `previewCollect` | `collect` + `getEarnPosition`; Asset, Quote and vested Yield paid, remaining claims. |
-| `previewUse` | `use` + `getPosition` + `getTick`; Quote Principal, full-term Yield, frozen Close fee, maturity, resulting position. Read `nextPositionId` before the batch. |
-| `previewRepay` | `repay` + `getPosition` + `getTick`; gross accrued Yield, Asset fee, total Asset in, Quote unlocked. |
+| `previewUse` | `use` + `getPosition` + `getTick`; Quote Principal, full-term Yield, frozen Close fee, maturity, resulting ACTIVE position. Read `nextPositionId` before the EVM batch. |
+| `previewRepay` | `repay` return data + `getTick` / domain getters as needed; gross accrued Yield, Asset fee, total Asset in, Quote unlocked. The Term Position is deleted by the simulated action. |
 | `previewSwap` | `swap` + `getTick`; Quote required, fee, provider proceeds. |
-| `previewClose` | `close` + `getPosition` + `getTick` (and domain getters if needed); final status and Active/Exit accounting. |
+| `previewClose` | `close` return data + `getTick` / domain getters as needed; provider proceeds and Active/Exit accounting. The Term Position is deleted by the simulated action. |
 
-The SDK may use `quoteUse(tickId, assetAmount)` before approval for Quote Principal and full-term Yield. This read-only quotation uses current state and does not simulate an expired cursor settlement. Quote, simulation, and transaction execution can see different market state or timestamps. Preserve `maxFullTermYieldAsset`, `maxYieldAsset`, `maxQuoteIn`, Withdraw’s `minImmediateAssetOut`, and deadlines. Passing zero minimum and a permissive deadline keeps an unrestricted Withdraw option.
+The SDK MUST NOT attempt to read a resolved Term Position after Repay / Close.
 
-The EVM SDK must decode `bytes[]` with each call’s ABI entry and verify that `eth_call` did not commit changes. The tests in `protocol/ethereum/test/PreviewIntegration.ts` are the reference integration workflow. The Solana adapter instead simulates the corresponding instructions with the canonical PDA/account bundle, computes any ScaleState creation cost, and decodes instruction data, events, and resulting account state. Both adapters expose the same economic preview fields, minimum-immediate-output protection, and deadlines where relevant. No production SDK implementation is part of this protocol task.
+The SDK may use `quoteUse(tickId, assetAmount)` before approval for Quote Principal and full-term Yield. This read-only quotation uses current state and does not simulate an expired cursor settlement. Quote, simulation, and transaction execution can see different market state or timestamps. Preserve `maxFullTermYieldAsset`, `maxYieldAsset`, `maxQuoteIn`, Withdraw's `minImmediateAssetOut`, and deadlines. Passing zero minimum and a permissive deadline keeps an unrestricted Withdraw option.
+
+The EVM SDK must decode `bytes[]` with each call's ABI entry and verify that `eth_call` did not commit changes. The tests in `protocol/ethereum/test/PreviewIntegration.ts` are the reference integration workflow.
+
+The Solana adapter simulates the corresponding program instruction with the canonical PDA/account bundle required by program-level `settle_one`. It MUST surface:
+
+```text
+TermPosition PDA creation deposit on Use
+deposit refund destination on Repay
+deposit recovery by caller on mature Close / automatic settlement
+required ScaleState account creation cost
+changed settlement-account bundle / rebuild requirement
+```
+
+Both adapters expose the same token-economic preview fields, minimum-immediate-output protection, and deadlines where relevant. Solana's account deposit is chain-native storage funding and is not presented as a YLD protocol fee.
 
 Internal Product-Sum P/scale/generation and fractional remainders remain hidden from normal UX. A zero-value Collect must retain fractional Active and Exit entitlements for future distributions.
 
@@ -706,6 +754,10 @@ fixed-point sub-raw provider principal
 settlement cursor account bundles
 ```
 
+
+
+`getUsePosition` and position enumeration are current-state only. Resolved Term Positions are absent. Adapters MAY expose separate event/history helpers, but canonical economic execution and current portfolio state never depend on an indexer.
+
 ---
 
 # 25. Discovery
@@ -733,6 +785,7 @@ Indexer remains optional for:
 search
 recent activity
 analytics
+resolved Use history
 global history
 ```
 
@@ -740,9 +793,21 @@ Settlement never depends on indexer/yieldlist.
 
 Connected-wallet portfolio discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, nonzero fractional gain carry, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`. Fractional gain carry is not independently withdrawable and remains hidden from normal UX.
 
+
+
+Current ACTIVE Uses MUST remain discoverable from canonical onchain state without historical Term Position retention.
+
 ---
 
-# 26. Errors
+# 26. Token compatibility risk
+
+The product MUST not imply that immutable YLD can rescue incompatible token behavior. Supported markets assume exact-transfer, non-rebasing token semantics. If an admitted token later rebases, blacklists required protocol/user accounts, or changes transfer behavior incompatibly, affected actions may become unavailable for that Tick. There is no mutable admin rescue path.
+
+This is product risk disclosure only; it does not change protocol economics or add governance.
+
+---
+
+# 27. Errors
 
 User-facing messages explain economics:
 
@@ -782,7 +847,7 @@ as primary product copy.
 
 ---
 
-# 27. Product principles
+# 28. Product principles
 
 Avoid framing as:
 
@@ -815,7 +880,7 @@ Claimable
 
 ---
 
-# 28. Final supplier flow
+# 29. Final supplier flow
 
 ```text
 1. Post Asset at a chosen price.
@@ -833,7 +898,7 @@ Claimable
 
 ---
 
-# 29. Final taker flow
+# 30. Final taker flow
 
 ```text
 Use:
@@ -841,8 +906,10 @@ receive Asset
 lock Quote
 freeze full-term Yield
 Repay before maturity
+→ active position removed
 or
 Close at/after maturity
+→ active position removed
 
 Swap:
 pay Quote
@@ -851,7 +918,7 @@ receive Asset immediately
 
 ---
 
-# 30. Canonical product model
+# 31. Canonical product model
 
 > **Return → Asset + Asset Yield. Swap → Quote.**
 
