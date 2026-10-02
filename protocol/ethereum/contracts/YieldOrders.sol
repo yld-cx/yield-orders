@@ -464,7 +464,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _bound(x);
         q.assetAmount = x;
         q.quotePrincipal = _quote(t, x);
-        q.swapFee = q.quotePrincipal / 100;
+        q.swapFee = Math.mulDiv(q.quotePrincipal, PROTOCOL_FEE_BPS, BPS);
         // The fixed fee is at most the quoted principal.
         {
             q.providerSwapProceeds = q.quotePrincipal - q.swapFee;
@@ -928,6 +928,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 otherActiveX36 = domainActiveX36 - remainingProviderX36;
         if (q.forfeitedYield != 0) {
             if (otherActiveX36 >= PRINCIPAL_PRECISION) {
+                _bound(q.forfeitedYield);
                 t.active.yieldSum +=
                     Math.mulDiv(q.forfeitedYield, t.active.P * PRINCIPAL_PRECISION, otherActiveX36);
                 p.active.yieldSum = t.active.yieldSum;
@@ -1082,7 +1083,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             revert Invariant();
         }
         _bound(q.grossYieldAsset);
-        q.yieldFeeAsset = q.grossYieldAsset / 100;
+        q.yieldFeeAsset = Math.mulDiv(q.grossYieldAsset, PROTOCOL_FEE_BPS, BPS);
         q.totalAssetIn = q.assetPrincipal + q.grossYieldAsset;
         q.exitFill = Math.min(p.assetAmount, t.exitWorking);
         uint256 netYield;

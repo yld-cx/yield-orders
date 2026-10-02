@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { getAddress, getCreate2Address, keccak256, zeroAddress } from "viem";
-import { COMPILER_DESCRIPTION, PROTOCOL_VERSION, TEST_FEE_TO, YLD_FEE_TO } from "../hardhat.config.js";
+import { COMPILER_DESCRIPTION, PROTOCOL_VERSION, SALT_NAMESPACE, TEST_FEE_TO, YLD_FEE_TO } from "../hardhat.config.js";
 import {
   candidateSalt,
   CREATE_X_ADDRESS,
@@ -14,8 +14,7 @@ import {
 
 const artifact = await readArtifact();
 const currentManifest = await readManifest();
-const { saltNamespace } = currentManifest;
-if (!saltNamespace.trim()) throw new Error("Deployment saltNamespace cannot be empty");
+if (currentManifest.saltNamespace !== SALT_NAMESPACE) throw new Error("Wrong salt namespace");
 if (
   currentManifest.rawSalt ||
   currentManifest.guardedSalt ||
@@ -33,7 +32,7 @@ if (feeTo === zeroAddress || feeTo.toLowerCase() === TEST_FEE_TO.toLowerCase())
 const creationCodeHash = keccak256(creationCode(artifact, feeTo));
 let found = false;
 for (let nonce = 0n; nonce < 2_000_000n; ++nonce) {
-  const rawSalt = candidateSalt(nonce, saltNamespace);
+  const rawSalt = candidateSalt(nonce);
   const address = getCreate2Address({
     from: CREATE_X_ADDRESS,
     salt: guardSalt(rawSalt),
@@ -44,7 +43,7 @@ for (let nonce = 0n; nonce < 2_000_000n; ++nonce) {
   const manifest = {
     version: PROTOCOL_VERSION,
     feeTo,
-    saltNamespace,
+    saltNamespace: SALT_NAMESPACE,
     rawSalt,
     guardedSalt: result.guardedSalt,
     address: result.address,

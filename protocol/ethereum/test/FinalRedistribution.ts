@@ -6,7 +6,7 @@ import protocolAbiJson from "../abi/YieldOrders.json" with { type: "json" };
 import type { YieldOrders$Type } from "../artifacts/contracts/YieldOrders.sol/artifacts.js";
 import { mockERC20Abi } from "./abi/mocks.js";
 import { TickModel, X } from "./reference.js";
-import vectors from "../vectors/golden-v02.json" with { type: "json" };
+import vectors from "../vectors/golden-v03.json" with { type: "json" };
 
 const abi = protocolAbiJson as unknown as YieldOrders$Type["abi"];
 const MAX = 2n ** 256n - 1n;

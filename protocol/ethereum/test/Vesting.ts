@@ -130,6 +130,40 @@ describe("provider Yield vesting", async () => {
     await checkAsset();
   });
 
+  it("vests newly repaid Yield from the provider timestamp and restarts after a zero-value Collect", async () => {
+    const { market, tickId, deadline, collected, checkAsset } = await networkHelpers.loadFixture(setup);
+    await market.write.supply([tickId, 1_000n * E, zeroAddress], { account: alice.account });
+    const supplied = await market.read.getEarnPosition([alice.account.address, tickId]);
+    const [, full] = await market.read.quoteUse([tickId, 100n * E]);
+    await market.write.use([tickId, 100n * E, full, await deadline(), zeroAddress], { account: taker.account });
+    await networkHelpers.time.increase(12 * 3_600);
+    await market.write.repay([1n, full], { account: taker.account });
+    const funded = await market.read.getEarnPosition([alice.account.address, tickId]);
+    assert.equal(funded.timestamp, supplied.timestamp);
+    assert.ok(funded.outstandingActiveYieldAsset > 0n);
+    assert.equal(funded.claimableActiveYieldAsset,
+      BigInt(funded.outstandingActiveYieldAsset) * BigInt(funded.vestingElapsedSeconds) / DAY);
+    assert.ok(funded.vestingElapsedSeconds >= DAY / 2n);
+    const first = await market.write.multicall([[encodeFunctionData({ abi, functionName: "collect", args: [tickId] }),
+      encodeFunctionData({ abi, functionName: "collect", args: [tickId] })]], { account: alice.account });
+    const events = await collected(first);
+    const firstEvent = events[0].args;
+    assert.equal(firstEvent.activeYieldAsset,
+      funded.outstandingActiveYieldAsset * ((await client.getBlock()).timestamp - supplied.timestamp) / DAY);
+    assert.equal(events[1].args.activeYieldAsset, 0n);
+    const remaining = await market.read.getEarnPosition([alice.account.address, tickId]);
+    assert.ok(remaining.outstandingActiveYieldAsset > 0n);
+    const afterReset = await market.read.getEarnPosition([alice.account.address, tickId]);
+    assert.equal(afterReset.timestamp, (await client.getBlock()).timestamp);
+    assert.equal(afterReset.claimableActiveYieldAsset, 0n);
+    assert.equal(afterReset.outstandingActiveYieldAsset, remaining.outstandingActiveYieldAsset);
+    await networkHelpers.time.increase(Number(DAY));
+    assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).claimableActiveYieldAsset,
+      remaining.outstandingActiveYieldAsset);
+    await market.write.collect([tickId], { account: alice.account });
+    await checkAsset();
+  });
+
   it("restarts outstanding Yield on additional Supply with and without preceding Collect", async () => {
     const { market, tickId, fund } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1_000n * E, zeroAddress], { account: alice.account });

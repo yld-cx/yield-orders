@@ -649,6 +649,8 @@ owedActiveYieldAsset -= yieldForWithdraw
 
 Apply the canonical §19 X36 redistribution rule. After withdrawing principal, calculate `domainActiveX36 = activePrincipal * PRINCIPAL_PRECISION`, require `remainingProviderX36 <= domainActiveX36`, then calculate `otherActiveX36 = domainActiveX36 - remainingProviderX36` with checked subtraction. An invariant violation MUST revert and MUST NOT fall through to protocol-fee reclassification. For positive `forfeitedYield`, when `otherActiveX36 >= PRINCIPAL_PRECISION`, fund the Active Yield sum using `Math.mulDiv(forfeitedYield, activeP * PRINCIPAL_PRECISION, otherActiveX36)` with floor rounding; otherwise reclassify the amount as accrued Asset protocol fees, reducing the funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding to exclude its retained principal. Eligible recipients use their existing vesting timestamps. No new Yield reserve, additional fee or separate vesting state is created.
 
+The redistribution branch MUST require `forfeitedYield <= MAX_ACCOUNTING_AMOUNT` using the canonical amount-bound error. An excess reverts the entire Withdraw. The fee-reclassification branch retains its existing behavior.
+
 Transfer `availableOut + yieldAssetOut`. The `withdraw` return and `Withdrawn` event include `yieldAssetOut` and `forfeitedYield`. Preserve the existing Exit principal split and sub-raw remainder.
 
 Withdraw does not reset `timestamp`. Previously allocated Exit Yield and any retained Active Yield remain outstanding for later Collect.

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, encodeDeployData, getCreate2Address, keccak256, type Address, type Hex } from "viem";
 import {
   BASE_RPC_URL,
+  COMPILER_DESCRIPTION,
   ETHEREUM_RPC_URL,
   PROTOCOL_VERSION,
   ROBINHOOD_RPC_URL,
@@ -53,8 +54,8 @@ export function guardSalt(rawSalt: Hex): Hex {
   return keccak256(encodeAbiParameters([{ type: "bytes32" }], [rawSalt]));
 }
 
-export function candidateSalt(nonce: bigint, namespace: string = SALT_NAMESPACE): Hex {
-  return keccak256(encodeAbiParameters([{ type: "string" }, { type: "uint256" }], [namespace, nonce]));
+export function candidateSalt(nonce: bigint): Hex {
+  return keccak256(encodeAbiParameters([{ type: "string" }, { type: "uint256" }], [SALT_NAMESPACE, nonce]));
 }
 
 export function creationCode(artifact: Artifact, feeTo: Address): Hex {
@@ -99,6 +100,12 @@ export function predict(
 
 export function assertManifest(manifest: DeploymentManifest, prediction: ReturnType<typeof predict>): void {
   if (!manifest.feeTo || !manifest.rawSalt) throw new Error("production configuration is incomplete");
+  if (manifest.version !== PROTOCOL_VERSION) throw new Error("Wrong protocol version");
+  if (manifest.saltNamespace !== SALT_NAMESPACE) throw new Error("Wrong salt namespace");
+  if (manifest.compiler !== COMPILER_DESCRIPTION) throw new Error("Wrong compiler configuration");
+  if (!manifest.networks ||
+    Object.keys(manifest.networks).sort().join(",") !== Object.keys(NETWORKS).sort().join(","))
+    throw new Error("Wrong network entries");
   if (!prediction.address.toLowerCase().startsWith("0x0000"))
     throw new Error("Protocol address must start with 0x0000");
   for (const [name, config] of Object.entries(NETWORKS)) {

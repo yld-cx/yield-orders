@@ -1,5 +1,5 @@
 {
-  "version": "0.2",
+  "version": "0.3",
   "unit": "raw token units; X36 values are decimal integer strings",
   "principalPrecision": "1000000000000000000000000000000000000",
   "withdrawal": {
@@ -45,5 +45,28 @@
     "netYieldRaw": "101",
     "exitYieldRaw": "58",
     "activeYieldRaw": "43"
+  },
+  "terminalRepay": {
+    "positionId": "3",
+    "tickSeq": "2",
+    "assetPrincipal": "10000000000000000000",
+    "exitFill": "0",
+    "activeReturn": "10000000000000000000",
+    "cursorAfterOutOfOrder": "0",
+    "deletedTickPositionId": "0"
+  },
+  "terminalClose": {
+    "positionId": "3",
+    "tickSeq": "2",
+    "exitFill": "0",
+    "activeFill": "10000000000000000000",
+    "deletedTickPositionId": "0"
+  },
+  "deletedCursorGaps": {
+    "afterCursorTargetRepay": "1",
+    "afterOneGapSkip": "2",
+    "afterSecondGapSkip": "3",
+    "afterNonCursorRepay": "4",
+    "afterFinalGapSkip": "5"
   }
 }

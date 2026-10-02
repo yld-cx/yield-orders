@@ -27,7 +27,7 @@
   "files": [
     "README.md",
     "abi/YieldOrders.json",
-    "vectors/golden-v02.json",
+    "vectors/golden-v03.json",
     "contracts/YieldOrders.sol",
     "contracts/libraries/ProductSumMath.sol",
     "contracts/libraries/YieldMath.sol",
