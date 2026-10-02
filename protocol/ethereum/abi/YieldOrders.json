@@ -28,6 +28,11 @@
   },
   {
     "inputs": [],
+    "name": "Arithmetic512",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "Cooldown",
     "type": "error"
   },
@@ -89,11 +94,6 @@
   },
   {
     "inputs": [],
-    "name": "ShareCapacity",
-    "type": "error"
-  },
-  {
-    "inputs": [],
     "name": "Slippage",
     "type": "error"
   },
@@ -149,7 +149,7 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "swapQuote",
+        "name": "activeQuote",
         "type": "uint256"
       },
       {
@@ -178,31 +178,25 @@
         "type": "uint256"
       },
       {
+        "indexed": true,
+        "internalType": "enum YieldOrders.DomainKind",
+        "name": "domain",
+        "type": "uint8"
+      },
+      {
         "indexed": false,
         "internalType": "uint64",
-        "name": "exitGenerationId",
+        "name": "generation",
         "type": "uint64"
       },
       {
         "indexed": false,
-        "internalType": "uint256",
-        "name": "finalExitAssetGrowthX128",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "finalExitYieldAssetGrowthX128",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "finalExitQuoteGrowthX128",
-        "type": "uint256"
+        "internalType": "uint64",
+        "name": "finalScale",
+        "type": "uint64"
       }
     ],
-    "name": "ExitGenerationFinalized",
+    "name": "DomainGenerationFinalized",
     "type": "event"
   },
   {
@@ -215,25 +209,37 @@
         "type": "uint256"
       },
       {
+        "indexed": true,
+        "internalType": "enum YieldOrders.DomainKind",
+        "name": "domain",
+        "type": "uint8"
+      },
+      {
         "indexed": false,
         "internalType": "uint64",
-        "name": "generationId",
+        "name": "generation",
+        "type": "uint64"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "oldScale",
+        "type": "uint64"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "newScale",
         "type": "uint64"
       },
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "finalYieldAssetGrowthX128",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "finalSwapQuoteGrowthX128",
+        "name": "newP",
         "type": "uint256"
       }
     ],
-    "name": "GenerationFinalized",
+    "name": "DomainScaleChanged",
     "type": "event"
   },
   {
@@ -315,6 +321,44 @@
     "inputs": [
       {
         "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "ProtocolFeesAccrued",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "ProtocolFeesCollected",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
         "internalType": "uint256",
         "name": "tickId",
         "type": "uint256"
@@ -329,12 +373,6 @@
         "indexed": false,
         "internalType": "uint256",
         "name": "assetAmount",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "sharesMinted",
         "type": "uint256"
       },
       {
@@ -645,13 +683,7 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "sharesBurned",
-        "type": "uint256"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint256",
-        "name": "principalClaim",
+        "name": "principalAmount",
         "type": "uint256"
       },
       {
@@ -669,7 +701,13 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "exitSharesMinted",
+        "name": "yieldAssetOut",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "forfeitedYield",
         "type": "uint256"
       }
     ],
@@ -717,6 +755,19 @@
   },
   {
     "inputs": [],
+    "name": "MAX_ACCOUNTING_AMOUNT",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "MAX_DAILY_BPS",
     "outputs": [
       {
@@ -730,7 +781,46 @@
   },
   {
     "inputs": [],
-    "name": "MAX_SHARES",
+    "name": "MAX_DURATION_DAYS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_SCALE_JUMP",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_SCALE_SPAN",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_TIMESTAMP",
     "outputs": [
       {
         "internalType": "uint256",
@@ -769,6 +859,19 @@
   },
   {
     "inputs": [],
+    "name": "PRINCIPAL_PRECISION",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "PROTOCOL_FEE_BPS",
     "outputs": [
       {
@@ -782,7 +885,78 @@
   },
   {
     "inputs": [],
+    "name": "P_MIN",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "P_PRECISION",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "Q128",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "SCALE_FACTOR",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "SECONDS_PER_DAY",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "accruedProtocolFees",
     "outputs": [
       {
         "internalType": "uint256",
@@ -840,7 +1014,7 @@
           },
           {
             "internalType": "uint256",
-            "name": "swapQuote",
+            "name": "activeQuote",
             "type": "uint256"
           },
           {
@@ -852,11 +1026,50 @@
             "internalType": "uint256",
             "name": "totalQuoteOut",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "resolvingPrincipal",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingActiveYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingExitYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "vestingRemainingSeconds",
+            "type": "uint256"
           }
         ],
         "internalType": "struct YieldOrders.CollectPreview",
         "name": "q",
         "type": "tuple"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "collectProtocolFees",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
       }
     ],
     "stateMutability": "nonpayable",
@@ -928,22 +1141,27 @@
         "type": "uint256"
       },
       {
+        "internalType": "uint8",
+        "name": "",
+        "type": "uint8"
+      },
+      {
         "internalType": "uint64",
         "name": "",
         "type": "uint64"
       }
     ],
-    "name": "finalActive",
+    "name": "generationMeta",
     "outputs": [
       {
-        "internalType": "uint256",
-        "name": "yieldGrowth",
-        "type": "uint256"
+        "internalType": "uint64",
+        "name": "finalScale",
+        "type": "uint64"
       },
       {
-        "internalType": "uint256",
-        "name": "quoteGrowth",
-        "type": "uint256"
+        "internalType": "bool",
+        "name": "finalized",
+        "type": "bool"
       }
     ],
     "stateMutability": "view",
@@ -953,31 +1171,53 @@
     "inputs": [
       {
         "internalType": "uint256",
-        "name": "",
+        "name": "id",
         "type": "uint256"
       },
       {
-        "internalType": "uint64",
-        "name": "",
-        "type": "uint64"
+        "internalType": "enum YieldOrders.DomainKind",
+        "name": "kind",
+        "type": "uint8"
       }
     ],
-    "name": "finalExit",
+    "name": "getDomain",
     "outputs": [
       {
-        "internalType": "uint256",
-        "name": "assetGrowth",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "yieldGrowth",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "quoteGrowth",
-        "type": "uint256"
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "P",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "scale",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint64",
+            "name": "generation",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint256",
+            "name": "assetSum",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "yieldSum",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "quoteSum",
+            "type": "uint256"
+          }
+        ],
+        "internalType": "struct YieldOrders.Domain",
+        "name": "",
+        "type": "tuple"
       }
     ],
     "stateMutability": "view",
@@ -1001,86 +1241,34 @@
       {
         "components": [
           {
-            "components": [
-              {
-                "internalType": "uint256",
-                "name": "shares",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint64",
-                "name": "generation",
-                "type": "uint64"
-              },
-              {
-                "internalType": "uint256",
-                "name": "yieldAssetGrowthLastX128",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "swapQuoteGrowthLastX128",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "owedYieldAsset",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "owedSwapQuote",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "lastSupplyBlock",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "exitShares",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint64",
-                "name": "exitGeneration",
-                "type": "uint64"
-              },
-              {
-                "internalType": "uint256",
-                "name": "exitAssetGrowthLastX128",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "exitYieldAssetGrowthLastX128",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "exitQuoteGrowthLastX128",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "owedExitAsset",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "owedExitYieldAsset",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "owedExitQuote",
-                "type": "uint256"
-              }
-            ],
-            "internalType": "struct YieldOrders.Provider",
-            "name": "provider",
-            "type": "tuple"
+            "internalType": "uint256",
+            "name": "activePrincipal",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "activePrincipalX36",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "activeAvailable",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "activeWorking",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "exitPrincipalX36",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "resolvingPrincipal",
+            "type": "uint256"
           },
           {
             "internalType": "uint256",
@@ -1099,17 +1287,42 @@
           },
           {
             "internalType": "uint256",
-            "name": "claimableSwapQuote",
+            "name": "claimableActiveQuote",
             "type": "uint256"
           },
           {
             "internalType": "uint256",
             "name": "claimableExitQuote",
             "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "timestamp",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "vestingElapsedSeconds",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "vestingDurationSeconds",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingActiveYieldAsset",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "outstandingExitYieldAsset",
+            "type": "uint256"
           }
         ],
         "internalType": "struct YieldOrders.EarnPositionView",
-        "name": "v",
+        "name": "q",
         "type": "tuple"
       }
     ],
@@ -1120,7 +1333,7 @@
     "inputs": [
       {
         "internalType": "address",
-        "name": "user",
+        "name": "owner",
         "type": "address"
       },
       {
@@ -1268,11 +1481,6 @@
       {
         "components": [
           {
-            "internalType": "uint256",
-            "name": "pairId",
-            "type": "uint256"
-          },
-          {
             "internalType": "address",
             "name": "asset",
             "type": "address"
@@ -1283,29 +1491,14 @@
             "type": "address"
           },
           {
-            "internalType": "uint256",
-            "name": "priceX128",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint8",
-            "name": "direction",
-            "type": "uint8"
-          },
-          {
-            "internalType": "int32",
-            "name": "priceTick",
-            "type": "int32"
-          },
-          {
             "internalType": "uint64",
             "name": "durationDays",
             "type": "uint64"
           },
           {
-            "internalType": "bool",
-            "name": "exists",
-            "type": "bool"
+            "internalType": "uint256",
+            "name": "priceX128",
+            "type": "uint256"
           },
           {
             "internalType": "uint256",
@@ -1324,78 +1517,13 @@
           },
           {
             "internalType": "uint256",
-            "name": "totalShares",
+            "name": "activeWorking",
             "type": "uint256"
           },
           {
             "internalType": "uint256",
-            "name": "yieldAssetGrowthX128",
+            "name": "activePrincipal",
             "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "swapQuoteGrowthX128",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint64",
-            "name": "generation",
-            "type": "uint64"
-          },
-          {
-            "internalType": "uint256",
-            "name": "totalExitShares",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitAssetGrowthX128",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitYieldAssetGrowthX128",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitQuoteGrowthX128",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint64",
-            "name": "exitGeneration",
-            "type": "uint64"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitAssetReserve",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "yieldAssetReserve",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitQuoteReserve",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "activeQuoteReserve",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "quoteEscrow",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint64",
-            "name": "nextPositionSeq",
-            "type": "uint64"
           },
           {
             "internalType": "uint64",
@@ -1403,19 +1531,9 @@
             "type": "uint64"
           }
         ],
-        "internalType": "struct YieldOrders.Tick",
-        "name": "tick",
+        "internalType": "struct YieldOrders.TickView",
+        "name": "q",
         "type": "tuple"
-      },
-      {
-        "internalType": "uint256",
-        "name": "activeWorking",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "activePrincipal",
-        "type": "uint256"
       }
     ],
     "stateMutability": "view",
@@ -1425,7 +1543,7 @@
     "inputs": [
       {
         "internalType": "address",
-        "name": "user",
+        "name": "owner",
         "type": "address"
       },
       {
@@ -1515,32 +1633,17 @@
     "inputs": [
       {
         "internalType": "uint256",
-        "name": "",
+        "name": "id",
         "type": "uint256"
-      }
-    ],
-    "name": "positions",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "tickId",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint64",
-        "name": "tickSeq",
-        "type": "uint64"
-      },
-      {
-        "internalType": "address",
-        "name": "user",
-        "type": "address"
       },
       {
         "internalType": "uint256",
         "name": "assetAmount",
         "type": "uint256"
-      },
+      }
+    ],
+    "name": "quoteUse",
+    "outputs": [
       {
         "internalType": "uint256",
         "name": "quotePrincipal",
@@ -1550,360 +1653,6 @@
         "internalType": "uint256",
         "name": "fullTermYieldAsset",
         "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "closeFee",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "openedAt",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "maturity",
-        "type": "uint256"
-      },
-      {
-        "internalType": "enum YieldOrders.Status",
-        "name": "status",
-        "type": "uint8"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "supplier",
-        "type": "address"
-      }
-    ],
-    "name": "previewCollect",
-    "outputs": [
-      {
-        "components": [
-          {
-            "internalType": "uint256",
-            "name": "exitAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "activeYieldAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitYieldAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitQuote",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "swapQuote",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "totalAssetOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "totalQuoteOut",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct YieldOrders.CollectPreview",
-        "name": "",
-        "type": "tuple"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "positionId",
-        "type": "uint256"
-      }
-    ],
-    "name": "previewRepay",
-    "outputs": [
-      {
-        "components": [
-          {
-            "internalType": "uint256",
-            "name": "assetPrincipal",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "grossYieldAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "yieldFeeAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "totalAssetIn",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitFill",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "activeReturn",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitYieldAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "activeYieldAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "quotePrincipalUnlocked",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct YieldOrders.RepayPreview",
-        "name": "",
-        "type": "tuple"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "assetAmount",
-        "type": "uint256"
-      }
-    ],
-    "name": "previewSupply",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "sharesMinted",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
-    ],
-    "name": "previewSwap",
-    "outputs": [
-      {
-        "components": [
-          {
-            "internalType": "uint256",
-            "name": "assetAmount",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "quotePrincipal",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "swapFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "providerSwapProceeds",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct YieldOrders.SwapPreview",
-        "name": "",
-        "type": "tuple"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "amount",
-        "type": "uint256"
-      }
-    ],
-    "name": "previewUse",
-    "outputs": [
-      {
-        "components": [
-          {
-            "internalType": "uint256",
-            "name": "matchAmount",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "quotePrincipal",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "activeWorkingShareBefore",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "activeWorkingShareAfter",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "fullTermYieldAsset",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "closeFee",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "dailyRateX128",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "termRateX128",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "maturity",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct YieldOrders.UsePreview",
-        "name": "q",
-        "type": "tuple"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "id",
-        "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "supplier",
-        "type": "address"
-      },
-      {
-        "internalType": "uint256",
-        "name": "sharesToWithdraw",
-        "type": "uint256"
-      }
-    ],
-    "name": "previewWithdraw",
-    "outputs": [
-      {
-        "components": [
-          {
-            "internalType": "uint256",
-            "name": "sharesToWithdraw",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "principalClaim",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "availableAssetOut",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "workingToExit",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "exitSharesMinted",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "remainingActiveShares",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "remainingExitShares",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct YieldOrders.WithdrawPreview",
-        "name": "q",
-        "type": "tuple"
       }
     ],
     "stateMutability": "view",
@@ -1984,6 +1733,55 @@
     "inputs": [
       {
         "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint8",
+        "name": "",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
+      },
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "name": "scaleSums",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "assetSum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "yieldSum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "quoteSum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bool",
+        "name": "finalized",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
         "name": "id",
         "type": "uint256"
       }
@@ -2012,13 +1810,7 @@
       }
     ],
     "name": "supply",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "minted",
-        "type": "uint256"
-      }
-    ],
+    "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
   },
@@ -2174,7 +1966,17 @@
       },
       {
         "internalType": "uint256",
-        "name": "sharesToWithdraw",
+        "name": "principalAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minImmediateAssetOut",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "deadline",
         "type": "uint256"
       }
     ],
@@ -2184,12 +1986,12 @@
         "components": [
           {
             "internalType": "uint256",
-            "name": "sharesToWithdraw",
+            "name": "providerPrincipal",
             "type": "uint256"
           },
           {
             "internalType": "uint256",
-            "name": "principalClaim",
+            "name": "principalAmount",
             "type": "uint256"
           },
           {
@@ -2204,17 +2006,22 @@
           },
           {
             "internalType": "uint256",
-            "name": "exitSharesMinted",
+            "name": "remainingActivePrincipal",
             "type": "uint256"
           },
           {
             "internalType": "uint256",
-            "name": "remainingActiveShares",
+            "name": "resolvingPrincipal",
             "type": "uint256"
           },
           {
             "internalType": "uint256",
-            "name": "remainingExitShares",
+            "name": "yieldAssetOut",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "forfeitedYield",
             "type": "uint256"
           }
         ],

@@ -84,9 +84,11 @@ Resolving
 
 Claimable
 ├── Exit Asset
-├── Asset Yield
+├── currently collectible Asset Yield
 └── Quote proceeds
 ```
+
+Uncollected Yield may continue vesting over the Tick duration.
 
 Withdraw:
 
@@ -100,7 +102,7 @@ Collect:
 
 ```text
 resolved Exit Asset
-+ net Asset Yield
++ currently collectible net Asset Yield
 + active Swap/Close Quote
 + Exit Close Quote
 ```
@@ -284,7 +286,7 @@ Preferred wording:
 Yield when used and returned
 ```
 
-No guaranteed APY.
+No guaranteed APY. Every Supply (including a top-up) restarts Yield vesting for that provider's outstanding uncollected Yield. Show currently collectible Yield and the time to full vesting; Collect before additional Supply is optional.
 
 ---
 
@@ -399,7 +401,7 @@ Taker pays exactly Quote Principal.
 
 Fee is deducted from provider Quote proceeds.
 
-Providers receive at least 99% of posted Quote, subject to raw-unit fee rounding.
+At the market-wide proceeds level, providers receive at least 99% of posted Quote, subject to raw-unit fee rounding. Individual Active/Resolving allocations round to whole raw units; a very small Exit allocation may round to zero. Display the actual simulated result for the entered amount rather than implying every individual provider receives exactly 99%.
 
 ---
 
@@ -449,7 +451,9 @@ In Use                  120 TOKEN-equivalent
 
 Claimable
 Exit Asset               40 TOKEN
-Earned Yield (net)        5.94 TOKEN
+Allocated Yield (net)     5.94 TOKEN
+Collectible Yield now      [preview] TOKEN
+Yield fully collectible    [time remaining]
 Exit Quote              960 USDC
 Swapped               6,000 USDC
 
@@ -470,7 +474,7 @@ Controls:
 25%   50%   75%   Max
 ```
 
-The adapter obtains current provider active principal from preview and converts percentage to Asset-denominated principal.
+The adapter obtains current provider active principal from `getEarnPosition` or a simulated action and converts percentage to Asset-denominated principal. Both EVM and Solana execution use a deadline and minimum immediate Asset output; the minimum excludes the Yield paid in the same Withdraw. The adapter should surface the expected amount and execution bounds before signing.
 
 No raw shares.
 
@@ -479,13 +483,15 @@ Preview:
 ```text
 Withdraw                 50%
 
-Receive now             200 TOKEN
+Receive principal now   200 TOKEN
+Collectible Yield out   [preview] TOKEN
+Forfeited Yield         [preview] TOKEN
 Move to Resolving       300 TOKEN-equivalent
 ```
 
 Explanation:
 
-> Available liquidity is received now. Liquidity currently In Use moves to Resolving. Repay resolves it as Asset + Yield; Close resolves it as Quote.
+> Available liquidity and vested Yield attributable to withdrawn principal are received now. Unvested Yield attributable to the withdrawal is forfeited: it is allocated to other eligible Active provider positions or becomes a protocol fee if none qualify. Recipients use their existing Yield vesting schedules. In Use principal moves to Resolving; Repay resolves it as Asset + Yield and Close as Quote.
 
 For Max:
 
@@ -504,13 +510,13 @@ There is no share dust-burn UX.
 
 # 18. Collect
 
-Collect everything currently claimable:
+Collect everything currently claimable. Net Asset Yield becomes collectible linearly from the last Supply or Collect over the Tick duration; principal and Quote proceeds do not vest.
 
 ```text
 Asset:
 - Exit Asset principal
-- net active Asset Yield
-- net Exit Asset Yield
+- currently collectible net active Asset Yield
+- currently collectible net Exit Asset Yield
 
 Quote:
 - active Swap/Close proceeds
@@ -523,7 +529,7 @@ All Quote is already net of the 1% Swap/Close fee.
 
 Collect charges no fee.
 
-Collect may occur before Resolving is complete.
+Collect may occur before Resolving is complete. Each Collect resets the position timestamp and restarts vesting of the remaining uncollected Yield. Multiple Collects at the same timestamp release no additional Yield. Collect before a new Supply is optional; Supply always resets the timestamp.
 
 ---
 
@@ -536,7 +542,7 @@ Withdraw first
 Collect later
 ```
 
-Already-funded economics are not lost.
+Withdraw releases the currently collectible Yield attributable to withdrawn Active principal and redistributes its forfeited remainder to other eligible Active provider positions, or reclassifies it as a protocol fee when no other position meets the eligibility threshold. Previously settled principal/Quote proceeds and outstanding Yield not attributable to withdrawn principal remain claimable according to the existing rules.
 
 After Max Withdraw:
 
@@ -561,7 +567,7 @@ Withdraw & Collect
 EVM:
 
 ```text
-Multicall
+Multicall (Withdraw first, then Collect)
 ```
 
 Solana:
@@ -570,7 +576,7 @@ Solana:
 atomic instruction composition where limits permit
 ```
 
-Semantics remain two canonical actions.
+Semantics remain two canonical actions. Collect resets the timestamp; collecting first and then withdrawing at the same blockchain timestamp will fail the withdrawal time check.
 
 ---
 
@@ -638,68 +644,25 @@ Always show network context.
 
 ---
 
-# 23. Previews
+# 23. Product previews and future SDK interface
 
-Every state-changing preview includes the same automatic one-step settlement projection as execution.
+The future TypeScript SDK in `product/` will call the single deployed EVM contract through simulated OpenZeppelin `multicall(bytes[])`. Each batch starts with **one economic action** and appends getters. Do not add `settle()` before it: the action already attempts one automatic settlement step. The SDK must use the connected caller and check token balances and allowances. It must surface expected allowance, balance, maturity, cooldown, deadline, and slippage failures distinctly from a successful simulation.
 
-Supply preview:
+| SDK preview | Simulated call and decoded result |
+| --- | --- |
+| `previewSupply` | `supply` + `getEarnPosition` + `getTick`; resulting principal and market state. |
+| `previewWithdraw` | `withdraw` + `getEarnPosition` + `getTick`; immediate Asset, Working moved to Exit, vested Yield out, forfeited Yield, remaining claims. |
+| `previewCollect` | `collect` + `getEarnPosition`; Asset, Quote and vested Yield paid, remaining claims. |
+| `previewUse` | `use` + `getPosition` + `getTick`; Quote Principal, full-term Yield, frozen Close fee, maturity, resulting position. Read `nextPositionId` before the batch. |
+| `previewRepay` | `repay` + `getPosition` + `getTick`; gross accrued Yield, Asset fee, total Asset in, Quote unlocked. |
+| `previewSwap` | `swap` + `getTick`; Quote required, fee, provider proceeds. |
+| `previewClose` | `close` + `getPosition` + `getTick` (and domain getters if needed); final status and Active/Exit accounting. |
 
-```text
-Asset supplied
-resulting provider Active principal
-market Available / In Use
-```
+The SDK may use `quoteUse(tickId, assetAmount)` before approval for Quote Principal and full-term Yield. This read-only quotation uses current state and does not simulate an expired cursor settlement. Quote, simulation, and transaction execution can see different market state or timestamps. Preserve `maxFullTermYieldAsset`, `maxYieldAsset`, `maxQuoteIn`, Withdraw’s `minImmediateAssetOut`, and deadlines. Passing zero minimum and a permissive deadline keeps an unrestricted Withdraw option.
 
-Withdraw preview:
+The EVM SDK must decode `bytes[]` with each call’s ABI entry and verify that `eth_call` did not commit changes. The tests in `protocol/ethereum/test/PreviewIntegration.ts` are the reference integration workflow. The Solana adapter instead simulates the corresponding instructions with the canonical PDA/account bundle, computes any ScaleState creation cost, and decodes instruction data, events, and resulting account state. Both adapters expose the same economic preview fields, minimum-immediate-output protection, and deadlines where relevant. No production SDK implementation is part of this protocol task.
 
-```text
-current transferable provider Active principal
-requested principal
-Receive now
-Move to Resolving
-remaining transferable Active principal
-resulting Resolving principal
-```
-
-Use preview:
-
-```text
-Asset
-Quote Principal
-Current Yield
-Full-term Yield
-frozen Close Fee
-maturity
-```
-
-Repay:
-
-```text
-Asset principal
-gross Yield
-1% Yield fee
-total Asset in
-Quote unlocked
-```
-
-Swap:
-
-```text
-Asset
-Quote Principal
-1% fee
-Provider Net
-```
-
-Collect:
-
-```text
-Asset out
-Quote out
-remaining Resolving
-```
-
-Internal P/scale/generation must not be required for normal UX.
+Internal Product-Sum P/scale/generation and fractional remainders remain hidden from normal UX. A zero-value Collect must retain fractional Active and Exit entitlements for future distributions.
 
 ---
 
@@ -720,6 +683,7 @@ previewUse
 previewRepay
 previewSwap
 previewCollect
+previewClose
 
 supply
 withdraw
@@ -774,7 +738,7 @@ global history
 
 Settlement never depends on indexer/yieldlist.
 
-Connected-wallet portfolio discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`.
+Connected-wallet portfolio discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, nonzero fractional gain carry, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`. Fractional gain carry is not independently withdrawable and remains hidden from normal UX.
 
 ---
 
@@ -794,8 +758,8 @@ Review the updated amount.
 Part of your withdrawal is Resolving
 because that liquidity is currently In Use.
 
-Newly supplied liquidity cannot be
-withdrawn in the same block/slot.
+Supply or Collect restarts your timestamp.
+Withdraw requires blockchain time to advance.
 
 This position has matured and can no longer be Repaid.
 
@@ -864,7 +828,7 @@ Claimable
 8. Available portion is received immediately.
 9. In Use portion becomes Resolving.
 10. Repay/Close resolves Resolving first.
-11. Collect resolved Asset + net Yield + Quote whenever desired.
+11. Collect resolved Asset and Quote plus the currently collectible net Yield. Collect restarts remaining Yield vesting.
 ```
 
 ---

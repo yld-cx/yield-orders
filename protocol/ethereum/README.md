@@ -1,38 +1,71 @@
-# Yield Orders on Ethereum / EVM L2s
+# Yield Orders v0.2 — Ethereum, Base, Robinhood Chain
 
-Yield Orders lets suppliers post ERC-20 **Asset** liquidity at a fixed price and term. A taker either swaps against that liquidity immediately or opens a **Use** position: they receive Asset and lock **Quote**. Before maturity, the taker can repay Asset plus time accrued Asset yield to recover their Quote. At maturity, anyone can close the position and the locked Quote becomes the swap payment.
+Yield Orders pools ERC-20 **Asset** at an exact direction, price tick, and whole-day term. A taker may **Use** Asset temporarily by locking Quote, or **Swap** Asset immediately for Quote. Repay before maturity returns Asset plus elapsed Asset Yield and unlocks all Quote. At or after maturity, anyone may Close; the taker keeps Asset and the locked Quote settles to providers.
 
-The same immutable contract is intended for Ethereum Mainnet, Base, and Robinhood Chain. Each market tick is identified by a token pair, Asset direction, price tick, and duration in days. Amounts passed to the contract are **raw token units**; the price tick prices raw Quote units per raw Asset unit.
+`YieldOrders.sol` is the only deployed protocol contract. `YieldMath`, `ProductSumMath`, `Uint512`, and `TickMath` are internal libraries compiled into it. The contract has no owner, proxy, mutable fee, oracle, liquidation, or rescue function. Each chain has independent liquidity. Amounts are raw smallest ERC-20 units. Use WETH for ETH. A price tick relates **raw Quote units per raw Asset unit**; applications must account for both tokens' decimals when displaying a human price.
 
-## Connect
-
-Install `@yld-cx/ethereum-protocol` and import its published ABI. Supply the contract address for the chain you are using; no production address has been finalized yet.
+## Integration
 
 ```ts
 import yieldOrdersAbi from "@yld-cx/ethereum-protocol" with { type: "json" };
 import { getContract, type Abi } from "viem";
 
 const protocol = getContract({
-  address: protocolAddress, // 0x-prefixed address of the deployed protocol
+  address: protocolAddress,
   abi: yieldOrdersAbi as Abi,
   client: { public: publicClient, wallet: walletClient },
 });
 ```
 
-The JSON ABI is also available at `@yld-cx/ethereum-protocol/abi/YieldOrders.json`. See [YieldOrders.ts](test/YieldOrders.ts) for complete viem transactions, approvals, events, and state reads.
+No production address has been frozen or deployed. The ABI is also at `@yld-cx/ethereum-protocol/abi/YieldOrders.json`. [The Multicall integration tests](test/PreviewIntegration.ts) show exact viem simulations, result decoding, approvals, and transaction comparisons.
 
-## Use a tick
+Create a pair with `createPair(tokenA, tokenB)`, then read its ID with `getPair(tokenA, tokenB)`. Direction `0` uses the lower-address token as Asset; direction `1` uses the other token. Call `createTick(pairId, direction, priceTick, durationDays)`. These calls are permissionless and give no creator rights. The price tick quotes raw Quote per raw Asset. Duration must be positive and no greater than `106751991167300` days; a Use must also mature by timestamp `9223372036854775807`.
 
-Anyone can call `createPair(tokenA, tokenB)` and `createTick(pairId, direction, priceTick, durationDays)`. Call `getPair(tokenA, tokenB)` to obtain the canonical pair ID. Direction `0` makes the lower-address token the Asset; direction `1` makes the other token the Asset. `priceTick` is an `int32` in `[-887272, 887272]`; `durationDays` is a positive `uint64`. Pair and tick creation are permissionless and give the creator no special rights.
+| Action   | Calls and funds                                                                                                                                                                                                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Supply   | Simulate `supply` + `getEarnPosition` + `getTick`; then approve Asset and execute.                                                                                                                                                                                                           |
+| Withdraw | Simulate `withdraw(tickId, principalAmount, minImmediateAssetOut, deadline)` + `getEarnPosition` + `getTick`. Its return includes immediate Asset, Working moved to Exit, vested Yield, and forfeiture. Set `minImmediateAssetOut = 0` and a permissive deadline for unrestricted execution. |
+| Collect  | Simulate `collect` + `getEarnPosition`. Its return includes Asset, Quote, vested Yield, and remaining claims.                                                                                                                                                                                |
+| Use      | Read `quoteUse(tickId, assetAmount)` before approval for Quote Principal and full-term Yield. Approve Quote, then simulate `use` + `getPosition` + `getTick`. Read `nextPositionId` before the batch to identify the new position.                                                           |
+| Repay    | Approve Asset principal plus gross accrued Yield; simulate `repay` + `getTick` + `getPosition`. The return includes gross Yield, fee, total Asset in, and Quote unlocked.                                                                                                                    |
+| Swap     | Approve Quote; simulate `swap` + `getTick`. The return includes Quote required, fee, and provider proceeds.                                                                                                                                                                                  |
+| Close    | At maturity simulate `close` + `getPosition` + `getTick` (and `getDomain` if needed). `close` has no return value.                                                                                                                                                                           |
 
-| Goal                  | Calls and funds needed                                                                                                                                                                                                                          |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Supply Asset          | Approve the Asset token, then `previewSupply(tickId, amount)` and `supply(tickId, amount, referrer)`.                                                                                                                                           |
-| Withdraw liquidity    | Read `getEarnPosition(supplier, tickId)`, then `previewWithdraw(tickId, supplier, shares)` and `withdraw(tickId, shares)`. Shares are **not** an Asset amount. Available Asset leaves immediately; the working portion becomes an Exit claim.   |
-| Collect proceeds      | `previewCollect(tickId, supplier)` followed by `collect(tickId)` receives already-net Asset yield, Exit Asset, and Quote proceeds.                                                                                                              |
-| Open a term position  | Approve Quote, then `previewUse(tickId, assetAmount)` and `use(tickId, assetAmount, maxFullTermYieldAsset, deadline, referrer)`. The taker receives Asset and locks the quoted Quote principal. Read the `UseOpened` event for the position ID. |
-| Repay before maturity | Approve enough Asset for principal **and** accrued yield, then `previewRepay(positionId)` and `repay(positionId, maxYieldAsset)`. Only the position taker can repay; Quote is returned.                                                         |
-| Swap immediately      | Approve Quote, then `previewSwap(tickId, assetAmount)` and `swap(tickId, assetAmount, maxQuoteIn, deadline, referrer)`. This creates no term position.                                                                                          |
-| Settle at maturity    | Anyone can call `close(positionId)` or `settle(tickId)`. `settle` advances at most one position in tick order; it is safe to repeat. Repay is unavailable from maturity onward.                                                                 |
+`referrer` is optional metadata. Zero is valid. It changes no rights, fees, pricing, or settlement priority.
 
-Use `getTick`, `getPosition`, `getEarnPositions`, and `getUsePositions` to read current state and portfolio IDs. Previews include the same single maturity settlement step that a write would perform. `multicall(bytes[])` can compose actions such as withdraw and collect, but supply and withdraw cannot occur in the same block. The protocol supports exact-transfer ERC-20s; native ETH and fee-on-transfer tokens are not supported.
+### Supplier state
+
+`getTick(tickId)` shows Available, all In Use, Resolving In Use, active In Use, and Active principal. `getEarnPosition(supplier, tickId)` shows the provider's transferable whole-raw Active principal, proportional Available/In Use, Resolving principal, currently collectible balances, outstanding Yield, timestamp, and vesting progress. `getEarnPositions` enumerates supplier Tick IDs. `getUsePositions` returns every Use position ID in creation order, including Repaid and Closed positions; paginate it and call `getPosition` for current status. These views need no indexer.
+
+Each simulation is one `eth_call` to OpenZeppelin `multicall(bytes[])` with the economic action **first** and post-action getters next. Do not prepend `settle`: economic actions already attempt one cursor step. Run simulations with the actual caller, balances, allowances, and a controlled pending block when time affects the result. ERC-20 allowance/balance, maturity, cooldown, deadline, and slippage failures are expected simulation failures. `quoteUse` is read-only and does not project settlement; state can change between quotation, simulation, and inclusion.
+
+The protocol stores supplier principal at X36 precision. A position can remain discoverable while its displayed whole-raw principal is zero, because positive sub-raw principal or historical claims may still exist. The `activePrincipalX36` and `exitPrincipalX36` fields are for diagnostics; applications use whole-raw economic fields. `getDomain`, `scaleSums`, and `generationMeta` support accounting verification, not normal user flows.
+
+`withdraw` takes the lesser of the requested Asset principal and the provider's currently transferable principal. A Max withdrawal uses `type(uint256).max`; positive sub-raw principal remains owned. Withdraw requires a timestamp strictly later than the provider's last Supply or Collect. `multicall(bytes[])` supports `withdraw + collect`, `settle + collect`, and sequential taker actions; each economic subcall has its own reentrancy guard.
+
+### Yield and fees
+
+The integrated utilization curve freezes full-term Asset Yield when Use opens. Repay charges elapsed Yield with a minimum of one billable second. Repay resolves Resolving principal first; the rest returns to Active Available. Close also resolves Resolving first. Swap and Close convert principal to Quote; Close pays no Asset Yield.
+
+The immutable protocol fee is **1%** of Quote Principal on Swap and Close, and **1%** of gross Asset Yield on Repay. It accrues in `accruedProtocolFees(token)` and remains part of `tokenLiability(token)` until `collectProtocolFees(token)` transfers the balance exclusively to immutable `FEE_TO`. A failed claim reverts only the claim. Forfeited Withdraw Yield with no eligible other Active provider also accrues as an Asset fee. Repay Asset principal, Quote refunds, Withdraw principal, and Collect have no additional fee. Only net funded Yield or Quote becomes a provider claim.
+
+Funded Asset Yield vests over the Tick duration from the provider's timestamp. Supply and Collect reset that timestamp, including when Collect pays nothing. Asset principal and Quote proceeds remain immediately collectible. Swap and Close do not reset vesting. Provider checkpoints retain independent X36 fractions for Active Yield/Quote and Exit Asset/Yield/Quote, so a zero-value Collect does not discard a later whole-unit claim.
+
+Withdraw pays the vested Yield attributable to the withdrawn principal. It distributes the unvested remainder across other Active positions using their exact X36 principal, excluding the withdrawing position's retained principal. Recipients keep their existing vesting timestamps. When other Active exposure is below one raw Asset unit, the already funded remainder becomes an Asset protocol fee and leaves the Yield reserve. The [raw-unit vectors](vectors/golden-v02.json) capture the rounding and boundary cases for cross-chain integrations.
+
+A later block may change a time-dependent Repay amount or close an expired cursor position. Preserve execution-time slippage bounds and deadlines after simulation.
+
+### Token and custody policy
+
+Only exact-transfer ERC-20 tokens are supported. Native ETH, fee-on-transfer, rebasing, and callback/reentrant token behavior are unsupported. Balance checks reject observable non-exact transfers. The contract tracks aggregate `tokenLiability` and explicit per-Tick Asset/Quote reserves; physical balances must cover liabilities after every action. Donations create no claims.
+
+## Build, test, and deployment preparation
+
+```sh
+npm ci
+npm run build
+npm run typecheck
+npm test
+npm run build:production
+npm run size
+```

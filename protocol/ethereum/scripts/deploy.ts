@@ -24,6 +24,7 @@ import {
 
 const artifact = await readArtifact();
 const manifest = await readManifest();
+if (!manifest.feeTo || !manifest.rawSalt) throw new Error("Set FEE_TO and vanity salt before deployment");
 const prediction = predict(artifact, manifest.feeTo, manifest.rawSalt);
 assertManifest(manifest, prediction);
 if (getAddress(`0x${manifest.rawSalt.slice(2, 42)}`) === zeroAddress)

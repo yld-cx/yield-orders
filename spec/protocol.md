@@ -161,7 +161,7 @@ QuotePrincipal =
     ceil(assetAmount * priceX128 / 2^128)
 ```
 
-`priceTick` represents raw Quote units per raw Asset unit.
+`priceTick` represents raw Quote units per raw Asset unit **in the selected direction**. Each direction has its own independent price tick: direction 1 does not automatically invert direction 0 or reuse a canonical token1/token0 price. An integrator seeking approximately reciprocal prices across directions chooses reciprocal ticks (for example, `+100` and `-100`), subject to fixed-point rounding. Human-readable prices MUST account for both tokens' decimals.
 
 No oracle participates.
 
@@ -382,7 +382,14 @@ owedExitAsset
 owedExitYieldAsset
 owedExitQuote
 
-lastSupplyBlockOrSlot
+// persistent per-stream fractional gains, measured in X36 sub-raw units
+fractionalGainX36[0]  // Active Yield
+fractionalGainX36[1]  // Active Quote
+fractionalGainX36[2]  // Exit Asset
+fractionalGainX36[3]  // Exit Yield
+fractionalGainX36[4]  // Exit Quote
+
+timestamp
 ```
 
 Whenever a provider changes its active or Exit principal:
@@ -395,7 +402,11 @@ Whenever a provider changes its active or Exit principal:
 
 This is equivalent to closing the old accounting snapshot and opening a fresh one.
 
+Each provider × Tick also stores exactly one `timestamp` (non-negative canonical seconds). Supply and Collect set it to the current chain timestamp. Withdraw does not reset it. The timestamp governs both Yield vesting and the same-timestamp withdrawal restriction; there is no separate block/slot cooldown field.
+
 A snapshot MUST NOT be cleared merely because `floor(principalX36 / PRINCIPAL_PRECISION) == 0`. Sub-raw principal remains economically owned and continues participating in later gains until its canonical fixed-point principal reaches zero or the domain generation ends.
+
+Each `fractionalGainX36[i]` is a separate persistent carry in `[0, PRINCIPAL_PRECISION)`, not a principal balance. Realizing a gain, refreshing a snapshot, Collecting zero, or reaching zero raw principal MUST NOT discard that carry. A provider Tick with only nonzero fractional carry remains discoverable; a subsequent Supply may allow future gains to combine with the existing carry. Fractions cannot be independently withdrawn or assigned to another provider.
 
 ---
 
@@ -660,6 +671,10 @@ providerGain = gain
 ```
 
 This recurrence is exactly equal to the single mathematical floor above. It does **not** round provider gain independently per scale; every fractional remainder is retained in `R` and carried across subsequent scales.
+
+At provider synchronization, lift the same rational calculation to **X36 gain units** by using `B = providerPSnapshot` rather than `providerPSnapshot * PRINCIPAL_PRECISION`. For each of the five independent streams (Active Yield/Quote, Exit Asset/Yield/Quote), add the result to that stream’s stored fraction, credit `floor(combinedX36 / PRINCIPAL_PRECISION)` whole raw units to `owed*`, and store `combinedX36 % PRINCIPAL_PRECISION`. This normalization permits principal changes, Collect, scale changes, and generation rollover without mixing fractions from different denominators or granting past gains to new liquidity. A single checkpoint floors less than one X36 unit per stream, so across `N` checkpoints the total discarded amount is strictly below `N / 1e36` raw units per stream. Whole-unit gains MUST be preserved across repeated synchronization and Collect, subject only to the canonical precision bound.
+
+For X36 recurrence steps, `A / B` may be as large as `1e36`, so the raw-gain two-subtraction carry bound does not apply. Split `A = principalWhole * B + principalRemainder`, extract `floor(principalWhole * fraction / scalePower)` with full-precision multiplication, and carry its remainder into the two-limb numerator. The four normalized remainder terms are each below the scaled denominator, so at most **three** subtractions are needed. The exact X36 result must equal the single rational floor; separately rounding each scale or limiting the lifted carry to two is invalid.
 
 Required arithmetic bounds:
 
@@ -939,16 +954,25 @@ Therefore:
 ```text
 Swap/Close:
     ≥99% Quote → providers
-    ≤1% Quote  → FEE_TO
+    ≤1% Quote  → accrued protocol fees, claimable only to FEE_TO
 
 Repay:
     100% Asset principal → providers
     ≥99% Asset Yield     → providers
-    ≤1% Asset Yield      → FEE_TO
+    ≤1% Asset Yield      → accrued protocol fees, claimable only to FEE_TO
     100% Quote Principal → taker
 ```
 
 No minimum fee.
+
+### 15.1 Accrual and collection across chains
+
+Protocol fees accrue as separately backed claims; no economic action transfers a fee to `FEE_TO`. Fee-claim failure MUST affect only that claim, not settlement or unrelated supplier actions. Fee custody and collection granularity differ by chain without changing fee calculation or ownership:
+
+- **EVM:** `accruedProtocolFees[token]` aggregates the protocol's claim across all Ticks sharing that token. `collectProtocolFees(token)` transfers the entire accrued amount to immutable `FEE_TO` from the protocol's shared token balance. Aggregate token liability includes the fee balance exactly once, outside Tick reserves.
+- **Solana:** each Tick maintains `accrued_asset_protocol_fees` and `accrued_quote_protocol_fees`, backed respectively by its existing Asset Vault and Quote Proceeds Vault. `collect_protocol_fees(tick, denomination)` claims the full accrued balance of that Tick and denomination to immutable `FEE_TO`'s validated associated token account. The Quote Escrow Vault holds only active Use escrow: Swap deposits the full Quote Principal into Quote Proceeds, and Close moves the full Quote Principal there before separately accounting for provider proceeds and fees. No extra fee vault or cross-Tick fee-claim loop is required. A per-mint aggregate, if displayed, is the sum of per-Tick claims.
+
+On either chain, already-funded Withdraw Yield transferred into the protocol-fee balance is reclassified from provider Yield liability, not funded again. A shared token may be Asset in some Ticks and Quote in others; claims remain fully backed and do not consume another Tick's provider funds.
 
 ---
 
@@ -990,7 +1014,9 @@ Supply does not alter active P.
 
 Supply is valid while Exit exists.
 
-One-block/slot Supply→Withdraw cooldown remains.
+Set `provider.timestamp = now` after synchronizing the provider and adding the new principal. Every Supply restarts vesting of all outstanding, uncollected Yield in that provider position. The provider MAY Collect before supplying.
+
+Withdraw requires `now > provider.timestamp`; a Supply or Collect in the current timestamp therefore prevents Withdraw in that timestamp.
 
 ---
 
@@ -1136,7 +1162,7 @@ Transfers:
 ```text
 Asset → taker
 QuotePrincipal from taker
-SwapFee → FEE_TO
+SwapFee → accrued Quote protocol fees
 providerQuote → Quote proceeds custody
 ```
 
@@ -1148,12 +1174,12 @@ Exit is untouched.
 
 # 19. Withdraw
 
-Withdraw is expressed in active **Asset principal**, not shares.
+Withdraw is expressed in active **Asset principal**, not shares. Both EVM and Solana execution accept a minimum immediate Asset output and a deadline, checking the Available Asset returned against that minimum after the action's automatic settlement step. Zero minimum with a permissive deadline is unrestricted; the caller's principal request can still be capped to current transferable principal as specified below.
 
 Conceptual entry:
 
 ```text
-withdraw(tick, principalAmount)
+withdraw(tick, principalAmount, minImmediateAssetOut, deadline)
 ```
 
 Before mutation:
@@ -1179,7 +1205,7 @@ x =
     min(principalAmount, providerPrincipal)
 ```
 
-Require `x > 0`.
+Require `x > 0` and `now > provider.timestamp`.
 
 Withdraw operates only on whole raw Asset units. Any remaining positive `providerPrincipalX36 < PRINCIPAL_PRECISION` stays in the active snapshot as sub-raw accounting principal and is not discarded.
 
@@ -1235,7 +1261,45 @@ If `workingToExit > 0`:
 
 Exit P does not change when new Resolving principal joins.
 
-Transfer `availableOut` Asset to provider.
+### Yield released and redistributed on Withdraw
+
+Synchronize the provider first. Let `DproviderX36` be their active principal before withdrawal and `Y` their outstanding `owedActiveYieldAsset` (including newly realized gains). Use the canonical Yield-vesting fraction from §22.
+
+```text
+durationSeconds = tick.durationDays * SECONDS_PER_DAY
+elapsed = min(now - provider.timestamp, durationSeconds)
+yieldForWithdraw = floor(Y * (x * PRINCIPAL_PRECISION) / DproviderX36)
+yieldOut = floor(yieldForWithdraw * elapsed / durationSeconds)
+forfeitedYield = yieldForWithdraw - yieldOut
+owedActiveYieldAsset = Y - yieldForWithdraw
+```
+
+`yieldOut` is transferred with `availableOut` on this Withdraw, without an additional fee. The provider's remaining outstanding Active Yield and previously allocated Exit Yield continue under the unchanged `timestamp`. A subsequent Collect may receive their then-claimable portions.
+
+After updating the provider's Active and Exit ownership, allocate forfeited Yield to other Active provider positions at the same Tick. The withdrawing position's retained principal is excluded. Eligibility and distribution use X36 principal:
+
+```text
+remainingActive = availableSupply + workingSupply - exitWorking
+remainingProviderX36 = provider's updated active principalX36
+otherActiveX36 = remainingActive * PRINCIPAL_PRECISION - remainingProviderX36
+
+if forfeitedYield > 0 and otherActiveX36 >= PRINCIPAL_PRECISION:
+    activeYieldSum += floor(
+        forfeitedYield * activeP * PRINCIPAL_PRECISION
+        / otherActiveX36
+    )
+    refresh withdrawing provider's Active gain checkpoint
+else if forfeitedYield > 0:
+    forfeitedYield -> accrued Asset protocol fees
+```
+
+The denominator MUST retain full X36 precision, and the multiplication/division MUST use full-precision checked arithmetic. EVM, Solana, and the reference SDK MUST produce identical integer results. The eligible exposure threshold is one raw Asset unit. The withdrawing position cannot accrue its own redistribution; other eligible positions receive it using their existing vesting timestamps. Wallets are independent provider identities. Redistribution creates no new funded liability or vesting clock.
+
+Redistributed Yield is already backed by the Tick's funded Yield reserve. If no eligible other Active principal exists, reduce that reserve and increase the accrued Asset protocol-fee liability by the same amount. Ordinary fixed-point precision loss is bounded by §9; a material portion of funded Yield MUST NOT remain without a claim.
+
+`workingToExit` retains the existing Exit-first resolution rules. Future Yield funded into Exit after Withdraw follows ordinary provider Yield vesting. A provider with no Active principal can still Collect outstanding Yield, including Yield allocated before Swap/Close.
+
+Transfer `availableOut + yieldOut` Asset to the provider.
 
 ---
 
@@ -1278,7 +1342,7 @@ Transfers:
 ```text
 Asset principal + grossYield from taker → protocol
 Quote Principal → taker
-yieldFee Asset → FEE_TO
+yieldFee Asset → accrued Asset protocol fees
 ```
 
 Global state:
@@ -1375,6 +1439,8 @@ activeQuote =
     providerQuote - exitQuote
 ```
 
+This is the canonical integer allocation: Exit Quote is rounded DOWN and Active receives the exact remainder. At very small raw-unit amounts, an Exit allocation may round to zero even with positive `exitFill`; an individual provider's realized proceeds can therefore differ from the ideal continuous pro-rata fraction. The aggregate provider proceeds remain `providerQuote`. Product previews SHOULD show the actual simulation result rather than infer per-provider proceeds from the headline 1% fee.
+
 Exit portion:
 
 ```text
@@ -1412,7 +1478,7 @@ workingSupply -= x
 exitWorking -= exitFill
 ```
 
-Frozen Close fee goes to `FEE_TO`.
+Frozen Close fee accrues as a Quote-denominated protocol fee.
 
 A single Close may finalize both domains.
 
@@ -1420,41 +1486,24 @@ A single Close may finalize both domains.
 
 # 22. Collect
 
-Collect performs one settlement step and synchronizes both provider domains.
+Collect performs one settlement step and synchronizes both provider domains. Only **funded Asset Yield** is time-weighted; Exit Asset principal and active/Exit Quote proceeds remain immediately collectible.
 
-Active sync realizes:
-
-```text
-active Asset Yield
-active Swap/Close Quote
-```
-
-Exit sync realizes:
+For each provider position:
 
 ```text
-Exit Asset principal
-Exit Asset Yield
-Exit Quote
+durationSeconds = tick.durationDays * SECONDS_PER_DAY
+elapsed = min(now - provider.timestamp, durationSeconds)
+
+activeYieldOut = floor(owedActiveYieldAsset * elapsed / durationSeconds)
+exitYieldOut   = floor(owedExitYieldAsset   * elapsed / durationSeconds)
+
+totalAssetOut = owedExitAsset + activeYieldOut + exitYieldOut
+totalQuoteOut = owedActiveQuote + owedExitQuote
 ```
 
-Then:
+Transfer `totalAssetOut` and `totalQuoteOut`. Deduct **only paid** Yield from `owedActiveYieldAsset` and `owedExitYieldAsset`; retain the rest as outstanding funded claims. Clear paid Exit principal and Quote proceeds. Set `provider.timestamp = now` after each successful Collect, including a zero-value Collect, restarting vesting of every outstanding Yield balance.
 
-```text
-totalAssetOut =
-    owedActiveYieldAsset
-    + owedExitAsset
-    + owedExitYieldAsset
-
-totalQuoteOut =
-    owedActiveQuote
-    + owedExitQuote
-```
-
-Transfer and clear paid `owed*`.
-
-Collect does not change provider principal.
-
-Collect charges no fee.
+Repeated Collect at the same timestamp cannot release additional Yield. Collect does not change principal or charge a protocol fee. The timestamp remains valid even when Swap/Close or a historical generation reset has reduced Active principal to zero.
 
 ---
 
@@ -1482,11 +1531,11 @@ Quote proceeds
 
 Use/Swap may consume only `availableSupply`.
 
-Funded claims are never active liquidity.
+Funded claims are never active liquidity. Outstanding, not-yet-collectible Yield and Yield scheduled for redistribution remain covered by the existing funded Yield liability; redistribution does not mint a second claim.
 
-Fees transfer directly to immutable `FEE_TO`.
+Protocol fees accrue as independent, fully backed claims and are not mixed with active liquidity or supplier proceeds. On EVM they are separate global per-token liabilities, additional to the sum of Tick reserves. On Solana, each Tick's accrued Asset and Quote fees are held in its existing Asset and Quote Proceeds vaults respectively, additional to that Tick's supplier liabilities. The Solana Quote Escrow vault holds only active Use principal. Both chains claim fees separately to immutable `FEE_TO`; a failed fee claim does not affect ordinary market actions or settlement. No returned principal or unlocked Quote is charged.
 
-Production has no rescue / admin bypass for token-specific transfer failures. If an admitted token later changes behavior, blacklists required accounts, or otherwise violates the frozen exact-transfer assumptions, affected actions may become permanently unavailable for that Tick. **Stuck is stuck; no mutable rescue backdoor is introduced.**
+Production has no rescue / admin bypass for token-specific transfer failures. Exact-transfer balance checks only observe transfers when an action executes: a later token rebase or change in balance/transfer semantics may leave liabilities undercollateralized or halt affected actions without a preceding failed transfer. If an admitted token later changes behavior, blacklists required accounts, or otherwise violates the frozen exact-transfer assumptions, affected actions may become permanently unavailable for that Tick. **Stuck is stuck; no mutable rescue backdoor is introduced.**
 
 ---
 
@@ -1551,7 +1600,7 @@ ACTIVE mature
 → cursor += 1
 ```
 
-Every economic Tick action attempts the same one-step settlement first.
+Every economic Tick action performs at most one automatic cursor-settlement step before its economics. For `repay(positionId)` or `close(positionId)` aimed at the cursor position itself, the target action resolves that entry directly rather than separately closing it first; a non-cursor target attempts one cursor step before resolving its target. The cursor is FIFO **only for automatic expiry settlement**. A valid Repay before maturity or permissionless Close at/after maturity MAY resolve any ACTIVE Term Position out of creation order. Its proceeds fill the pooled Exit domain first using `min(position.assetAmount, exitWorking)`, regardless of `tickSeq`; a terminal cursor entry is skipped when reached. Exit is a shared principal domain, **not** a per-Use FIFO queue. No out-of-order Repay/Close may be rejected solely because its position is not at `settleCursor`.
 
 No provider loop.
 
@@ -1569,6 +1618,7 @@ A provider Tick remains discoverable while any of:
 active compounded principalX36 > 0
 Exit compounded principalX36 > 0
 any owed* > 0
+any stored fractionalGainX36[i] > 0
 unsynchronized historical gain exists
 ```
 
@@ -1600,6 +1650,9 @@ Close active Quote                    exact remainder
 Product-Sum gain increment            DOWN
 provider compounded principal         DOWN
 provider realized gains               DOWN
+Collect/Withdraw time-weighted Yield    DOWN
+Withdraw attributable Yield            DOWN
+Withdraw redistribution gain           DOWN using exact-X36 eligible principal
 ```
 
 No silent saturation.
@@ -1628,17 +1681,24 @@ At minimum:
 16. Generation reset occurs only when domain principal is zero.
 17. Historical gains survive scale/generation transitions.
 18. No provider loop exists in economic actions or settlement.
-19. The historical share-inflation/H-01 class is structurally absent.
-20. Repeated Supply→partial Swap→Supply cannot create an accounting-capacity failure.
-21. Repeated Exit join→partial resolution cannot block later Withdraw through accounting-unit inflation.
-22. P never becomes zero while domain principal is non-zero.
-23. Protocol fee is charged exactly once.
-24. Repay principal and Quote refund are fee-free.
-25. Collect is fee-free.
-26. Custody covers funded liabilities.
-27. Unsupported token behavior cannot silently create deficits.
-28. Provider synchronization is bounded by scale limits, not provider count.
-29. EVM/Solana/SDK integer results match for equivalent representable inputs.
+19. Repeated Supply→partial Swap→Supply cannot create an accounting-capacity failure.
+20. Repeated Exit join→partial resolution cannot block later Withdraw through accounting-unit inflation.
+21. P never becomes zero while domain principal is non-zero.
+22. Protocol fee is charged exactly once.
+23. Repay principal and Quote refund are fee-free.
+24. Collect is fee-free.
+25. Custody covers funded liabilities.
+26. For admitted exact-transfer, non-rebasing tokens, every successful action preserves its post-action custody invariant. Unsupported rebases, blacklists, mutable transfer behavior, or dishonest balance reporting can later create deficits or block actions; they are outside the supported-token security guarantee and there is no mutable rescue authority.
+27. Provider synchronization is bounded by scale limits, not provider count.
+28. EVM/Solana/SDK integer results match for equivalent representable inputs.
+
+29. Provider `timestamp` is reset by every Supply and Collect; Withdraw requires `now > timestamp` and does not reset it.
+30. Only funded Asset Yield vests; principal and Quote proceeds remain unrestricted by vesting.
+31. Collect releases at most the canonical time-weighted portion and cannot be compounded through repeated calls.
+32. Withdraw releases only vested Yield attributable to the withdrawn principal. Forfeited Yield is allocated using the exact X36 eligible denominator or reclassified as a backed protocol fee; the withdrawing position is excluded, and recipients retain their existing vesting timestamps. Redistribution creates no new custody liability and no material unassigned funded Yield.
+33. Historical Yield remains collectible after active principal depletion and generation rollover, subject to its timestamp.
+34. Every positive fractional-gain carry persists across zero-value Collect and principal changes, and keeps the provider Tick discoverable even when whole-raw principal and whole-raw claims are zero.
+35. Fee accrual and collection cannot consume another Tick's funded provider claims; Solana segregates each Tick's fees in its existing Asset and Quote Proceeds vaults.
 
 ---
 
@@ -1664,7 +1724,7 @@ partial withdrawal after depletion
 stale provider across scale
 stale provider across generation
 
-historical Astra H-01 sequence:
+repeated near-total depletion sequence:
 Supply
 Swap almost all
 Supply
@@ -1678,7 +1738,7 @@ no Supply capacity failure
 correct provider principal
 correct Quote gain
 
-historical Exit sequence:
+repeated Exit resolution sequence:
 Withdraw Working into Exit
 partial Repay/Close
 new Withdraw into Exit
@@ -1692,6 +1752,7 @@ correct Asset/Yield/Quote gains
 
 scale threshold boundaries
 multi-scale jump
+9+ scale changes within one generation with a passive provider; enforce the canonical fixed-point dust bound
 cross-scale gain carry vector:
 non-zero remainder from scale k
 non-zero whole + fractional contribution at k+1
@@ -1706,11 +1767,38 @@ near-maturity Repay
 exact-maturity Close
 fixed 1% fees
 Collect no double fee
+one provider timestamp per Tick; Supply and Collect reset it
+same-timestamp Supply/Collect -> Withdraw reverts
+Collect 0h / partial term / full term / repeated same timestamp
+Collect then Supply; Supply without Collect restarts outstanding vesting
+partial and full Withdraw release attributable Yield and redistribute the remainder
+remaining Active with 0 Available (all liquidity Working)
+no eligible other Active -> accrued Asset protocol fee
+partial Withdraw cannot reclaim its own forfeited Yield through retained principal
+Withdraw to Exit; later Exit Repay/Close; later Collect
+Swap/Close exhaust Active but outstanding Yield remains collectible
+forfeited Yield and custody conservation across rounding
+fractional gains across repeated synchronization/Collect
+fraction-only position remains discoverable and its carry survives later Supply
+withdrawal min-immediate-output and deadline protection on both chains
+fee recipient transfer rejection blocks fee claiming only, not settlement
+Solana per-Tick Asset/Quote fee accounting and claims across shared-mint Ticks
 
 stateful fuzzed action sequences
 ```
 
-The fuzz reference model SHOULD use high-precision rational arithmetic.
+The fuzz reference model MUST compute provider principal, funded distributions, vesting, forfeiture, protocol-fee accrual, and complete token-reserve conservation **independently** from expected-value contract events/return fields. Use high-precision rational arithmetic with explicit canonical rounding and its own model timestamps. Observed events MAY be checked against independently predicted values but MUST NOT seed the expected model state.
+
+### 29.1 Additional acceptance requirements
+
+The EVM, Solana, and reference SDK implementations MUST agree on shared raw-unit vectors covering:
+
+- Redistribution to other eligible provider positions, exclusion of the withdrawing position, and recipient vesting at its current timestamp.
+- Exact X36 allocation with fractional eligible principal, including eligibility thresholds and nearly depleted Active principal.
+- Complete settlement and claim collection, independently reconciling funded Yield, provider entitlements, protocol fees, bounded precision dust, and token reserves.
+- Independent directional Quote-per-Asset pricing, mixed token decimals, out-of-order Repay/Close, pooled Exit-first resolution, and settlement cursor advancement.
+
+Golden vectors MUST be frozen before immutable deployment.
 
 ---
 
@@ -1720,6 +1808,7 @@ The fuzz reference model SHOULD use high-precision rational arithmetic.
 Supply
 → add Asset to pooled active principal
 → snapshot P and gain sums
+→ reset provider timestamp
 
 Use
 → Available → Working
@@ -1753,10 +1842,13 @@ Withdraw
 → calculate provider compounded active principal
 → Available portion leaves now
 → Working portion becomes a fresh Exit deposit
+→ release time-weighted Yield attributable to withdrawn principal
+→ redistribute the remainder to post-withdrawal Active, or accrue an Asset protocol fee if none
 
 Collect
 → realize Product-Sum gains
-→ transfer Asset/Yield/Quote
+→ transfer available time-weighted Yield and all settled Asset/Quote
+→ retain remaining Yield and reset provider timestamp
 ```
 
 > **Return → Asset + Asset Yield. Swap → Quote.**

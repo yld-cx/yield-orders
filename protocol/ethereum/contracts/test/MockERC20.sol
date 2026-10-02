@@ -35,6 +35,19 @@ contract BalanceReducingToken is MockERC20 {
     }
 }
 
+contract BlockingRecipientToken is MockERC20 {
+    address public blockedRecipient;
+    bool public blocking = true;
+    constructor(address blockedRecipient_) MockERC20("Blocked Recipient Token", "BRT", 18) {
+        blockedRecipient = blockedRecipient_;
+    }
+    function setBlocking(bool value) external { blocking = value; }
+    function _update(address from, address to, uint256 amount) internal override {
+        if (blocking && from != address(0) && to == blockedRecipient && amount != 0) revert("BLOCKED_RECIPIENT");
+        super._update(from, to, amount);
+    }
+}
+
 contract ReentrantToken is MockERC20 {
     address public target;
     bytes public callback;

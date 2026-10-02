@@ -9,6 +9,7 @@ if (!target || !(target in NETWORKS)) throw new Error("Set YLD_NETWORK to ethere
 const network = NETWORKS[target];
 const artifact = await readArtifact();
 const manifest = await readManifest();
+if (!manifest.feeTo || !manifest.rawSalt) throw new Error("production configuration is incomplete");
 const prediction = predict(artifact, manifest.feeTo, manifest.rawSalt);
 assertManifest(manifest, prediction);
 const chain = defineChain({

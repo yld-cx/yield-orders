@@ -1,0 +1,49 @@
+{
+  "version": "0.2",
+  "unit": "raw token units; X36 values are decimal integer strings",
+  "principalPrecision": "1000000000000000000000000000000000000",
+  "withdrawal": {
+    "providerBeforeX36": "4500000000000000000000000000000000000",
+    "withdrawRaw": "4",
+    "remainingProviderX36": "500000000000000000000000000000000000",
+    "remainingActiveRaw": "2",
+    "otherActiveX36": "1500000000000000000000000000000000000",
+    "owedActiveYieldRaw": "1000000000000000001",
+    "elapsedSeconds": "7200",
+    "durationSeconds": "86400",
+    "yieldForWithdrawRaw": "888888888888888889",
+    "yieldOutRaw": "74074074074074074",
+    "forfeitedYieldRaw": "814814814814814815",
+    "activeP": "6000000000000000000000000000000000000",
+    "yieldSumIncrement": "3259259259259259260000000000000000000000000000000000000"
+  },
+  "eligibility": [
+    {
+      "otherActiveX36": "1000000000000000000000000000000000000",
+      "forfeitedYieldRaw": "814814814814814815",
+      "activeP": "6000000000000000000000000000000000000",
+      "yieldSumIncrement": "4888888888888888890000000000000000000000000000000000000",
+      "assetFeeRaw": "0"
+    },
+    {
+      "otherActiveX36": "750000000000000000000000000000000000",
+      "forfeitedYieldRaw": "814814814814814815",
+      "activeP": "6000000000000000000000000000000000000",
+      "yieldSumIncrement": "0",
+      "assetFeeRaw": "814814814814814815"
+    }
+  ],
+  "directions": [
+    { "direction": 0, "assetDecimals": 18, "quoteDecimals": 6, "priceTick": 1000, "assetRaw": "1000000", "quotePrincipalRaw": "1105166", "swapFeeRaw": "11051" },
+    { "direction": 1, "assetDecimals": 6, "quoteDecimals": 18, "priceTick": 1000, "assetRaw": "1000000", "quotePrincipalRaw": "1105166", "swapFeeRaw": "11051" }
+  ],
+  "exitFirstRepay": {
+    "returnedAssetRaw": "12",
+    "exitWorkingRaw": "7",
+    "exitFillRaw": "7",
+    "activeReturnRaw": "5",
+    "netYieldRaw": "101",
+    "exitYieldRaw": "58",
+    "activeYieldRaw": "43"
+  }
+}
