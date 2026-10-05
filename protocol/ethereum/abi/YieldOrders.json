@@ -713,7 +713,7 @@
       {
         "indexed": false,
         "internalType": "uint256",
-        "name": "forfeitedYield",
+        "name": "unvestedYield",
         "type": "uint256"
       }
     ],
@@ -2095,7 +2095,7 @@
           },
           {
             "internalType": "uint256",
-            "name": "forfeitedYield",
+            "name": "unvestedYield",
             "type": "uint256"
           }
         ],

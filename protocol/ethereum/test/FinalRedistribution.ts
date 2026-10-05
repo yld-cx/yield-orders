@@ -24,7 +24,7 @@ function fullYield(amount: bigint): bigint {
   return (TOTAL * curve + 4n * 10_000n * Q - 1n) / (4n * 10_000n * Q);
 }
 
-describe("final X36 withdrawal redistribution", async () => {
+describe("X36 withdrawal Unvested Yield accounting", async () => {
   const { viem, networkHelpers } = await network.create();
   const [fee, alice, bob, taker] = await viem.getWalletClients();
   const client = await viem.getPublicClient();
@@ -33,19 +33,13 @@ describe("final X36 withdrawal redistribution", async () => {
     const v = vectors.withdrawal;
     const attributable = (BigInt(v.owedActiveYieldRaw) * BigInt(v.withdrawRaw) * X) / BigInt(v.providerBeforeX36);
     const paid = (attributable * BigInt(v.elapsedSeconds)) / BigInt(v.durationSeconds);
-    const forfeited = attributable - paid;
+    const unvested = attributable - paid;
     assert.equal(attributable, BigInt(v.yieldForWithdrawRaw));
     assert.equal(paid, BigInt(v.yieldOutRaw));
-    assert.equal(forfeited, BigInt(v.forfeitedYieldRaw));
-    assert.equal(BigInt(v.remainingActiveRaw) * X - BigInt(v.remainingProviderX36), BigInt(v.otherActiveX36));
-    assert.equal((forfeited * BigInt(v.activeP) * X) / BigInt(v.otherActiveX36), BigInt(v.yieldSumIncrement));
-    for (const boundary of vectors.eligibility) {
-      const other = BigInt(boundary.otherActiveX36);
-      const fee = other < X ? BigInt(boundary.forfeitedYieldRaw) : 0n;
-      const increment = other < X ? 0n : (BigInt(boundary.forfeitedYieldRaw) * BigInt(boundary.activeP) * X) / other;
-      assert.equal(fee, BigInt(boundary.assetFeeRaw));
-      assert.equal(increment, BigInt(boundary.yieldSumIncrement));
-    }
+    assert.equal(unvested, BigInt(v.unvestedYieldRaw));
+    assert.equal(BigInt(v.providerBeforeX36) - BigInt(v.withdrawRaw) * X, BigInt(v.remainingProviderX36));
+    assert.equal(unvested, BigInt(v.assetFeeRaw));
+    assert.equal(BigInt(v.yieldSumIncrement), 0n);
     for (const direction of vectors.directions) {
       const numerator = BigInt(direction.assetRaw) * 10_001n ** BigInt(direction.priceTick);
       const denominator = 10_000n ** BigInt(direction.priceTick);
@@ -236,7 +230,7 @@ describe("final X36 withdrawal redistribution", async () => {
     return { ...f, model, repayFee };
   }
 
-  it("uses the exact 1.5 raw-unit denominator, excludes retained 0.5 and keeps the older wallet's vesting", async () => {
+  it("accrues Unvested Yield with fractional principal and keeps the older wallet's vesting", async () => {
     const { market, ast, tickId, model, time, deadline, repayFee } = await historicalYield(6n);
     assert.equal(model.active.principalX36(model.get(alice.account.address).active), (45n * X) / 10n);
     assert.equal(model.active.principalX36(model.get(bob.account.address).active), (15n * X) / 10n);
@@ -249,9 +243,10 @@ describe("final X36 withdrawal redistribution", async () => {
       eventName: "Withdrawn",
     })[0].args;
     assert.equal(event.yieldAssetOut, predicted.yieldOut);
-    assert.equal(event.forfeitedYield, predicted.forfeited);
-    assert.ok(predicted.forfeited > 0n);
-    assert.equal(model.active.sums.yield - beforeSum, (predicted.forfeited * model.active.P * X) / ((15n * X) / 10n));
+    assert.equal(event.unvestedYield, predicted.unvested);
+    assert.ok(predicted.unvested > 0n);
+    assert.equal(model.active.sums.yield, beforeSum);
+    assert.equal(await market.read.accruedProtocolFees([ast.address]), repayFee + predicted.unvested);
     assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
     assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).activePrincipalX36, X / 2n);
     assert.equal(
@@ -287,18 +282,18 @@ describe("final X36 withdrawal redistribution", async () => {
       assert.equal(actual.activeYieldAsset, expected.activeYield);
       assert.equal(actual.activeQuote, expected.activeQuote);
     }
-    const remainingYield = model.fundedYield - model.paidYield - model.forfeitureFees;
+    const remainingYield = model.fundedYield - model.paidYield - model.unvestedYieldFees;
     assert.ok(remainingYield >= 0n && remainingYield <= 3n, `unassigned funded Yield: ${remainingYield}`);
-    assert.equal(await market.read.tokenLiability([ast.address]), repayFee + model.available + remainingYield);
-    assert.equal(await market.read.accruedProtocolFees([ast.address]), repayFee);
+    assert.equal(await market.read.tokenLiability([ast.address]), model.assetFees + model.available + remainingYield);
+    assert.equal(await market.read.accruedProtocolFees([ast.address]), repayFee + predicted.unvested);
     assert.equal(await ast.read.balanceOf([market.address]), await market.read.tokenLiability([ast.address]));
   });
 
-  for (const [remaining, withdrawal, eligible] of [
-    [4n, 2n, true],
-    [3n, 2n, false],
+  for (const [remaining, withdrawal] of [
+    [4n, 2n],
+    [3n, 2n],
   ] as const) {
-    it(`applies the one raw-unit eligibility boundary with ${remaining} remaining raw units`, async () => {
+    it(`accrues Unvested Yield with ${remaining} remaining raw units`, async () => {
       const { market, ast, tickId, model, time, repayFee } = await historicalYield(remaining);
       const beforeSum = model.active.sums.yield;
       const hash = await market.write.withdraw([tickId, withdrawal, 0n, MAX], { account: alice.account });
@@ -308,12 +303,12 @@ describe("final X36 withdrawal redistribution", async () => {
         logs: (await client.getTransactionReceipt({ hash })).logs,
         eventName: "Withdrawn",
       })[0].args;
-      assert.equal(actual.forfeitedYield, expected.forfeited);
-      assert.ok(expected.forfeited > 0n);
+      assert.equal(actual.unvestedYield, expected.unvested);
+      assert.ok(expected.unvested > 0n);
       assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
-      assert.equal(eligible, model.active.sums.yield > beforeSum);
+      assert.equal(model.active.sums.yield, beforeSum);
       assert.equal(await market.read.accruedProtocolFees([ast.address]), model.assetFees);
-      assert.equal(model.assetFees, repayFee + (eligible ? 0n : expected.forfeited));
+      assert.equal(model.assetFees, repayFee + expected.unvested);
       assert.equal(
         await market.read.tokenLiability([ast.address]),
         model.available + model.fundedYield - model.paidYield + repayFee,
@@ -321,20 +316,21 @@ describe("final X36 withdrawal redistribution", async () => {
     });
   }
 
-  for (const [remaining, eligible] of [
+  for (const [remaining, aboveOneRaw] of [
     [10n ** 12n + 1n, true],
     [10n ** 12n - 1n, false],
   ] as const) {
-    it(`handles other ownership within 10^-12 raw units of the threshold (${eligible ? "above" : "below"})`, async () => {
+    it(`accrues Unvested Yield with other ownership just ${aboveOneRaw ? "above" : "below"} one raw unit`, async () => {
       const { market, ast, tickId, model, time } = await historicalYield(remaining, 10n ** 18n);
       const bobX36 = model.active.principalX36(model.get(bob.account.address).active);
-      assert.equal(bobX36 >= X, eligible);
+      assert.equal(bobX36 >= X, aboveOneRaw);
       const before = model.active.sums.yield;
       const hash = await market.write.withdraw([tickId, MAX, 0n, MAX], { account: alice.account });
       const expected = model.withdraw(alice.account.address, MAX, await time(hash));
-      assert.ok(expected.forfeited > 0n);
+      assert.ok(expected.unvested > 0n);
       assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
-      assert.equal(model.active.sums.yield > before, eligible);
+      assert.equal(model.active.sums.yield, before);
+      assert.equal(model.unvestedYieldFees, expected.unvested);
       assert.equal(await market.read.accruedProtocolFees([ast.address]), model.assetFees);
       assert.equal(await market.read.tokenLiability([ast.address]), model.assetLiability());
     });

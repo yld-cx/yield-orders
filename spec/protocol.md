@@ -1275,7 +1275,7 @@ If `workingToExit > 0`:
 
 Exit P does not change when new Resolving principal joins.
 
-### Yield released and redistributed on Withdraw
+### Vested and Unvested Yield on Withdraw
 
 Synchronize the provider first. Let `DproviderX36` be their active principal before withdrawal and `Y` their outstanding `owedActiveYieldAsset` (including newly realized gains). Use the canonical Yield-vesting fraction from §22.
 
@@ -1284,37 +1284,21 @@ durationSeconds = tick.durationDays * SECONDS_PER_DAY
 elapsed = min(now - provider.timestamp, durationSeconds)
 yieldForWithdraw = floor(Y * (x * PRINCIPAL_PRECISION) / DproviderX36)
 yieldOut = floor(yieldForWithdraw * elapsed / durationSeconds)
-forfeitedYield = yieldForWithdraw - yieldOut
+unvestedYield = yieldForWithdraw - yieldOut
 owedActiveYieldAsset = Y - yieldForWithdraw
 ```
 
 `yieldOut` is transferred with `availableOut` on this Withdraw, without an additional fee. The provider's remaining outstanding Active Yield and previously allocated Exit Yield continue under the unchanged `timestamp`. A subsequent Collect may receive their then-claimable portions.
 
-After updating the provider's Active and Exit ownership, allocate forfeited Yield to other Active provider positions at the same Tick. The withdrawing position's retained principal is excluded. Eligibility and distribution use X36 principal:
+Any positive Unvested Yield attributable to withdrawn principal is reclassified as Asset protocol fees. It is not redistributed through the Active Product-Sum domain.
 
 ```text
-remainingActive = availableSupply + workingSupply - exitWorking
-remainingProviderX36 = provider's updated active principalX36
-domainActiveX36 = remainingActive * PRINCIPAL_PRECISION
-require remainingProviderX36 <= domainActiveX36
-otherActiveX36 = checkedSub(domainActiveX36, remainingProviderX36)
-
-if forfeitedYield > 0 and otherActiveX36 >= PRINCIPAL_PRECISION:
-    require forfeitedYield <= MAX_ACCOUNTING_AMOUNT
-    activeYieldSum += floor(
-        forfeitedYield * activeP * PRINCIPAL_PRECISION
-        / otherActiveX36
-    )
-    refresh withdrawing provider's Active gain checkpoint
-else if forfeitedYield > 0:
-    forfeitedYield -> accrued Asset protocol fees
+if unvestedYield > 0:
+    fundedYieldReserve -= unvestedYield
+    accrued Asset protocol fees += unvestedYield
 ```
 
-Redistribution above `MAX_ACCOUNTING_AMOUNT` MUST revert the entire Withdraw using the canonical amount-bound error. This bound applies only when eligible other Active principal exists.
-
-The `otherActiveX36` subtraction MUST be checked. `remainingProviderX36 > domainActiveX36` is an invariant violation and MUST hard-revert; it MUST NOT be interpreted as zero eligible liquidity or reclassified as a protocol fee. The denominator MUST retain full X36 precision, and the multiplication/division MUST use full-precision checked arithmetic. EVM, Solana, and the reference SDK MUST produce identical integer results. The eligible exposure threshold is one raw Asset unit. The withdrawing position cannot accrue its own redistribution; other eligible positions receive it using their existing vesting timestamps. Wallets are independent provider identities. Redistribution creates no new funded liability or vesting clock.
-
-Redistributed Yield is already backed by the Tick's funded Yield reserve. If no eligible other Active principal exists, reduce that reserve and increase the accrued Asset protocol-fee liability by the same amount. Ordinary fixed-point precision loss is bounded by §9; a material portion of funded Yield MUST NOT remain without a claim.
+Unvested Yield is already funded. Reclassification reduces the funded Yield reserve and increases the Asset protocol-fee liability by the same amount, without creating a new liability or vesting clock. The Active Yield sum is unchanged; no provider eligibility calculation or single-distribution amount bound applies to reclassification.
 
 `workingToExit` retains the existing Exit-first resolution rules. Future Yield funded into Exit after Withdraw follows ordinary provider Yield vesting. A provider with no Active principal can still Collect outstanding Yield, including Yield allocated before Swap/Close.
 
@@ -1554,7 +1538,7 @@ Quote proceeds
 
 Use/Swap may consume only `availableSupply`.
 
-Funded claims are never active liquidity. Outstanding, not-yet-collectible Yield and Yield scheduled for redistribution remain covered by the existing funded Yield liability; redistribution does not mint a second claim.
+Funded claims are never active liquidity. Outstanding, not-yet-collectible Yield remains covered by the existing funded Yield liability. Withdraw Unvested Yield moves that liability to Asset protocol fees without creating a second claim.
 
 Protocol fees accrue as independent, fully backed claims and are not mixed with active liquidity or supplier proceeds. On EVM they are separate global per-token liabilities, additional to the sum of Tick reserves. On Solana, each Tick's accrued Asset and Quote fees are held in its existing Asset and Quote Proceeds vaults respectively, additional to that Tick's supplier liabilities. The Solana Quote Escrow vault holds only active Use principal. Both chains claim fees separately to immutable `FEE_TO`; a failed fee claim does not affect ordinary market actions or settlement. No returned principal or unlocked Quote is charged.
 
@@ -1727,7 +1711,6 @@ provider compounded principal         DOWN
 provider realized gains               DOWN
 Collect/Withdraw time-weighted Yield    DOWN
 Withdraw attributable Yield            DOWN
-Withdraw redistribution gain           DOWN using exact-X36 eligible principal
 ```
 
 No silent saturation.
@@ -1770,7 +1753,7 @@ At minimum:
 29. Provider `timestamp` is reset by every Supply and Collect; Withdraw requires `now > timestamp` and does not reset it.
 30. Only funded Asset Yield vests; principal and Quote proceeds remain unrestricted by vesting.
 31. Collect releases at most the canonical time-weighted portion and cannot be compounded through repeated calls.
-32. Withdraw releases only vested Yield attributable to the withdrawn principal. Forfeited Yield is allocated using the exact X36 eligible denominator or reclassified as a backed protocol fee; the withdrawing position is excluded, and recipients retain their existing vesting timestamps. Redistribution creates no new custody liability and no material unassigned funded Yield.
+32. Withdraw releases only vested Yield attributable to the withdrawn principal. All positive Unvested Yield is reclassified as a backed Asset protocol fee, without funding the Active Product-Sum domain or creating a new custody liability.
 33. Historical Yield remains collectible after active principal depletion and generation rollover, subject to its timestamp.
 34. Every positive fractional-gain carry persists across zero-value Collect and principal changes, and keeps the provider Tick discoverable even when whole-raw principal and whole-raw claims are zero.
 35. Fee accrual and collection cannot consume another Tick's funded provider claims; Solana segregates each Tick's fees in its existing Asset and Quote Proceeds vaults.
@@ -1851,18 +1834,18 @@ one provider timestamp per Tick; Supply and Collect reset it
 same-timestamp Supply/Collect -> Withdraw reverts
 Collect 0h / partial term / full term / repeated same timestamp
 Collect then Supply; Supply without Collect restarts outstanding vesting
-partial and full Withdraw release attributable Yield and redistribute the remainder
+partial and full Withdraw release attributable vested Yield and accrue all Unvested Yield as Asset protocol fees
 remaining Active with 0 Available (all liquidity Working)
-no eligible other Active -> accrued Asset protocol fee
-partial Withdraw cannot reclaim its own forfeited Yield through retained principal
+all Unvested Withdraw Yield -> accrued Asset protocol fee
+partial Withdraw cannot reclaim its own Unvested Yield through retained principal
 Withdraw to Exit; later Exit Repay/Close; later Collect
 Swap/Close exhaust Active but outstanding Yield remains collectible
-forfeited Yield and custody conservation across rounding
+Unvested Yield and custody conservation across rounding
 fractional gains across repeated synchronization/Collect
 fraction-only position remains discoverable and its carry survives later Supply
 withdrawal min-immediate-output and deadline protection on both chains
 Withdraw with positive principalAmount but providerPrincipal == 0 reverts after x=min(...)
-Withdraw redistribution checked subtraction: remainingProviderX36 > domainActiveX36 hard-reverts
+Product-Sum rounding remainder cannot affect Withdraw Unvested Yield accounting
 Use with FullTermYieldAsset == 0 rejects before state mutation on both chains
 fee recipient transfer rejection blocks fee claiming only, not settlement
 Solana per-Tick Asset/Quote fee accounting and claims across shared-mint Ticks
@@ -1887,14 +1870,14 @@ direct caller cannot omit / bypass mandatory settlement path
 stateful fuzzed action sequences
 ```
 
-The fuzz reference model MUST compute provider principal, funded distributions, vesting, forfeiture, protocol-fee accrual, and complete token-reserve conservation **independently** from expected-value contract events/return fields. Use high-precision rational arithmetic with explicit canonical rounding and its own model timestamps. Observed events MAY be checked against independently predicted values but MUST NOT seed the expected model state.
+The fuzz reference model MUST compute provider principal, funded distributions, vesting, Unvested Yield, protocol-fee accrual, and complete token-reserve conservation **independently** from expected-value contract events/return fields. Use high-precision rational arithmetic with explicit canonical rounding and its own model timestamps. Observed events MAY be checked against independently predicted values but MUST NOT seed the expected model state.
 
 ### 29.1 Additional acceptance requirements
 
 The EVM, Solana, and reference SDK implementations MUST agree on shared raw-unit vectors covering:
 
-- Redistribution to other eligible provider positions, exclusion of the withdrawing position, and recipient vesting at its current timestamp.
-- Exact X36 allocation with fractional eligible principal, including eligibility thresholds and nearly depleted Active principal.
+- All positive Unvested Yield accrues as Asset protocol fees, leaving Active Yield sums and provider timestamps unchanged.
+- Unvested Yield accounting with fractional principal and nearly depleted Active principal, including the Product-Sum rounding remainder sequence.
 - Complete settlement and claim collection, independently reconciling funded Yield, provider entitlements, protocol fees, bounded precision dust, and token reserves.
 - Cursor gaps created by out-of-order Repay/Close, including many removed entries; every action advances at most one cursor sequence and remains O(1).
 - Executable EVM/Solana parity vectors restricted to the common native token-amount range, including Solana `u64` limits.
@@ -1948,7 +1931,7 @@ Withdraw
 → Available portion leaves now
 → Working portion becomes a fresh Exit deposit
 → release time-weighted Yield attributable to withdrawn principal
-→ redistribute the remainder to post-withdrawal Active, or accrue an Asset protocol fee if none
+→ accrue the unvested remainder as an Asset protocol fee
 
 Collect
 → realize Product-Sum gains
