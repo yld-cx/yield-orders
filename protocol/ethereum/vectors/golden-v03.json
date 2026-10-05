@@ -7,32 +7,15 @@
     "withdrawRaw": "4",
     "remainingProviderX36": "500000000000000000000000000000000000",
     "remainingActiveRaw": "2",
-    "otherActiveX36": "1500000000000000000000000000000000000",
     "owedActiveYieldRaw": "1000000000000000001",
     "elapsedSeconds": "7200",
     "durationSeconds": "86400",
     "yieldForWithdrawRaw": "888888888888888889",
     "yieldOutRaw": "74074074074074074",
-    "forfeitedYieldRaw": "814814814814814815",
-    "activeP": "6000000000000000000000000000000000000",
-    "yieldSumIncrement": "3259259259259259260000000000000000000000000000000000000"
+    "unvestedYieldRaw": "814814814814814815",
+    "yieldSumIncrement": "0",
+    "assetFeeRaw": "814814814814814815"
   },
-  "eligibility": [
-    {
-      "otherActiveX36": "1000000000000000000000000000000000000",
-      "forfeitedYieldRaw": "814814814814814815",
-      "activeP": "6000000000000000000000000000000000000",
-      "yieldSumIncrement": "4888888888888888890000000000000000000000000000000000000",
-      "assetFeeRaw": "0"
-    },
-    {
-      "otherActiveX36": "750000000000000000000000000000000000",
-      "forfeitedYieldRaw": "814814814814814815",
-      "activeP": "6000000000000000000000000000000000000",
-      "yieldSumIncrement": "0",
-      "assetFeeRaw": "814814814814814815"
-    }
-  ],
   "directions": [
     {
       "direction": 0,

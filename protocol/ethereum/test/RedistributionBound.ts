@@ -8,7 +8,7 @@ const X = 10n ** 36n;
 const DAY = 86_400n;
 const UNLIMITED = (1n << 256n) - 1n;
 
-describe("L-01 Withdraw redistribution bound", async () => {
+describe("Withdraw Unvested Yield fee reclassification across the accounting amount bound", async () => {
   const { viem, networkHelpers } = await network.create();
   const [fee, alice, bob, taker] = await viem.getWalletClients();
   const client = await viem.getPublicClient();
@@ -48,7 +48,7 @@ describe("L-01 Withdraw redistribution bound", async () => {
     const position = await market.read.getEarnPosition([alice.account.address, id]);
     assert.ok(position.outstandingActiveYieldAsset > M);
     const nextTime = (await client.getBlock()).timestamp + 1n;
-    const forfeiture = (amount: bigint) => {
+    const unvestedYield = (amount: bigint) => {
       const attributable = (position.outstandingActiveYieldAsset * amount * X) / position.activePrincipalX36;
       const vested = (attributable * (nextTime - position.timestamp)) / (300n * DAY);
       return attributable - vested;
@@ -58,31 +58,17 @@ describe("L-01 Withdraw redistribution bound", async () => {
         high = position.activePrincipal;
       while (low < high) {
         const middle = (low + high) / 2n;
-        if (forfeiture(middle) >= target) high = middle;
+        if (unvestedYield(middle) >= target) high = middle;
         else low = middle + 1n;
       }
       return low;
     };
-    const state = async () => ({
-      tick: await market.read.getTick([id]),
-      active: await market.read.getDomain([id, 0]),
-      earnAlice: await market.read.getEarnPosition([alice.account.address, id]),
-      earnBob: await market.read.getEarnPosition([bob.account.address, id]),
-      assetBalance: await asset.read.balanceOf([market.address]),
-      quoteBalance: await quote.read.balanceOf([market.address]),
-      aliceAsset: await asset.read.balanceOf([alice.account.address]),
-      bobAsset: await asset.read.balanceOf([bob.account.address]),
-      assetLiability: await market.read.tokenLiability([asset.address]),
-      quoteLiability: await market.read.tokenLiability([quote.address]),
-      assetFees: await market.read.accruedProtocolFees([asset.address]),
-      nextPositionId: await market.read.nextPositionId(),
-    });
-    return { asset, quote, market, id, position, nextTime, forfeiture, amountAtLeast, state };
+    return { asset, quote, market, id, position, nextTime, unvestedYield, amountAtLeast };
   }
 
   for (const boundary of ["below", "equal", "above"] as const) {
     it(`${boundary} MAX_ACCOUNTING_AMOUNT`, async () => {
-      const { asset, quote, market, id, position, nextTime, forfeiture, amountAtLeast, state } =
+      const { asset, quote, market, id, position, nextTime, unvestedYield, amountAtLeast } =
         await networkHelpers.loadFixture(reproduction);
       const amount =
         boundary === "above"
@@ -91,40 +77,34 @@ describe("L-01 Withdraw redistribution bound", async () => {
             ? amountAtLeast(M)
             : amountAtLeast(M) - 1n;
       assert.ok(amount > 0n);
-      const expected = forfeiture(amount);
+      const expected = unvestedYield(amount);
       if (boundary === "below") assert.ok(expected < M);
       if (boundary === "equal") assert.equal(expected, M);
       if (boundary === "above") assert.ok(expected > M);
       await networkHelpers.time.setNextBlockTimestamp(Number(nextTime));
-      if (boundary === "above") {
-        const before = await state();
-        await assert.rejects(
-          market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account }),
-          /InvalidInput/,
-        );
-        assert.deepEqual(await state(), before, "reverted Withdraw changes no economic or custody state");
-        await networkHelpers.time.increase(Number(300n * DAY));
-        const claim = await market.read.getEarnPosition([alice.account.address, id]);
-        assert.equal(claim.claimableActiveYieldAsset, claim.outstandingActiveYieldAsset);
-        const aliceBefore = (await asset.read.balanceOf([alice.account.address])) as bigint;
-        await market.write.collect([id], { account: alice.account });
-        assert.equal(
-          ((await asset.read.balanceOf([alice.account.address])) as bigint) - aliceBefore,
-          claim.outstandingActiveYieldAsset,
-        );
-        await market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account });
-        assert.equal((await market.read.getEarnPosition([alice.account.address, id])).outstandingActiveYieldAsset, 0n);
-      } else {
-        const hash = await market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account });
-        const event = parseEventLogs({
-          abi: market.abi,
-          logs: (await client.getTransactionReceipt({ hash })).logs,
-          eventName: "Withdrawn",
-        })[0].args;
-        assert.equal(event.forfeitedYield, expected);
-        assert.equal(await asset.read.balanceOf([market.address]), await market.read.tokenLiability([asset.address]));
-        assert.equal(await quote.read.balanceOf([market.address]), await market.read.tokenLiability([quote.address]));
-      }
+      const sumBefore = (await market.read.getDomain([id, 0])).yieldSum;
+      const feeBefore = await market.read.accruedProtocolFees([asset.address]);
+      const hash = await market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account });
+      const event = parseEventLogs({
+        abi: market.abi,
+        logs: (await client.getTransactionReceipt({ hash })).logs,
+        eventName: "Withdrawn",
+      })[0].args;
+      assert.equal(event.unvestedYield, expected);
+      assert.equal((await market.read.getDomain([id, 0])).yieldSum, sumBefore);
+      assert.equal((await market.read.accruedProtocolFees([asset.address])) - feeBefore, expected);
+      assert.equal(await asset.read.balanceOf([market.address]), await market.read.tokenLiability([asset.address]));
+      assert.equal(await quote.read.balanceOf([market.address]), await market.read.tokenLiability([quote.address]));
+      await networkHelpers.time.increase(Number(300n * DAY));
+      const claim = await market.read.getEarnPosition([alice.account.address, id]);
+      assert.equal(claim.claimableActiveYieldAsset, claim.outstandingActiveYieldAsset);
+      const aliceBefore = (await asset.read.balanceOf([alice.account.address])) as bigint;
+      await market.write.collect([id], { account: alice.account });
+      assert.equal(
+        ((await asset.read.balanceOf([alice.account.address])) as bigint) - aliceBefore,
+        claim.outstandingActiveYieldAsset,
+      );
+      assert.equal((await market.read.getEarnPosition([alice.account.address, id])).outstandingActiveYieldAsset, 0n);
     });
   }
 });

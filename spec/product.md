@@ -504,13 +504,13 @@ Withdraw                 50%
 
 Receive principal now   200 TOKEN
 Collectible Yield out   [preview] TOKEN
-Forfeited Yield         [preview] TOKEN
+Unvested Yield          [preview] TOKEN
 Move to Resolving       300 TOKEN-equivalent
 ```
 
 Explanation:
 
-> Available liquidity and vested Yield attributable to withdrawn principal are received now. Unvested Yield attributable to the withdrawal is forfeited: it is allocated to other eligible Active provider positions or becomes a protocol fee if none qualify. Recipients use their existing Yield vesting schedules. In Use principal moves to Resolving; Repay resolves it as Asset + Yield and Close as Quote.
+> Available liquidity and vested Yield attributable to withdrawn principal are received now. Unvested Yield attributable to the withdrawal becomes an Asset protocol fee. In Use principal moves to Resolving; Repay resolves it as Asset + Yield and Close as Quote.
 
 For Max:
 
@@ -561,7 +561,7 @@ Withdraw first
 Collect later
 ```
 
-Withdraw releases the currently collectible Yield attributable to withdrawn Active principal and redistributes its forfeited remainder to other eligible Active provider positions, or reclassifies it as a protocol fee when no other position meets the eligibility threshold. Previously settled principal/Quote proceeds and outstanding Yield not attributable to withdrawn principal remain claimable according to the existing rules.
+Withdraw releases the currently collectible Yield attributable to withdrawn Active principal and reclassifies its unvested remainder as an Asset protocol fee. Previously settled principal/Quote proceeds and outstanding Yield not attributable to withdrawn principal remain claimable according to the existing rules.
 
 After Max Withdraw:
 
@@ -685,7 +685,7 @@ For EVM, previews use OpenZeppelin `multicall(bytes[])` in `eth_call` with the c
 | SDK preview | Simulated call and decoded result |
 | --- | --- |
 | `previewSupply` | `supply` + `getEarnPosition` + `getTick`; resulting principal and market state. |
-| `previewWithdraw` | `withdraw` + `getEarnPosition` + `getTick`; immediate Asset, Working moved to Exit, vested Yield out, forfeited Yield, remaining claims. |
+| `previewWithdraw` | `withdraw` + `getEarnPosition` + `getTick`; immediate Asset, Working moved to Exit, vested Yield out, Unvested Yield, remaining claims. |
 | `previewCollect` | `collect` + `getEarnPosition`; Asset, Quote and vested Yield paid, remaining claims. |
 | `previewUse` | `use` + `getPosition` + `getTick`; Quote Principal, full-term Yield, frozen Close fee, maturity, resulting ACTIVE position. Read `nextPositionId` before the EVM batch. |
 | `previewRepay` | `repay` return data + `getTick` / domain getters as needed; gross accrued Yield, Asset fee, total Asset in, Quote unlocked. The Term Position is deleted by the simulated action. |

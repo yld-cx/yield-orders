@@ -396,7 +396,7 @@ Quote Proceeds holds active and Exit Swap/Close claims **plus this Tick's accrue
 The Tick stores `accrued_asset_protocol_fees` and `accrued_quote_protocol_fees`; there is no global custody account, additional fee vault, or requirement to touch another Tick's vault. A token used in multiple Ticks or in different directions has independent fee balances in each Tick. Any protocol-level per-mint total is an offchain sum of the corresponding Tick fields.
 
 - **Repay:** the taker's Asset principal plus gross Yield enters this Tick's Asset Vault. Fund only net Yield for providers; increment `accrued_asset_protocol_fees` by the Asset-denominated 1% Yield fee.
-- **Withdraw with no eligible other Active:** transfer the already-funded forfeited Yield from provider Yield liability to `accrued_asset_protocol_fees` in the *same* Asset Vault. No additional token transfer or newly funded liability is created.
+- **Withdraw Unvested Yield:** transfer the already-funded Unvested Yield from provider Yield liability to `accrued_asset_protocol_fees` in the *same* Asset Vault. No additional token transfer or newly funded liability is created.
 - **Swap:** the taker's entire Quote Principal enters this Tick's Quote Proceeds Vault. Provider net Quote is reserved for providers; the Quote fee increments `accrued_quote_protocol_fees`.
 - **Close:** move the full frozen Quote Principal from this Tick's Quote Escrow Vault to its Quote Proceeds Vault. Reserve only provider net Quote for providers; increment `accrued_quote_protocol_fees` by the frozen Close fee. Do not transfer any fee to `FEE_TO` during Close or automatic settlement.
 
@@ -598,20 +598,20 @@ A positive sub-raw remainder remains snapshotted.
 
 If `working_to_exit > 0`, add `working_to_exit * PRINCIPAL_PRECISION` to synchronized Exit principal_x36 and refresh Exit snapshot.
 
-After provider synchronization, release and redistribute outstanding Active Yield attributable to the withdrawn principal using the exact formula in `spec/protocol.md` §19:
+After provider synchronization, release vested outstanding Active Yield attributable to the withdrawn principal and accrue the unvested remainder as Asset protocol fees using the exact formula in `spec/protocol.md` §19:
 
 ```text
 duration_seconds = duration_days * SECONDS_PER_DAY
 yield_for_withdraw = floor(owed_active_yield_asset * (x * PRINCIPAL_PRECISION) / provider_principal_x36)
 elapsed = min(Clock.unix_timestamp - timestamp, duration_days * SECONDS_PER_DAY)
 yield_asset_out = floor(yield_for_withdraw * elapsed / duration_seconds)
-forfeited_yield = yield_for_withdraw - yield_asset_out
+unvested_yield = yield_for_withdraw - yield_asset_out
 owed_active_yield_asset -= yield_for_withdraw
 ```
 
-Apply canonical §19 X36 redistribution. After withdrawing principal, calculate `domain_active_x36 = active_principal * PRINCIPAL_PRECISION`, require `remaining_provider_principal_x36 <= domain_active_x36`, then calculate `other_active_x36 = domain_active_x36 - remaining_provider_principal_x36` with checked subtraction. An invariant violation MUST hard-revert and MUST NOT be treated as zero eligibility or converted to protocol fees. For positive `forfeited_yield`, if `other_active_x36 >= PRINCIPAL_PRECISION`, increase the Active Yield sum by `floor(forfeited_yield * active_P * PRINCIPAL_PRECISION / other_active_x36)` using checked wide arithmetic; otherwise reclassify the amount as this Tick's accrued Asset protocol fees and reduce its funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding; other eligible positions retain their existing vesting timestamps. The integer result MUST match EVM. No additional funded liability, fee-recipient ATA or vesting state is created. Preserve outstanding Exit Yield and do not reset `timestamp`.
+Any positive Unvested Yield attributable to withdrawn principal is reclassified as Asset protocol fees. It is not redistributed through the Active Product-Sum domain. Reduce the funded Yield reserve by `unvested_yield` and increase this Tick's `accrued_asset_protocol_fees` equally. No additional funded liability, fee-recipient ATA or vesting state is created. Preserve outstanding Exit Yield and do not reset `timestamp`.
 
-Transfer `available_out + yield_asset_out` from Asset Vault. Previews and events MUST surface `yield_asset_out` and `forfeited_yield`.
+Transfer `available_out + yield_asset_out` from Asset Vault. Previews and events MUST surface `yield_asset_out` and `unvested_yield`.
 
 ---
 
@@ -994,7 +994,7 @@ scale transitions
 gain sums
 provider compounded principal
 provider realized gains
-Yield vesting / Withdraw forfeiture / redistribution
+Yield vesting / Withdraw Unvested Yield / protocol fees
 Withdraw min-immediate-Asset and deadline semantics
 per-Tick protocol-fee amounts and claimable backing, aggregated to equivalent per-mint economics
 
@@ -1005,7 +1005,7 @@ active-only TermPosition lifecycle
 one-sequence bounded cursor progression
 ```
 
-Publish shared raw-unit golden vectors for directional price ticks, X36 forfeiture distribution, eligibility boundaries, vesting, Exit resolution and final reserve conservation.
+Publish shared raw-unit golden vectors for directional price ticks, X36 withdrawal Unvested Yield reclassification, vesting, Exit resolution and final reserve conservation.
 
 
 
@@ -1038,19 +1038,19 @@ transaction composition
 cross-chain Product-Sum vectors restricted to Solana-representable token amounts for executable parity cases
 Use rejects zero full-term Yield before PDA creation/token mutation
 Withdraw rejects x == 0 after whole-raw min calculation
-Withdraw redistribution invariant violation hard-reverts on checked subtraction
+Product-Sum rounding remainder cannot affect Withdraw Unvested Yield accounting
 one provider timestamp per Tick; Supply and Collect reset it
 same-timestamp Withdraw rejection
 partial/full-term Collect and repeat Collect at same timestamp
-partial/full Withdraw Yield release and post-withdrawal redistribution
-Active entirely Working, no eligible other Active -> accrued Asset protocol fee
-repeated partial Withdraw cannot reclaim forfeited Yield through residual Active
+partial/full Withdraw Yield release and Unvested Yield accrued as Asset protocol fees
+Active entirely Working, Unvested Yield -> accrued Asset protocol fee
+repeated partial Withdraw cannot reclaim Unvested Yield through residual Active
 historical Yield collectible after Swap/Close and generation rollover
-cross-chain vesting/forfeiture/rounding golden vectors
-redistribution excludes withdrawing position; eligible recipients retain their vesting timestamps
-exact-X36 redistribution with fractional eligible principal and eligibility boundaries
+cross-chain vesting/Unvested Yield/rounding golden vectors
+Withdraw Unvested Yield leaves Active Yield sums and all provider timestamps unchanged
+Withdraw Unvested Yield accounting with fractional principal and Product-Sum rounding remainder
 complete pool cleanup independently reconciles provider gains, precision dust, Tick reserves, fees and vault balances
-independently calculated vesting/forfeiture timestamps and reserve reference state; never reuse contract outputs as expected values
+independently calculated vesting/Unvested Yield timestamps and reserve reference state; never reuse contract outputs as expected values
 both direction price ticks with decimal-adjusted reciprocal vectors; out-of-order Repay/Close and cursor terminal skips
 passive provider across 9+ scale transitions
 1-raw + 1-raw fractional-principal preservation

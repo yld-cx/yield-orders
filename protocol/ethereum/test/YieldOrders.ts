@@ -520,34 +520,6 @@ describe("Yield Orders Product-Sum", async () => {
     await assert.rejects(market.write.withdraw([tickId, max], { account: a.account }), /InvalidInput/);
   });
 
-  it("hard-reverts Withdraw if the checked X36 domain invariant is corrupted", async () => {
-    const { market, tickId } = await networkHelpers.loadFixture(setup);
-    await market.write.supply([tickId, 100n * E, zeroAddress], { account: a.account });
-    await networkHelpers.time.increase(1);
-    // Locate the first word of the nested provider mapping without depending on
-    // its compiler-assigned root slot. Valid actions cannot create this fault.
-    let providerSlot: `0x${string}` | undefined;
-    for (let mappingSlot = 0n; mappingSlot < 32n; mappingSlot++) {
-      const providerOuter = BigInt(
-        keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [tickId, mappingSlot])),
-      );
-      const candidate = keccak256(
-        encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [a.account.address, providerOuter]),
-      );
-      const word = await client.getStorageAt({ address: market.address, slot: candidate });
-      if (BigInt(word ?? "0x0") === 100n * E * X) {
-        providerSlot = candidate;
-        break;
-      }
-    }
-    assert.ok(providerSlot, "provider principal storage word found");
-    await networkHelpers.setStorageAt(market.address, providerSlot, 101n * E * X);
-    assert.equal((await market.read.getEarnPosition([a.account.address, tickId])).activePrincipal, 101n * E);
-    const before = await market.read.getTick([tickId]);
-    await assert.rejects(market.write.withdraw([tickId, E], { account: a.account }), /Invariant/);
-    assert.deepEqual(await market.read.getTick([tickId]), before);
-  });
-
   it("charges each frozen 1% fee exactly once and never charges Collect", async () => {
     const { market, ast, quo, tickId, deadline } = await networkHelpers.loadFixture(setup);
     await market.write.supply([tickId, 1000n * E, zeroAddress], { account: a.account });
@@ -909,7 +881,7 @@ describe("Yield Orders Product-Sum", async () => {
             const withdrawn = model.withdraw(withdrawer.account.address, requested, now);
             const event = parseEventLogs({ abi, logs: receipt.logs, eventName: "Withdrawn" })[0].args;
             assert.equal(event.yieldAssetOut, withdrawn.yieldOut);
-            assert.equal(event.forfeitedYield, withdrawn.forfeited);
+            assert.equal(event.unvestedYield, withdrawn.unvested);
             assert.equal((await market.read.getTick([tickId])).activePrincipal, beforePrincipal - withdrawn.x);
             assert.equal(
               (await market.read.getEarnPosition([withdrawer.account.address, tickId])).activePrincipalX36,
@@ -1050,7 +1022,7 @@ describe("Yield Orders Product-Sum", async () => {
         // With no escrow or fees, liability is exactly the remaining reserves and principal.
         assert.equal(
           await market.read.tokenLiability([ast.address]),
-          model.available + model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees,
+          model.available + model.exitAssetReserve + model.fundedYield - model.paidYield - model.unvestedYieldFees,
         );
         assert.equal(
           await market.read.tokenLiability([quo.address]),
@@ -1059,7 +1031,7 @@ describe("Yield Orders Product-Sum", async () => {
         assert.ok(model.available <= BigInt(providers.length), "only fixed-point principal dust may remain");
         const dustLimit = BigInt(providers.length) * BigInt(positions.size + 24);
         assert.ok(
-          model.exitAssetReserve + model.fundedYield - model.paidYield - model.forfeitureFees <= dustLimit,
+          model.exitAssetReserve + model.fundedYield - model.paidYield - model.unvestedYieldFees <= dustLimit,
           "unclaimed Asset reserves stay within per-distribution fixed-point dust",
         );
         assert.ok(

@@ -157,7 +157,7 @@ export class TickModel {
   quoteFees = 0n;
   fundedYield = 0n;
   paidYield = 0n;
-  forfeitureFees = 0n;
+  unvestedYieldFees = 0n;
   exitAssetReserve = 0n;
   activeQuoteReserve = 0n;
   exitQuoteReserve = 0n;
@@ -206,7 +206,7 @@ export class TickModel {
     const attributable = x === 0n ? 0n : (a.owedActiveYield * x * X) / beforeX36;
     const elapsed = min(now - a.timestamp, duration);
     const yieldOut = (attributable * elapsed) / duration;
-    const forfeited = attributable - yieldOut;
+    const unvested = attributable - yieldOut;
     a.owedActiveYield -= attributable;
     const availableOut = (x * this.available) / this.active.principal;
     const workingToExit = x - availableOut;
@@ -217,18 +217,12 @@ export class TickModel {
     a.active = this.active.take(a.active.initial - x * X);
     a.exit = this.exit.take(a.exit.initial + workingToExit * X);
     this.active.finishEmpty();
-    if (forfeited > 0n) {
-      const otherX36 = this.active.principal * X - a.active.initial;
-      if (otherX36 >= X) {
-        this.active.sums.yield += (forfeited * this.active.P * X) / otherX36;
-        a.active.sums.yield = this.active.sums.yield;
-      } else {
-        this.assetFees += forfeited;
-        this.forfeitureFees += forfeited;
-      }
+    if (unvested > 0n) {
+      this.assetFees += unvested;
+      this.unvestedYieldFees += unvested;
     }
     this.paidYield += yieldOut;
-    return { x, availableOut, workingToExit, yieldOut, forfeited };
+    return { x, availableOut, workingToExit, yieldOut, unvested };
   }
   use(x: bigint) {
     this.available -= x;
@@ -295,7 +289,12 @@ export class TickModel {
   }
   assetLiability() {
     return (
-      this.available + this.exitAssetReserve + this.fundedYield - this.paidYield - this.forfeitureFees + this.assetFees
+      this.available +
+      this.exitAssetReserve +
+      this.fundedYield -
+      this.paidYield -
+      this.unvestedYieldFees +
+      this.assetFees
     );
   }
   quoteLiability() {

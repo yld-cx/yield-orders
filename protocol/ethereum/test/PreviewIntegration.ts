@@ -141,7 +141,7 @@ describe("Multicall product previews", async () => {
     assert.equal(withdrawalEvent.availableAssetOut, withdraw[0].availableAssetOut);
     assert.equal(withdrawalEvent.workingToExit, withdraw[0].workingToExit);
     assert.equal(withdrawalEvent.yieldAssetOut, withdraw[0].yieldAssetOut);
-    assert.equal(withdrawalEvent.forfeitedYield, withdraw[0].forfeitedYield);
+    assert.equal(withdrawalEvent.unvestedYield, withdraw[0].unvestedYield);
     assert.deepEqual(await market.read.getEarnPosition([alice.account.address, tickId]), withdraw[1]);
     assert.deepEqual(await market.read.getTick([tickId]), withdraw[2]);
 

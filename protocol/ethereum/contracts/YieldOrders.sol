@@ -137,7 +137,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 remainingActivePrincipal;
         uint256 resolvingPrincipal;
         uint256 yieldAssetOut;
-        uint256 forfeitedYield;
+        uint256 unvestedYield;
     }
     struct RepayResult {
         uint256 positionId;
@@ -255,7 +255,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint256 availableAssetOut,
         uint256 workingToExit,
         uint256 yieldAssetOut,
-        uint256 forfeitedYield
+        uint256 unvestedYield
     );
     event Collected(
         uint256 indexed tickId,
@@ -898,7 +898,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         q.yieldAssetOut = Math.mulDiv(yieldForWithdraw, elapsed, duration);
         // elapsed <= duration, hence the vested amount cannot exceed its attributable Yield.
         {
-            q.forfeitedYield = yieldForWithdraw - q.yieldAssetOut;
+            q.unvestedYield = yieldForWithdraw - q.yieldAssetOut;
         }
     }
     function withdraw(
@@ -920,7 +920,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (q.availableAssetOut < minImmediateAssetOut) revert Slippage();
         // These two outputs partition yieldForWithdraw, which is at most the synced owed balance.
         {
-            p.owedActiveYieldAsset -= q.yieldAssetOut + q.forfeitedYield;
+            p.owedActiveYieldAsset -= q.yieldAssetOut + q.unvestedYield;
         }
         t.availableSupply -= q.availableAssetOut;
         t.exitWorking += q.workingToExit;
@@ -935,19 +935,9 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (t.availableSupply + t.workingSupply == t.exitWorking) {
             _deplete(id, DomainKind.Active, t.active, _activePrincipal(tm), 0);
         }
-        uint256 domainActiveX36 = _activePrincipal(t) * PRINCIPAL_PRECISION;
-        uint256 remainingProviderX36 = p.active.initialPrincipalX36;
-        if (remainingProviderX36 > domainActiveX36) revert Invariant();
-        uint256 otherActiveX36 = domainActiveX36 - remainingProviderX36;
-        if (q.forfeitedYield != 0) {
-            if (otherActiveX36 >= PRINCIPAL_PRECISION) {
-                _bound(q.forfeitedYield);
-                t.active.yieldSum += Math.mulDiv(q.forfeitedYield, t.active.P * PRINCIPAL_PRECISION, otherActiveX36);
-                p.active.yieldSum = t.active.yieldSum;
-            } else {
-                t.yieldAssetReserve -= q.forfeitedYield;
-                _accrueFee(t.asset, q.forfeitedYield);
-            }
+        if (q.unvestedYield != 0) {
+            t.yieldAssetReserve -= q.unvestedYield;
+            _accrueFee(t.asset, q.unvestedYield);
         }
         q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
         t.yieldAssetReserve -= q.yieldAssetOut;
@@ -961,7 +951,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             q.availableAssetOut,
             q.workingToExit,
             q.yieldAssetOut,
-            q.forfeitedYield
+            q.unvestedYield
         );
     }
     function _collectAmounts(Tick memory t, ProviderPosition memory p) internal view returns (CollectPreview memory q) {

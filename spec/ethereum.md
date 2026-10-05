@@ -533,8 +533,6 @@ settle(
 
 `referrer` in `supply`, `use`, and `swap` is metadata-only. Zero address is allowed. It MUST NOT alter fees, provider proceeds, Yield, settlement priority, ownership, or any protocol right. Implementations may emit it for attribution and analytics only.
 
-
-
 `RepayResult` and `CloseResult` expose the canonical economic result required by integrators and simulation before the resolved Term Position storage is deleted. At minimum, `CloseResult` exposes the resolved position identity / Tick / sequence plus `closeFee`, provider Quote proceeds, `exitFill`, `activeFill`, `exitQuote`, and `activeQuote`. Exact struct naming MAY differ if the ABI exposes equivalent return fields.
 
 `getPosition(positionId)` is an ACTIVE-state view only. A successfully Repayed or Closed position is no longer readable from Term Position storage.
@@ -634,7 +632,7 @@ providerPrincipalX36
 
 If `workingToExit > 0`, add `workingToExit * PRINCIPAL_PRECISION` to the provider's synchronized Exit `principalX36` and take fresh Exit snapshots.
 
-Apply canonical §19 Yield release and redistribution after provider synchronization and before completing Withdraw:
+Apply canonical §19 Vested and Unvested Yield calculations after provider synchronization and before completing Withdraw:
 
 ```text
 DproviderX36 = pre-withdraw compounded active principalX36
@@ -643,15 +641,13 @@ durationSeconds = durationDays * SECONDS_PER_DAY
 yieldForWithdraw = floor(Y * (x * PRINCIPAL_PRECISION) / DproviderX36)
 elapsed = min(block.timestamp - timestamp, durationDays * SECONDS_PER_DAY)
 yieldAssetOut = floor(yieldForWithdraw * elapsed / durationSeconds)
-forfeitedYield = yieldForWithdraw - yieldAssetOut
+unvestedYield = yieldForWithdraw - yieldAssetOut
 owedActiveYieldAsset -= yieldForWithdraw
 ```
 
-Apply the canonical §19 X36 redistribution rule. After withdrawing principal, calculate `domainActiveX36 = activePrincipal * PRINCIPAL_PRECISION`, require `remainingProviderX36 <= domainActiveX36`, then calculate `otherActiveX36 = domainActiveX36 - remainingProviderX36` with checked subtraction. An invariant violation MUST revert and MUST NOT fall through to protocol-fee reclassification. For positive `forfeitedYield`, when `otherActiveX36 >= PRINCIPAL_PRECISION`, fund the Active Yield sum using `Math.mulDiv(forfeitedYield, activeP * PRINCIPAL_PRECISION, otherActiveX36)` with floor rounding; otherwise reclassify the amount as accrued Asset protocol fees, reducing the funded Yield reserve equally. Refresh the withdrawing position's Active gain checkpoint after funding to exclude its retained principal. Eligible recipients use their existing vesting timestamps. No new Yield reserve, additional fee or separate vesting state is created.
+Any positive Unvested Yield attributable to withdrawn principal is reclassified as Asset protocol fees. It is not redistributed through the Active Product-Sum domain. Reduce `yieldAssetReserve` by `unvestedYield` and accrue the same amount through the existing Asset protocol-fee accounting mechanism. The Active Yield sum is unchanged; no provider eligibility calculation or redistribution amount bound applies.
 
-The redistribution branch MUST require `forfeitedYield <= MAX_ACCOUNTING_AMOUNT` using the canonical amount-bound error. An excess reverts the entire Withdraw. The fee-reclassification branch retains its existing behavior.
-
-Transfer `availableOut + yieldAssetOut`. The `withdraw` return and `Withdrawn` event include `yieldAssetOut` and `forfeitedYield`. Preserve the existing Exit principal split and sub-raw remainder.
+Transfer `availableOut + yieldAssetOut`. The `withdraw` return and `Withdrawn` event include `yieldAssetOut` and `unvestedYield`. Preserve the existing Exit principal split and sub-raw remainder.
 
 Withdraw does not reset `timestamp`. Previously allocated Exit Yield and any retained Active Yield remain outstanding for later Collect.
 
@@ -775,8 +771,6 @@ active P unchanged
 
 Only net Yield enters provider liabilities.
 
-
-
 After computing the return value and terminal event fields, remove the position from the user's active-position index in O(1), delete `tickPositionId[tickId][tickSeq]`, and `delete` the Term Position storage. If the target sequence equals `settleCursor`, advance the cursor exactly once as defined by `spec/protocol.md` §25.
 
 No separate keeper payment or protocol-fee split is introduced. Any EVM storage refund resulting from deletion follows normal EVM transaction semantics and belongs to the transaction execution implicitly.
@@ -812,8 +806,6 @@ Fund Quote sums before each domain's principal depletion.
 Then update Exit and active P independently.
 
 A single Close may finalize both domains.
-
-
 
 Return the canonical `CloseResult`, emit `TermClosed` using values captured before deletion, remove the position from the user's active-position index in O(1), delete `tickPositionId[tickId][tickSeq]`, and `delete` the Term Position storage. Cursor advancement follows `spec/protocol.md` §25.
 
@@ -1022,7 +1014,7 @@ Withdrawn(
     availableAssetOut,
     workingToExit,
     yieldAssetOut,
-    forfeitedYield
+    unvestedYield
 )
 
 Collected(
@@ -1110,8 +1102,6 @@ DomainGenerationFinalized(
 ```
 
 Scale/generation events are accounting metadata, not product actions.
-
-
 
 `UseOpened`, `TermRepaid`, and `TermClosed` are the canonical onchain history for Term Positions. Terminal events MUST be emitted from values captured before resolved Position storage is deleted and MUST contain sufficient identity / sequence and economic fields for offchain history reconstruction.
 
@@ -1225,14 +1215,14 @@ Withdraw remains available after adversarial Exit resolutions
 Supply and Collect reset timestamp; same-timestamp Withdraw rejected
 Collect time-weighted Active/Exit Yield, retains remainder and resets timestamp
 Collect before top-up / top-up without Collect
-partial/full Withdraw Yield release and post-withdrawal redistribution
-all Working yet Active > 0; no eligible other Active -> accrued Asset protocol fee
+partial/full Withdraw Yield release and Unvested Yield accrued as Asset protocol fees
+all Working yet Active > 0; Unvested Yield -> accrued Asset protocol fee
 Swap/Close exhaust Active; outstanding Yield still vests
-partial withdrawal cannot reclaim forfeiture through withdrawing position's residual principal
-redistribution excludes withdrawing position, while eligible recipients use existing timestamps
-exact-X36 redistribution with fractional eligible principal and eligibility boundaries
+partial withdrawal cannot reclaim Unvested Yield through withdrawing position's residual principal
+Withdraw Unvested Yield leaves Active Yield sums and all provider timestamps unchanged
+Withdraw Unvested Yield accounting with fractional principal and Product-Sum rounding remainder
 funded Yield conservation after nearly depleted principal and complete claim collection
-independent reference timestamps/vesting/forfeiture; do not seed expected state from emitted values
+independent reference timestamps/vesting/Unvested Yield; do not seed expected state from emitted values
 funded Yield reserve/fee/claim conservation after generation rollover and every claim
 both directional price ticks and mixed-decimal reciprocal price vectors
 out-of-order Repay/Close with pooled Exit-first funding and already-terminal cursor skips
@@ -1242,7 +1232,7 @@ future Supply retains its fractional carry without inheriting other providers' h
 
 Use rejects zero full-term Yield before mutation
 Withdraw rejects x == 0 after whole-raw min calculation
-Withdraw redistribution invariant violation hard-reverts on checked subtraction
+Withdraw Unvested Yield fee reclassification supports amounts above MAX_ACCOUNTING_AMOUNT
 TermClosed event includes activeFill
 active Term Position removed after Repay
 active Term Position removed after Close
@@ -1257,7 +1247,7 @@ Multicall cannot bypass mandatory per-action settlement
 Repay/Close simulations use return data, never deleted getPosition state
 ```
 
-Stateful fuzz tests MUST compare against a high-precision reference model that independently computes timestamps, vesting, forfeiture, principal, gains, fees, and complete reserve conservation. Include all canonical acceptance requirements in `spec/protocol.md` §29.1.
+Stateful fuzz tests MUST compare against a high-precision reference model that independently computes timestamps, vesting, Unvested Yield, principal, gains, fees, and complete reserve conservation. Include all canonical acceptance requirements in `spec/protocol.md` §29.1.
 
 ---
 
