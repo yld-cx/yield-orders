@@ -141,11 +141,15 @@ Canonical rule:
 
 # 5. Duration
 
-Official v0.3 UI:
+Official v0.3 UI durations:
 
 ```text
-7D
+7D | 30D
 ```
+
+Default: `7D`.
+
+The official UI presents duration as a dropdown for Supply and Use.
 
 Protocol supports positive whole-number day durations.
 
@@ -266,11 +270,13 @@ price
 amount
 ```
 
-Official duration:
+Official duration dropdown:
 
 ```text
-7D
+7D | 30D
 ```
+
+Default: `7D`.
 
 Preview:
 
@@ -299,9 +305,9 @@ Panel:
 ```text
 Receive Asset
 Lock Quote
+Duration
 Current Yield
-Max 7D Yield
-Term
+Max {Duration} Yield
 Maturity
 Solana account deposit (when applicable)
 ```
@@ -311,10 +317,10 @@ Example:
 ```text
 Receive              1,000 TOKEN
 Lock                12,000 USDC
+Duration                [7D ▾]
 Current Yield          0.20% / day
 Max 7D Yield             14 TOKEN
 Yield paid now              0
-Term                       7D
 ```
 
 Exit / Resolving never disables Use when sufficient active Available exists.
@@ -848,6 +854,16 @@ as primary product copy.
 ---
 
 # 28. Product principles
+
+## Simple, self-explanatory UI/UX
+
+The official yld.cx UI MUST be as simple and self-explanatory as possible.
+
+Users should understand the economic action without understanding protocol internals.
+
+Prefer clear terminology, sensible defaults, minimal required inputs, one primary action per panel, and progressive disclosure for secondary details.
+
+Information that does not materially affect the user's decision or transaction SHOULD NOT appear in the primary UI.
 
 Avoid framing as:
 
