@@ -183,8 +183,7 @@ Routes:
 ```text
 /                 → Yield / recent markets
 /market/:pair     → symmetric market
-/orders           → current ACTIVE Use positions
-/portfolio        → connected-wallet portfolio
+/orders           → connected-wallet Provide and ACTIVE Use positions
 ```
 
 ---
@@ -362,7 +361,7 @@ Principal itself is never charged a protocol fee.
 
 
 
-After successful Repay the ACTIVE Use position disappears from current Orders / Portfolio state. Historical Repay activity is event / transaction history.
+After successful Repay the ACTIVE Use position disappears from current Orders state. Historical Repay activity is event / transaction history.
 
 On Solana, closing the TermPosition PDA returns its SOL account deposit to the stored rent payer.
 
@@ -393,7 +392,7 @@ It is independent of later utilization/Yield state.
 
 
 
-After successful Close the Use position disappears from current Orders / Portfolio state. Historical Close activity is event / transaction history.
+After successful Close the Use position disappears from current Orders state. Historical Close activity is event / transaction history.
 
 On Solana, the closed TermPosition PDA's reclaimed SOL goes to the caller that performs Close, including an automatic Close triggered by another economic action. This is storage recovery, not part of the 1% protocol fee.
 
@@ -455,7 +454,7 @@ Withdraw principal
 
 ---
 
-# 16. Portfolio — Earn
+# 16. Orders — Provide
 
 Example:
 
@@ -605,7 +604,7 @@ Semantics remain two canonical actions. Collect resets the timestamp; collecting
 
 ---
 
-# 21. Portfolio — Use
+# 21. Orders — Use
 
 ACTIVE Use:
 
@@ -640,15 +639,17 @@ Close is permissionless.
 
 
 
-Portfolio — Use is current-state only. Once Repay or Close succeeds, the resolved position is removed rather than displayed with a terminal status. Historical activity may be shown by an optional event / transaction-history surface.
+Orders — Use is current-state only. Once Repay or Close succeeds, the resolved position is removed rather than displayed with a terminal status. Historical activity may be shown by an optional event / transaction-history surface.
 
 ---
 
 # 22. Orders
 
-Orders is a **current position** view, not a permanent historical ledger.
+Orders is a **current position** view for the connected wallet, not a permanent historical ledger.
 
-Show ACTIVE Uses only.
+Tabs: `Provide | Use`.
+
+Provide shows positions with Active liquidity, Resolving liquidity, or uncollected claims. Use shows ACTIVE Uses only.
 
 Filters:
 
@@ -662,7 +663,7 @@ Network
 Wallet
 ```
 
-Identity while ACTIVE:
+ACTIVE Use identity:
 
 ```text
 EVM     → numeric positionId
@@ -762,7 +763,7 @@ settlement cursor account bundles
 
 
 
-`getUsePosition` and position enumeration are current-state only. Resolved Term Positions are absent. Adapters MAY expose separate event/history helpers, but canonical economic execution and current portfolio state never depend on an indexer.
+`getUsePosition` and position enumeration are current-state only. Resolved Term Positions are absent. Adapters MAY expose separate event/history helpers, but canonical economic execution and current Orders state never depend on an indexer.
 
 ---
 
@@ -797,7 +798,7 @@ global history
 
 Settlement never depends on indexer/yieldlist.
 
-Connected-wallet portfolio discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, nonzero fractional gain carry, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`. Fractional gain carry is not independently withdrawable and remains hidden from normal UX.
+Connected-wallet Orders discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, nonzero fractional gain carry, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`. Fractional gain carry is not independently withdrawable and remains hidden from normal UX.
 
 
 
