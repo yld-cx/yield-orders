@@ -17,13 +17,13 @@ const protocol = getContract({
 });
 ```
 
-No production address has been frozen or deployed. The ABI is also at `@yld-cx/ethereum-protocol/abi/YieldOrders.json`. [The Multicall integration tests](test/PreviewIntegration.ts) show exact viem simulations, result decoding, approvals, and transaction comparisons.
+The ABI is also at `@yld-cx/ethereum-protocol/abi/YieldOrders.json`. [The Multicall integration tests](test/PreviewIntegration.ts) show exact viem simulations, result decoding, approvals, and transaction comparisons.
 
 Create a pair with `createPair(tokenA, tokenB)`, then read its ID with `getPair(tokenA, tokenB)`. Direction `0` uses the lower-address token as Asset; direction `1` uses the other token. Call `createTick(pairId, direction, priceTick, durationDays)`. These calls are permissionless and give no creator rights. The price tick quotes raw Quote per raw Asset. Duration must be positive and no greater than `106751991167300` days; a Use must also mature by timestamp `9223372036854775807`.
 
 | Action   | Calls and funds                                                                                                                                                                                                                                                                                  |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Supply   | Simulate `supply` + `getEarnPosition` + `getTick`; then approve Asset and execute.                                                                                                                                                                                                               |
+| Supply   | Approve Asset + Simulate `supply` + `getEarnPosition` + `getTick` and execute.                                                                                                                                                                                                                   |
 | Withdraw | Simulate `withdraw(tickId, principalAmount, minImmediateAssetOut, deadline)` + `getEarnPosition` + `getTick`. Its return includes immediate Asset, Working moved to Exit, vested Yield, and Unvested Yield. Set `minImmediateAssetOut = 0` and a permissive deadline for unrestricted execution. |
 | Collect  | Simulate `collect` + `getEarnPosition`. Its return includes Asset, Quote, vested Yield, and remaining claims.                                                                                                                                                                                    |
 | Use      | Read `quoteUse(tickId, assetAmount)` before approval for Quote Principal and full-term Yield. Approve Quote, then simulate `use` + `getPosition` + `getTick`. Read `nextPositionId` before the batch to identify the new position.                                                               |
