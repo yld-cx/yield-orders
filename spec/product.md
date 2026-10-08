@@ -263,6 +263,8 @@ Layout:
 [Post Ask / Post Bid]   [Yield Book]   [Use / Swap]
 ```
 
+**Pair orientation:** The UI SHOULD select a sensible default Quote token and allow users to invert the displayed pair and price denomination. Inversion MUST NOT change the underlying onchain market identity.
+
 Yield Book:
 
 ```text
