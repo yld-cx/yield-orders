@@ -182,6 +182,7 @@ Routes:
 
 ```text
 /                 → Yield / recent markets
+/market/open      → Open Market form
 /market/:pair     → symmetric market
 /orders           → connected-wallet Provide and ACTIVE Use positions
 ```
@@ -208,6 +209,8 @@ No implicit cross-chain aggregation.
 
 # 8. Yield page
 
+Show **Open Market** next to market search; it navigates to `/market/open`.
+
 Recommended:
 
 ```text
@@ -229,6 +232,26 @@ Footnote:
 Yield is the marginal current Asset Yield reference.
 
 A concrete Use preview is authoritative for its entered amount.
+
+## Open Market
+
+`/market/open` is a dedicated, simple form page (not a modal):
+
+```text
+Token A
+Token B
+```
+
+Look up the unordered token pair on the selected network using canonical onchain state:
+
+```text
+Market exists     → [View Market]   → /market/:pair
+Market not found  → [Create Market] → create the pair, then /market/:pair
+```
+
+Creation is permissionless; `yieldlist.json` listing is not required. Reject identical tokens and invalid or unsupported token inputs. Show **⚠ Unlisted** for tokens outside the curated registry, without blocking permissionless creation.
+
+A newly created market may have an empty Yield Book. The first provider chooses Ask/Bid, price, amount, and 7D/30D on the market page; create the required Tick if absent before Supply. Market creation alone does not provide liquidity or create a Tick.
 
 ---
 
@@ -731,6 +754,9 @@ getPair
 getTick
 getEarnPosition
 getUsePosition
+
+createPair
+createTick
 
 previewSupply
 previewWithdraw
