@@ -362,7 +362,6 @@ Before maturity:
 ```text
 Return Asset
 Current Yield Due
-Protocol Fee · 1% of Yield
 Total Asset to Return
 Unlock Quote
 ```
