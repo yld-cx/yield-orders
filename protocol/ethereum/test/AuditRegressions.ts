@@ -23,13 +23,16 @@ describe("audit regressions", async () => {
     await assert.rejects(viem.deployContract("YieldOrders", [ownAddress]));
   });
 
-  async function setup(blocked: "quote" | "asset" | "none" = "none") {
+  async function setup(blocked: "quote" | "asset" | "none" | "reducingQuote" = "none") {
     const makeToken = async (name: string, symbol: string, shouldBlock: boolean) =>
       shouldBlock
         ? viem.deployContract("BlockingRecipientToken", [fee.account.address])
         : viem.deployContract("MockERC20", [name, symbol, 18]);
     const asset: any = await makeToken("Asset", "AST", blocked === "asset");
-    const quote: any = await makeToken("Quote", "QUO", blocked === "quote");
+    const quote: any =
+      blocked === "reducingQuote"
+        ? await viem.deployContract("BalanceReducingToken")
+        : await makeToken("Quote", "QUO", blocked === "quote");
     const market = getContract({
       address: (await viem.deployContract("YieldOrders", [fee.account.address])).address,
       abi,
@@ -198,6 +201,45 @@ describe("audit regressions", async () => {
     await market.write.collect([tickId], { account: bob.account });
     assert.equal(await quote.read.balanceOf([alice.account.address]), 10n ** 27n + 2n);
     assert.equal(await quote.read.balanceOf([bob.account.address]), 10n ** 27n + 1n);
+  });
+
+  it("collects backed protocol fees permissionlessly while preserving supplier liabilities", async () => {
+    const { market, quote, tickId, deadline, backed } = await setup();
+    await market.write.supply([tickId, 10_000n, zeroAddress], { account: alice.account });
+    await market.write.swap([tickId, 10_000n, 10_000n, await deadline(), zeroAddress], { account: taker.account });
+    assert.equal(await market.read.accruedProtocolFees([quote.address]), 100n);
+    assert.equal(await market.read.tokenLiability([quote.address]), 10_000n);
+    const before = await quote.read.balanceOf([fee.account.address]);
+    await market.write.collectProtocolFees([quote.address], { account: keeper.account });
+    assert.equal(await quote.read.balanceOf([fee.account.address]), before + 100n);
+    assert.equal(await quote.read.balanceOf([market.address]), 9_900n);
+    assert.equal(await market.read.tokenLiability([quote.address]), 9_900n);
+    assert.equal(await market.read.accruedProtocolFees([quote.address]), 0n);
+    await backed();
+  });
+
+  it("reverts fee collection under a backing deficit and rolls back accounting and transfers", async () => {
+    const { market, quote, tickId, deadline } = await setup("reducingQuote");
+    await market.write.supply([tickId, 10_000n, zeroAddress], { account: alice.account });
+    await market.write.swap([tickId, 10_000n, 10_000n, await deadline(), zeroAddress], { account: taker.account });
+    await quote.write.reduceBalance([market.address, 1n]);
+    const balances = async () => ({
+      fees: await market.read.accruedProtocolFees([quote.address]),
+      liability: await market.read.tokenLiability([quote.address]),
+      protocol: await quote.read.balanceOf([market.address]),
+      recipient: await quote.read.balanceOf([fee.account.address]),
+      caller: await quote.read.balanceOf([keeper.account.address]),
+      supply: await quote.read.totalSupply(),
+    });
+    const before = await balances();
+    assert.equal(before.fees, 100n);
+    assert.equal(before.liability, 10_000n);
+    assert.equal(before.protocol, 9_999n);
+    await assert.rejects(
+      market.write.collectProtocolFees([quote.address], { account: keeper.account, gas: 1_000_000n }),
+      /Invariant/,
+    );
+    assert.deepEqual(await balances(), before);
   });
 
   it("keeps Close, automatic settlement, Withdraw and Collect live when Quote fee transfers fail", async () => {
