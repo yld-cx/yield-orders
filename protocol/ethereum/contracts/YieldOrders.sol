@@ -503,6 +503,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         accruedProtocolFees[token] = 0;
         tokenLiability[token] -= amount;
         _push(IERC20(token), FEE_TO, amount);
+        _reconcileLiability(token, 0, 0);
         emit ProtocolFeesCollected(token, amount);
     }
     function _checkAsset(uint256 id, Tick storage t) internal {
