@@ -1,6 +1,6 @@
 {
   "name": "@yld-cx/ethereum-protocol",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "yld.cx — Ethereum / EVM L2s Yield Orders Protocol",
   "keywords": [
     "ethereum",
@@ -13,6 +13,10 @@
     "url": "git+https://github.com/yld-cx/yield-orders.git",
     "directory": "protocol/ethereum"
   },
+  "bugs": {
+    "url": "https://github.com/yld-cx/yield-orders/issues"
+  },
+  "homepage": "https://yld.cx",
   "publishConfig": {
     "access": "public"
   },
