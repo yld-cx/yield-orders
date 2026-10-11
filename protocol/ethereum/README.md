@@ -44,12 +44,13 @@ Funded Asset Yield vests over the Tick duration, measured from the supplier's la
 npm i @yld-cx/ethereum-protocol viem
 ```
 
-The package exports the contract's ABI as JSON (also available at `@yld-cx/ethereum-protocol/abi/YieldOrders.json`), Solidity source under `contracts/*`, and rounding vectors under `vectors/*`. Node-based tooling requires Node.js 24+. The package does **not** include RPC clients, network addresses, or a transaction SDK.
+The package exports the contract's ABI as JSON (also available at `@yld-cx/ethereum-protocol/abi/YieldOrders.json`), deployment configuration at `@yld-cx/ethereum-protocol/deployments/config.json`, Solidity source under `contracts/*`, and rounding vectors under `vectors/*`. Node-based tooling requires Node.js 24+. The package does **not** include RPC clients or a transaction SDK.
 
 The following TypeScript examples share this setup. They use an injected EIP-1193 wallet; replace `window.ethereum` with your wallet connector's provider where needed. **Configure an RPC URL for the selected chain** before running them.
 
 ```ts
 import yieldOrdersAbi from "@yld-cx/ethereum-protocol" with { type: "json" };
+import deployments from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
 import {
   createPublicClient,
   createWalletClient,
@@ -71,8 +72,11 @@ import {
 import { base } from "viem/chains"; // Select mainnet or another supported chain as needed.
 
 const chain = base;
+if (!Object.values(deployments.networks).includes(chain.id)) {
+  throw new Error("No protocol deployment for the selected chain");
+}
 const rpcUrl = "https://YOUR_RPC_URL"; // Replace with an RPC endpoint for this chain.
-const protocolAddress = "0x0000014563b23D9ac3aC11Fe68D63cdfC19A43db" as const;
+const protocolAddress = deployments.address as Address;
 const abi = yieldOrdersAbi as Abi;
 
 const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });

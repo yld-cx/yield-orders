@@ -26,12 +26,14 @@
     "./abi/*": "./abi/*",
     "./vectors/*": "./vectors/*",
     "./contracts/*": "./contracts/*",
+    "./deployments/config.json": "./deployments/config.json",
     "./package.json": "./package.json"
   },
   "files": [
     "README.md",
     "abi/YieldOrders.json",
     "vectors/golden-v03.json",
+    "deployments/config.json",
     "contracts/YieldOrders.sol",
     "contracts/libraries/ProductSumMath.sol",
     "contracts/libraries/YieldMath.sol",
