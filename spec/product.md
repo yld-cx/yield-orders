@@ -249,7 +249,7 @@ Market exists     → [View Market]   → /market/:pair
 Market not found  → [Create Market] → create the pair, then /market/:pair
 ```
 
-Creation is permissionless; `yieldlist.json` listing is not required. Reject identical tokens and invalid or unsupported token inputs. Show **⚠ Unlisted** for tokens outside the curated registry, without blocking permissionless creation.
+Creation is permissionless; `yieldlist.json` listing is not required. Reject identical tokens and invalid or unsupported token inputs. Show **⚠ Unlisted** for tokens outside the registry, without blocking permissionless creation.
 
 A newly created market may have an empty Yield Book. The first provider chooses Ask/Bid, price, amount, and 7D/30D on the market page; create the required Tick if absent before Supply. Market creation alone does not provide liquidity or create a Tick.
 
@@ -349,8 +349,6 @@ Yield paid now              0
 
 Exit / Resolving never disables Use when sufficient active Available exists.
 
-
-
 On Solana, opening a Use creates a temporary TermPosition PDA and therefore locks a small SOL account deposit. The preview MUST surface that deposit separately from Quote Principal and protocol fees. It is returned to the stored rent payer on Repay; if the position expires and is Closed, the reclaimed SOL goes to the caller who performs settlement.
 
 ---
@@ -383,8 +381,6 @@ Product wording:
 
 Principal itself is never charged a protocol fee.
 
-
-
 After successful Repay the ACTIVE Use position disappears from current Orders state. Historical Repay activity is event / transaction history.
 
 On Solana, closing the TermPosition PDA returns its SOL account deposit to the stored rent payer.
@@ -413,8 +409,6 @@ position removed from active state
 Close fee was frozen when Use opened.
 
 It is independent of later utilization/Yield state.
-
-
 
 After successful Close the Use position disappears from current Orders state. Historical Close activity is event / transaction history.
 
@@ -661,8 +655,6 @@ At/after maturity:
 
 Close is permissionless.
 
-
-
 Orders — Use is current-state only. Once Repay or Close succeeds, the resolved position is removed rather than displayed with a terminal status. Historical activity may be shown by an optional event / transaction-history surface.
 
 ---
@@ -713,15 +705,15 @@ The future TypeScript SDK in `product/` will simulate the real protocol path. Au
 
 For EVM, previews use OpenZeppelin `multicall(bytes[])` in `eth_call` with the connected caller and sufficient balances / allowances. Additional explicit `settle()` calls MAY be composed when the user intentionally wants more cursor progress, but they are not a replacement for per-action settlement.
 
-| SDK preview | Simulated call and decoded result |
-| --- | --- |
-| `previewSupply` | `supply` + `getEarnPosition` + `getTick`; resulting principal and market state. |
-| `previewWithdraw` | `withdraw` + `getEarnPosition` + `getTick`; immediate Asset, Working moved to Exit, vested Yield out, Unvested Yield, remaining claims. |
-| `previewCollect` | `collect` + `getEarnPosition`; Asset, Quote and vested Yield paid, remaining claims. |
-| `previewUse` | `use` + `getPosition` + `getTick`; Quote Principal, full-term Yield, frozen Close fee, maturity, resulting ACTIVE position. Read `nextPositionId` before the EVM batch. |
-| `previewRepay` | `repay` return data + `getTick` / domain getters as needed; gross accrued Yield, Asset fee, total Asset in, Quote unlocked. The Term Position is deleted by the simulated action. |
-| `previewSwap` | `swap` + `getTick`; Quote required, fee, provider proceeds. |
-| `previewClose` | `close` return data + `getTick` / domain getters as needed; provider proceeds and Active/Exit accounting. The Term Position is deleted by the simulated action. |
+| SDK preview       | Simulated call and decoded result                                                                                                                                                 |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `previewSupply`   | `supply` + `getEarnPosition` + `getTick`; resulting principal and market state.                                                                                                   |
+| `previewWithdraw` | `withdraw` + `getEarnPosition` + `getTick`; immediate Asset, Working moved to Exit, vested Yield out, Unvested Yield, remaining claims.                                           |
+| `previewCollect`  | `collect` + `getEarnPosition`; Asset, Quote and vested Yield paid, remaining claims.                                                                                              |
+| `previewUse`      | `use` + `getPosition` + `getTick`; Quote Principal, full-term Yield, frozen Close fee, maturity, resulting ACTIVE position. Read `nextPositionId` before the EVM batch.           |
+| `previewRepay`    | `repay` return data + `getTick` / domain getters as needed; gross accrued Yield, Asset fee, total Asset in, Quote unlocked. The Term Position is deleted by the simulated action. |
+| `previewSwap`     | `swap` + `getTick`; Quote required, fee, provider proceeds.                                                                                                                       |
+| `previewClose`    | `close` return data + `getTick` / domain getters as needed; provider proceeds and Active/Exit accounting. The Term Position is deleted by the simulated action.                   |
 
 The SDK MUST NOT attempt to read a resolved Term Position after Repay / Close.
 
@@ -788,15 +780,13 @@ fixed-point sub-raw provider principal
 settlement cursor account bundles
 ```
 
-
-
 `getUsePosition` and position enumeration are current-state only. Resolved Term Positions are absent. Adapters MAY expose separate event/history helpers, but canonical economic execution and current Orders state never depend on an indexer.
 
 ---
 
 # 25. Discovery
 
-`yieldlist.json` remains optional curated discovery only.
+`yieldlist.json` remains optional discovery only.
 
 Never source-of-truth for:
 
@@ -826,8 +816,6 @@ global history
 Settlement never depends on indexer/yieldlist.
 
 Connected-wallet Orders discovery MUST NOT filter only on transferable whole-raw principal. If the adapter reports a live internal fixed-point principal remainder, nonzero fractional gain carry, pending claim, or unsynchronized historical gain, the position remains discoverable even when the displayed transferable principal is `0`. Fractional gain carry is not independently withdrawable and remains hidden from normal UX.
-
-
 
 Current ACTIVE Uses MUST remain discoverable from canonical onchain state without historical Term Position retention.
 

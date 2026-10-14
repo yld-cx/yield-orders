@@ -1,0 +1,9 @@
+.next/
+node_modules/
+.cache/
+.turbo/
+packages/sdk/dist/
+test-results/
+playwright-report/
+package-lock.json
+next-env.d.ts
