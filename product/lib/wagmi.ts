@@ -12,17 +12,17 @@ export function makeWagmiConfig() {
     multiInjectedProviderDiscovery: true,
     storage: createStorage({ storage: cookieStorage }),
     connectors: [
-      injected({ shimDisconnect: true }),
-      coinbaseWallet({
-        appName: "yld.cx",
-        appLogoUrl: "https://yld.cx/icon.svg",
-      }),
       safe({
         allowedDomains: [
           /^https:\/\/app\.safe\.global$/,
           /^https:\/\/safe\.global$/,
         ],
-        unstable_getInfoTimeout: 150,
+        unstable_getInfoTimeout: 10_000,
+      }),
+      injected({ shimDisconnect: true }),
+      coinbaseWallet({
+        appName: "yld.cx",
+        appLogoUrl: "https://yld.cx/icon.svg",
       }),
       ...(process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID
         ? [
