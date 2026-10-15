@@ -12,6 +12,7 @@ import {
   type TransactionReceipt,
   type ContractFunctionReturnType,
 } from "viem";
+import { waitForTransactionReceipt } from "viem/actions";
 import type {
   Duration,
   EconomicAction,
@@ -619,12 +620,14 @@ export class EthereumClient {
       throw new Error("Wallet account changed. Review a new preview.");
   }
   private async receipt(
+    wallet: WalletClient,
     hash: Hex,
     onStatus?: StatusCallback,
   ): Promise<TransactionReceipt> {
     onStatus?.("pending", hash);
-    const receipt = await this.publicClient.waitForTransactionReceipt({
+    const receipt = await waitForTransactionReceipt(wallet, {
       hash,
+      timeout: 0,
       confirmations: 1,
       onReplaced: (replacement) => {
         if (replacement.reason === "cancelled")
@@ -673,7 +676,7 @@ export class EthereumClient {
         args: [this.address, amount],
         account,
       });
-      await this.receipt(await wallet.writeContract(request), onStatus);
+      await this.receipt(wallet, await wallet.writeContract(request), onStatus);
     };
     // Exact allowance, with explicit reset for zero-first tokens.
     if (allowance > 0n) await approve(0n, "approving-reset");
@@ -701,6 +704,7 @@ export class EthereumClient {
     await this.assertWallet(wallet, preview.account);
     onStatus?.("signing");
     const receipt = await this.receipt(
+      wallet,
       await wallet.writeContract(request),
       onStatus,
     );

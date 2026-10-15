@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useConnect,
   useConnectors,
@@ -107,6 +107,31 @@ export function WalletConnect() {
   const connect = useConnect();
   const connectors = useConnectors();
   const disconnect = useDisconnect();
+  const safeAttempted = useRef(false);
+
+  useEffect(() => {
+    if (
+      safeAttempted.current ||
+      window.parent === window ||
+      connection.status === "connecting" ||
+      connection.status === "reconnecting"
+    )
+      return;
+
+    safeAttempted.current = true;
+    if (connection.connector?.type === "safe") return;
+    const connector = connectors.find((candidate) => candidate.type === "safe");
+    if (!connector) return;
+
+    async function connectSafe(connector: Connector) {
+      try {
+        const provider = await connector.getProvider();
+        if (provider) await connect.mutateAsync({ connector });
+      } catch {}
+    }
+    void connectSafe(connector);
+  }, [connection.status, connection.connector, connectors, connect]);
+
   async function choose(connector: Connector) {
     setError("");
     setUri("");

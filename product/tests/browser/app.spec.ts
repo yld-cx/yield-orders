@@ -581,6 +581,109 @@ test("shared market filters restore after reload and browser history, with a cen
   await expect(network).toContainText("Ethereum");
 });
 
+test("Safe manifest and icon are public and allow cross-origin discovery", async ({
+  request,
+}) => {
+  const response = await request.get("/manifest.json", {
+    headers: { Origin: "https://app.safe.global" },
+  });
+  expect(response.status()).toBe(200);
+  expect(response.headers()["content-type"]).toContain("application/json");
+  expect(response.headers()["access-control-allow-origin"]).toBe("*");
+  expect(response.headers()["access-control-allow-methods"]).toBe("GET");
+  expect(response.headers()["access-control-allow-headers"]).toBe(
+    "X-Requested-With, content-type, Authorization",
+  );
+  const manifest = await response.json();
+  expect(manifest.name.length).toBeLessThanOrEqual(50);
+  expect(manifest.description.length).toBeLessThanOrEqual(200);
+  const icon = await request.get(`/${manifest.iconPath}`);
+  expect(icon.status()).toBe(200);
+  expect(icon.headers()["content-type"]).toContain("image/svg+xml");
+  expect(await icon.text()).toContain('width="128" height="128"');
+  const app = await request.get("/");
+  expect(app.headers()["x-frame-options"]).toBeUndefined();
+  expect(app.headers()["content-security-policy"]).toContain(
+    "frame-ancestors 'self' https://app.safe.global https://safe.global",
+  );
+});
+
+for (const rememberedWallet of [false, true]) {
+  test(`Safe auto-connects after a delayed handshake${rememberedWallet ? " over a remembered browser wallet" : " on first visit"}`, async ({
+    page,
+    baseURL,
+    context,
+  }) => {
+    // Keep both frames on HTTPS. Serve the app from the local build while
+    // preserving real origins for CSP and Safe's postMessage validation.
+    const appOrigin = "https://yld.cx";
+    await page.route(`${appOrigin}/**`, async (route) => {
+      const url = new URL(route.request().url());
+      const response = await route.fetch({
+        url: `${baseURL}${url.pathname}${url.search}`,
+      });
+      await route.fulfill({ response });
+    });
+    await injectWallets(page);
+    if (rememberedWallet) {
+      await page.goto(appOrigin);
+      await page
+        .getByRole("button", { name: "Connect wallet", exact: true })
+        .click();
+      await page.getByRole("button", { name: "MetaMask", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "0x0000…0001" }),
+      ).toBeVisible();
+      // Model browsers that allow the previous wallet's cookies in the iframe.
+      await context.addCookies(
+        (await context.cookies(appOrigin)).map((cookie) => ({
+          ...cookie,
+          sameSite: "None" as const,
+          secure: true,
+        })),
+      );
+    }
+    await page.route("https://app.safe.global/safe-app-test", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: `<!doctype html><html><body>
+          <script>
+            window.addEventListener('message', (event) => {
+              if (event.origin !== ${JSON.stringify(appOrigin)}) return;
+              if (event.data.method !== 'getSafeInfo') return;
+              setTimeout(() => event.source.postMessage({
+                id: event.data.id,
+                success: true,
+                version: '1.0.0',
+                data: {
+                  safeAddress: '0x000000000000000000000000000000000000005a',
+                  chainId: 8453,
+                  threshold: 2,
+                  owners: [],
+                  isReadOnly: false
+                }
+              }, event.origin), ${rememberedWallet ? 500 : 100});
+            });
+          </script>
+          <iframe title="Safe App" src="${appOrigin}/" style="width:100%;height:100vh"></iframe>
+        </body></html>`,
+      }),
+    );
+    await page.goto("https://app.safe.global/safe-app-test");
+    const app = page.frameLocator('iframe[title="Safe App"]');
+    if (rememberedWallet)
+      await expect(
+        app.getByRole("button", { name: "0x0000…0001" }),
+      ).toBeVisible();
+    const wallet = app.getByRole("button", { name: "0x0000…005a" });
+    await expect(wallet).toBeVisible();
+    await wallet.click();
+    const dialog = app.getByRole("dialog");
+    await expect(dialog.getByText("Safe", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("Network: Base")).toBeVisible();
+  });
+}
+
 test("wallet options hide unavailable browser and Safe providers", async ({
   page,
 }) => {

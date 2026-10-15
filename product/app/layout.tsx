@@ -30,6 +30,7 @@ export const metadata: Metadata = {
     images: [`${ORIGIN}/opengraph-image`],
   },
   icons: { icon: "/icon.svg" },
+  manifest: "/manifest.json",
 };
 export const dynamic = "force-dynamic";
 export default async function RootLayout({

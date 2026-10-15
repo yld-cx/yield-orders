@@ -1,0 +1,12 @@
+{
+  "name": "yld.cx",
+  "description": "Liquidity rental markets",
+  "iconPath": "icon.svg",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

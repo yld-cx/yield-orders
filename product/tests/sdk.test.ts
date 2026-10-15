@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   BaseError,
   ContractFunctionRevertedError,
+  TransactionReceiptNotFoundError,
   keccak256,
   type PublicClient,
   type WalletClient,
@@ -72,15 +73,24 @@ describe("balance requirements and approval caps", () => {
       getBlock: async () => ({ number: 99n, timestamp }),
       readContract,
       simulateContract,
-      waitForTransactionReceipt: async () => ({ status: "success" }),
     });
     const writeContract = vi.fn(async () => "0x1234");
+    const getTransactionReceipt = vi.fn(async () => ({ status: "success" }));
     const wallet = {
+      uid: "approval-wallet",
       getChainId: async () => 8453,
       getAddresses: async () => [owner],
       writeContract,
+      getTransactionReceipt,
     } as unknown as WalletClient;
-    return { sdk, wallet, readContract, simulateContract, writeContract };
+    return {
+      sdk,
+      wallet,
+      readContract,
+      simulateContract,
+      writeContract,
+      getTransactionReceipt,
+    };
   }
   it("pins early repayment estimates and rounds elapsed Yield up", async () => {
     const { sdk, readContract } = setup(1010n);
@@ -104,10 +114,13 @@ describe("balance requirements and approval caps", () => {
   ])(
     "approves the $action.kind cap with only the current transfer balance",
     async ({ action, balance, cap }) => {
-      const { sdk, wallet, simulateContract, writeContract } = setup(
-        balance,
-        1n,
-      );
+      const {
+        sdk,
+        wallet,
+        simulateContract,
+        writeContract,
+        getTransactionReceipt,
+      } = setup(balance, 1n);
       await sdk.approve(action, wallet, owner);
       expect(simulateContract.mock.calls).toHaveLength(2);
       expect(simulateContract).toHaveBeenNthCalledWith(
@@ -125,6 +138,8 @@ describe("balance requirements and approval caps", () => {
         }),
       );
       expect(writeContract).toHaveBeenCalledTimes(2);
+      expect(getTransactionReceipt).toHaveBeenCalledTimes(2);
+      expect(getTransactionReceipt).toHaveBeenCalledWith({ hash: "0x1234" });
     },
   );
   it("keeps actual Swap payment separate from its tolerance cap", async () => {
@@ -160,24 +175,49 @@ describe("direct reads and write safety", () => {
         getChainId: async () => 8453,
         getCode: async () => "0x1234",
         simulateContract: async () => ({ request: {} }),
-        waitForTransactionReceipt: async ({
-          onReplaced,
-        }: {
-          onReplaced: (value: unknown) => void;
-        }) => {
-          onReplaced({ reason, transaction: { hash: "0x1234" } });
-          return {
-            status: "success",
-            logs: [],
-            transactionHash: "0x1234",
-            blockNumber: 1n,
-          };
-        },
       });
+      const getTransactionReceipt = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new TransactionReceiptNotFoundError({ hash: "0x1234" }),
+        )
+        .mockRejectedValueOnce(
+          new TransactionReceiptNotFoundError({ hash: "0x1234" }),
+        )
+        .mockResolvedValue({
+          status: "success",
+          logs: [],
+          transactionHash: "0x5678",
+          blockNumber: 1n,
+        });
       const wallet = {
+        uid: `replacement-wallet-${reason}`,
+        pollingInterval: 10,
         getChainId: async () => 8453,
         getAddresses: async () => [owner],
         writeContract: async () => "0x1234",
+        getTransactionReceipt,
+        getBlockNumber: async () => 1n,
+        getTransaction: async () => ({
+          hash: "0x1234",
+          from: owner,
+          to: address,
+          nonce: 0,
+          value: 1n,
+          input: "0xab",
+        }),
+        getBlock: async () => ({
+          transactions: [
+            {
+              hash: "0x5678",
+              from: owner,
+              to: reason === "cancelled" ? owner : address,
+              nonce: 0,
+              value: reason === "cancelled" ? 0n : 2n,
+              input: "0xcd",
+            },
+          ],
+        }),
       } as unknown as WalletClient;
       const preview: Preview = {
         action: { kind: "createPair", tokenA: address, tokenB: owner },
