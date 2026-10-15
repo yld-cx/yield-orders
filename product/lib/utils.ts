@@ -1,11 +1,16 @@
+import {
+  SHORT_ADDRESS,
+  FORMAT_PRECISION,
+  MILLISECONDS_PER_SECOND,
+} from "@yld-cx/sdk";
 import { formatUnits } from "viem";
 export function shortAddress(address: string) {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+  return `${address.slice(0, SHORT_ADDRESS.prefix)}…${address.slice(-SHORT_ADDRESS.suffix)}`;
 }
 export function amountText(
   amount: bigint,
   decimals: number,
-  precision = 6,
+  precision: number = FORMAT_PRECISION.amount,
 ): string {
   const value = formatUnits(amount, decimals);
   const [whole, f = ""] = value.split(".");
@@ -16,7 +21,7 @@ export function amountText(
 }
 export function timestampText(value: bigint): string {
   return (
-    new Date(Number(value) * 1000).toLocaleString("en-GB", {
+    new Date(Number(value) * MILLISECONDS_PER_SECOND).toLocaleString("en-GB", {
       timeZone: "UTC",
       dateStyle: "medium",
       timeStyle: "short",

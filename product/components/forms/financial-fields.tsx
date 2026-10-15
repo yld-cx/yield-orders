@@ -21,21 +21,16 @@ export function AmountInput({
   value,
   onChange,
   symbol,
-  labelAddon,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   symbol: string;
-  labelAddon?: ReactNode;
 }) {
   const id = useId();
   return (
     <Field className="my-4">
-      <div className="flex items-center justify-between gap-2">
-        <FieldLabel htmlFor={id}>{label}</FieldLabel>
-        {labelAddon}
-      </div>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
       <InputGroup>
         <InputGroupInput
           id={id}

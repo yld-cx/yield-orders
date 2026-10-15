@@ -98,13 +98,14 @@ export async function loadYieldList(
   if (!r.ok) throw new Error(`YieldList failed: ${r.status}`);
   return new Registry(await r.json());
 }
-const quotePreference = ["USDC", "USDT", "DAI", "EURC", "WETH"];
+const quotePreference = ["USD", "EUR", "ETH"];
 export function displayTokens(
   market: Pick<Market, "token0" | "token1">,
 ): readonly [Token, Token] {
   const rank = (t: Token) => {
-    const i = quotePreference.indexOf(t.symbol);
-    return i < 0 ? 100 : i;
+    const symbol = t.symbol.toUpperCase();
+    const i = quotePreference.findIndex((quote) => symbol.includes(quote));
+    return i < 0 ? quotePreference.length : i;
   };
   return rank(market.token0) < rank(market.token1)
     ? [market.token1, market.token0]

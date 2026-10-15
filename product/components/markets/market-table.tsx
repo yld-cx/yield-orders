@@ -1,4 +1,5 @@
 "use client";
+import { QUERY_TIMING } from "@yld-cx/sdk";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import {
   TableCell,
@@ -67,7 +68,6 @@ function MarketRow({
       const result = await sdk.discover(pair[0], {
         baseTick: market.baseTick,
         stepTicks: market.stepTicks,
-        radius: 4,
       });
       return {
         exists: true,
@@ -78,7 +78,7 @@ function MarketRow({
         checked: result.reads.length,
       };
     },
-    refetchInterval: 30000,
+    refetchInterval: QUERY_TIMING.marketRefresh,
   });
   const ticks =
     query.data?.ticks.filter((t) => t.durationDays === duration) ?? [];

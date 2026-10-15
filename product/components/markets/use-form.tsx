@@ -1,4 +1,10 @@
 "use client";
+import {
+  TRANSACTION_DEFAULTS,
+  BASIS_POINTS,
+  PERCENT_SCALE,
+  QUERY_TIMING,
+} from "@yld-cx/sdk";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { useState } from "react";
@@ -50,7 +56,9 @@ export function UseForm({
 }) {
   const [mode, setMode] = useState<"use" | "swap">("use"),
     [amount, setAmount] = useState(""),
-    [tolerance, setTolerance] = useState("50");
+    [tolerance, setTolerance] = useState(
+      String(TRANSACTION_DEFAULTS.toleranceBps),
+    );
   const network = getNetwork(market.network).slug;
   const asset: Token =
       tick?.state.asset.toLowerCase() === market.token1.address
@@ -61,8 +69,13 @@ export function UseForm({
     error = "";
   try {
     if (amount) raw = tokenAmount(amount, asset.decimals);
-    if (!/^\d{1,4}$/.test(tolerance) || Number(tolerance) > 1000)
-      throw new Error("Tolerance must be 0–1000 basis points");
+    if (
+      !/^\d{1,4}$/.test(tolerance) ||
+      Number(tolerance) > TRANSACTION_DEFAULTS.maxToleranceBps
+    )
+      throw new Error(
+        `Tolerance must be 0–${TRANSACTION_DEFAULTS.maxToleranceBps} basis points`,
+      );
   } catch (e) {
     error = explainError(e);
   }
@@ -70,7 +83,7 @@ export function UseForm({
     queryKey: ["quote", network, tick?.id.toString(), raw.toString()],
     queryFn: () => getSdk(network).quoteUse(tick!.id, raw),
     enabled: !!tick && raw > 0n && !error,
-    refetchInterval: 15000,
+    refetchInterval: QUERY_TIMING.liveRefresh,
   });
   return (
     <Card className="min-w-0">
@@ -154,8 +167,11 @@ export function UseForm({
                       onChange={(event) => setTolerance(event.target.value)}
                     />
                     <FieldDescription>
-                      50 = 0.5%. Caps are set from a fresh contract quote before
-                      review.
+                      {TRANSACTION_DEFAULTS.toleranceBps} ={" "}
+                      {(TRANSACTION_DEFAULTS.toleranceBps /
+                        Number(BASIS_POINTS)) *
+                        PERCENT_SCALE}
+                      %. Caps are set from a fresh contract quote before review.
                     </FieldDescription>
                   </Field>
                 </details>
@@ -207,9 +223,13 @@ export function UseForm({
                         raw,
                       ),
                       deadline =
-                        (await sdk.publicClient.getBlock()).timestamp + 300n;
+                        (await sdk.publicClient.getBlock()).timestamp +
+                        TRANSACTION_DEFAULTS.deadlineSeconds;
                     const cap = (value: bigint) =>
-                      (value * (10000n + BigInt(tolerance)) + 9999n) / 10000n;
+                      (value * (BASIS_POINTS + BigInt(tolerance)) +
+                        BASIS_POINTS -
+                        1n) /
+                      BASIS_POINTS;
                     return mode === "use"
                       ? {
                           kind: "use",

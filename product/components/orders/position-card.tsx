@@ -1,4 +1,11 @@
 "use client";
+import {
+  PERCENT_SCALE,
+  WITHDRAW_PERCENTAGES,
+  TRANSACTION_DEFAULTS,
+  BASIS_POINTS,
+  QUERY_TIMING,
+} from "@yld-cx/sdk";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { useState } from "react";
@@ -91,7 +98,7 @@ export function ProviderCard({
   const assetQuery = useToken(network, tick.asset),
     quoteQuery = useToken(network, tick.quote),
     account = useConnection();
-  const [percent, setPercent] = useState(100),
+  const [percent, setPercent] = useState<number>(PERCENT_SCALE),
     [unrestricted, setUnrestricted] = useState(false);
   if (assetQuery.isError || quoteQuery.isError)
     return (
@@ -135,7 +142,7 @@ export function ProviderCard({
           role="group"
           aria-label="Withdraw percentage"
         >
-          {[25, 50, 75, 100].map((p) => (
+          {WITHDRAW_PERCENTAGES.map((p) => (
             <Button
               variant={percent === p ? "secondary" : "outline"}
               size="sm"
@@ -143,7 +150,7 @@ export function ProviderCard({
               aria-pressed={percent === p}
               onClick={() => setPercent(p)}
             >
-              {p === 100 ? "Max" : `${p}%`}
+              {p === PERCENT_SCALE ? "Max" : `${p}%`}
             </Button>
           ))}
         </div>
@@ -163,18 +170,21 @@ export function ProviderCard({
         <TransactionFlow
           key={`withdraw/${tickId}/${percent}/${unrestricted}`}
           network={network}
-          label={`Withdraw ${percent === 100 ? "Max" : `${percent}%`}`}
+          label={`Withdraw ${percent === PERCENT_SCALE ? "Max" : `${percent}%`}`}
           asset={asset}
           quote={quote}
           disabled={position.activePrincipal === 0n}
           prepare={async () => {
             const sdk = getSdk(network),
               current = await sdk.getEarnPosition(account.address!, tickId),
-              amount = (current.activePrincipal * BigInt(percent)) / 100n;
+              amount =
+                (current.activePrincipal * BigInt(percent)) /
+                BigInt(PERCENT_SCALE);
             if (amount === 0n)
               throw new Error("No transferable principal for this percentage");
             const deadline =
-              (await sdk.publicClient.getBlock()).timestamp + 300n;
+              (await sdk.publicClient.getBlock()).timestamp +
+              TRANSACTION_DEFAULTS.deadlineSeconds;
             const initial = {
               kind: "withdraw" as const,
               tickId,
@@ -187,7 +197,10 @@ export function ProviderCard({
               ...initial,
               minImmediateAssetOut: unrestricted
                 ? 0n
-                : (preview.withdraw!.availableAssetOut * 9950n) / 10000n,
+                : (preview.withdraw!.availableAssetOut *
+                    (BASIS_POINTS -
+                      BigInt(TRANSACTION_DEFAULTS.toleranceBps))) /
+                  BASIS_POINTS,
             };
           }}
         />
@@ -272,7 +285,7 @@ export function UseCard({
         },
         account.address!,
       ),
-    refetchInterval: 15000,
+    refetchInterval: QUERY_TIMING.liveRefresh,
     retry: false,
   });
   if (assetQuery.isError || quoteQuery.isError)

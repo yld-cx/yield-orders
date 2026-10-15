@@ -117,7 +117,7 @@ describe("protocol price and Tick identity", () => {
     ]);
     expect(candidateLevels()).toEqual([
       0, -1000, 1000, -2000, 2000, -3000, 3000, -4000, 4000, -5000, 5000, -6000,
-      6000, -7000, 7000, -8000, 8000,
+      6000, -7000, 7000, -8000, 8000, -9000, 9000, -10000, 10000,
     ]);
     const ticks = tickCandidates(42n, -196000, 1000, 1);
     expect(
@@ -138,9 +138,12 @@ describe("protocol price and Tick identity", () => {
     ]);
     expect(new Set(ticks.map((t) => t.id)).size).toBe(ticks.length);
   });
-  it("extends incrementally, enforces radius bounds and TickMath bounds", () => {
+  it("supports configurable radii and enforces radius and TickMath bounds", () => {
     expect(candidateLevels(887000, 1000, 2)).toEqual([887000, 886000, 885000]);
-    expect(candidateLevels(-196000, 1000, 3, 3)).toEqual([-199000, -193000]);
+    expect(candidateLevels(-196000, 1000, 0)).toEqual([-196000]);
+    expect(candidateLevels(-196000, 1000, 1)).toEqual([
+      -196000, -197000, -195000,
+    ]);
     expect(() => candidateLevels(0, 0)).toThrow();
     expect(() => candidateLevels(1, 1000)).toThrow();
     expect(() => candidateLevels(0, 1000, 129)).toThrow();

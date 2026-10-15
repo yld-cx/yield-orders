@@ -2,7 +2,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { getSdk } from "@/lib/rpc";
 import { registry } from "@/lib/registry";
-import { DEFAULT_DURATION, type Market, type Token } from "@yld-cx/sdk";
+import {
+  DEFAULT_DURATION,
+  DISCOVERY_DEFAULTS,
+  QUERY_TIMING,
+  type Market,
+  type Token,
+} from "@yld-cx/sdk";
 import { getNetwork, pairIdFor, type NetworkSlug } from "@yld-cx/sdk/ethereum";
 import type { Address } from "viem";
 export function useToken(
@@ -16,7 +22,7 @@ export function useToken(
     queryFn: async () =>
       registry.getToken(getNetwork(network).id, address) ??
       (await getSdk(network).tokenMetadata(address as Address)),
-    staleTime: 3600000,
+    staleTime: QUERY_TIMING.tokenMetadataStale,
     enabled,
   });
 }
@@ -32,15 +38,15 @@ export function useMarket(network: NetworkSlug, key: string) {
           key,
           token0: token0.data as Token,
           token1: token1.data as Token,
-          stepTicks: config?.stepTicks ?? 1000,
-          baseTick: config?.baseTick ?? 0,
+          stepTicks: config?.stepTicks ?? DISCOVERY_DEFAULTS.stepTicks,
+          baseTick: config?.baseTick ?? DISCOVERY_DEFAULTS.baseTick,
           defaultDuration: config?.defaultDuration ?? DEFAULT_DURATION,
         }
       : undefined;
   const pair = useQuery({
     queryKey: ["pair", network, key],
     queryFn: () => getSdk(network).getPair(a as Address, b as Address),
-    refetchInterval: 30000,
+    refetchInterval: QUERY_TIMING.marketRefresh,
   });
   return {
     market,
@@ -58,6 +64,6 @@ export function useDeployment(network: NetworkSlug) {
       await getSdk(network).verifyDeployment();
       return true;
     },
-    staleTime: 60000,
+    staleTime: QUERY_TIMING.deploymentStale,
   });
 }

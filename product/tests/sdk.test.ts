@@ -14,7 +14,11 @@ import {
   Q128,
   type Preview,
 } from "@yld-cx/sdk/ethereum";
-import type { EconomicAction } from "@yld-cx/sdk";
+import {
+  DISCOVERY_DEFAULTS,
+  DISCOVERY_BATCH_SIZE,
+  type EconomicAction,
+} from "@yld-cx/sdk";
 const address = "0x0000000000000000000000000000000000000001";
 const owner = "0x0000000000000000000000000000000000000002";
 const state = {
@@ -291,11 +295,14 @@ describe("direct reads and write safety", () => {
       contracts.map(() => ({ status: "success", result: state })),
     );
     const sdk = client({ getBlockNumber: async () => 12n, multicall });
-    const result = await sdk.discover(42n, { radius: 8 });
+    const result = await sdk.discover(42n);
     expect(
-      multicall.mock.calls.every(([call]) => call.contracts.length <= 40),
+      multicall.mock.calls.every(
+        ([call]) => call.contracts.length <= DISCOVERY_BATCH_SIZE,
+      ),
     ).toBe(true);
-    expect(result.reads).toHaveLength(tickCandidates(42n, 0, 1000, 8).length);
+    expect(result.radius).toBe(DISCOVERY_DEFAULTS.radius);
+    expect(result.reads).toHaveLength(tickCandidates(42n).length);
   });
   it("pins all portfolio reads and retains a zero-raw supplier position", async () => {
     const blocks: bigint[] = [];

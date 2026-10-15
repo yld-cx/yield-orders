@@ -1,29 +1,49 @@
 import { encodeAbiParameters, keccak256, type Address } from "viem";
 import { canonicalPair } from "../registry/addresses.ts";
 import type { Direction, TickIdentity, TickState } from "../types/index.ts";
-import { DURATIONS } from "../constants.ts";
+import {
+  DURATIONS,
+  DISCOVERY_DEFAULTS,
+  MAX_DISCOVERY_RADIUS,
+  MIN_TICK,
+  MAX_TICK,
+  Q128,
+  MAX_AMOUNT,
+  FIXED_POINT_BITS,
+  SQRT_RATIO_SHIFT,
+  PRICE_RATIO_SHIFT,
+  MAX_UINT256,
+  MAX_DURATION_DAYS,
+  MAX_DECIMAL_INPUT_LENGTH,
+  YIELD_CURVE,
+  FORMAT_PRECISION,
+} from "../constants.ts";
 import { TICK_MULTIPLIERS } from "./tick-constants.ts";
-export const MIN_TICK = -887272,
-  MAX_TICK = 887272,
-  Q128 = 1n << 128n,
-  MAX_AMOUNT = 10n ** 30n;
+export { MIN_TICK, MAX_TICK, Q128, MAX_AMOUNT } from "../constants.ts";
 export function sqrtRatioAtTick(tick: number): bigint {
   if (!Number.isInteger(tick) || tick < MIN_TICK || tick > MAX_TICK)
     throw new Error("Price tick outside protocol bounds");
   const abs = Math.abs(tick);
-  let ratio = 1n << 128n;
+  let ratio = Q128;
   for (let i = 0; i < TICK_MULTIPLIERS.length; i++)
-    if ((abs & (1 << i)) !== 0) ratio = (ratio * TICK_MULTIPLIERS[i]) >> 128n;
-  if (tick > 0) ratio = ((1n << 256n) - 1n) / ratio;
-  return (ratio >> 32n) + ((ratio & ((1n << 32n) - 1n)) === 0n ? 0n : 1n);
+    if ((abs & (1 << i)) !== 0)
+      ratio = (ratio * TICK_MULTIPLIERS[i]) >> FIXED_POINT_BITS;
+  if (tick > 0) ratio = MAX_UINT256 / ratio;
+  return (
+    (ratio >> SQRT_RATIO_SHIFT) +
+    ((ratio & ((1n << SQRT_RATIO_SHIFT) - 1n)) === 0n ? 0n : 1n)
+  );
 }
 export function priceAtTick(tick: number): bigint {
   const s = sqrtRatioAtTick(tick);
-  return (s * s) >> 64n;
+  return (s * s) >> PRICE_RATIO_SHIFT;
 }
 export function decimalFraction(value: string): readonly [bigint, bigint] {
   // Covers uint8 token decimals and prices across the full TickMath range.
-  if (value.length > 512 || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value))
+  if (
+    value.length > MAX_DECIMAL_INPUT_LENGTH ||
+    !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)
+  )
     throw new Error("Enter a plain positive decimal");
   const [whole, fraction = ""] = value.split(".");
   return [BigInt(whole + fraction), 10n ** BigInt(fraction.length)];
@@ -38,7 +58,11 @@ export function tokenAmount(value: string, decimals: number): bigint {
     throw new Error("Amount outside protocol bounds");
   return result;
 }
-export function formatRatio(n: bigint, d: bigint, precision = 12): string {
+export function formatRatio(
+  n: bigint,
+  d: bigint,
+  precision: number = FORMAT_PRECISION.ratio,
+): string {
   if (d <= 0n) throw new Error("Invalid ratio");
   const whole = n / d;
   const f = (((n % d) * 10n ** BigInt(precision)) / d)
@@ -53,11 +77,14 @@ export function marginalYieldPercent(
   const { availableSupply, activeWorking, durationDays } = tick;
   if (availableSupply <= 0n || activeWorking < 0n || durationDays <= 0n)
     return undefined;
-  const principalCubed = (availableSupply + activeWorking) ** 3n;
+  const principalCubed =
+    (availableSupply + activeWorking) ** YIELD_CURVE.exponent;
   return formatRatio(
-    durationDays * (principalCubed + 99n * activeWorking ** 3n),
-    100n * principalCubed,
-    4,
+    durationDays *
+      (principalCubed +
+        YIELD_CURVE.weight * activeWorking ** YIELD_CURVE.exponent),
+    YIELD_CURVE.divisor * principalCubed,
+    FORMAT_PRECISION.yieldPercent,
   );
 }
 export function humanPrice(
@@ -71,13 +98,19 @@ export function humanPrice(
   const [numerator, denominator] = inverted
     ? [rawDenominator, rawNumerator]
     : [rawNumerator, rawDenominator];
-  // Keep 12 significant digits for readability without displaying tiny positive prices as zero.
+  // Keep the configured significant digits for readability without displaying tiny positive prices as zero.
   const precision =
     numerator >= denominator
-      ? Math.max(0, 12 - (numerator / denominator).toString().length)
+      ? Math.max(
+          0,
+          FORMAT_PRECISION.humanPrice -
+            (numerator / denominator).toString().length,
+        )
       : Math.max(
-          12,
-          denominator.toString().length - numerator.toString().length + 12,
+          FORMAT_PRECISION.humanPrice,
+          denominator.toString().length -
+            numerator.toString().length +
+            FORMAT_PRECISION.humanPrice,
         );
   return formatRatio(numerator, denominator, precision);
 }
@@ -152,7 +185,7 @@ export function tickIdFor(
   )
     throw new Error("Invalid price tick");
   const days = BigInt(durationDays);
-  if (days <= 0n || days > 106751991167300n)
+  if (days <= 0n || days > MAX_DURATION_DAYS)
     throw new Error("Invalid duration");
   return BigInt(
     keccak256(
@@ -169,10 +202,9 @@ export function tickIdFor(
   );
 }
 export function candidateLevels(
-  baseTick = 0,
-  stepTicks = 1000,
-  radius = 8,
-  startRadius = 0,
+  baseTick: number = DISCOVERY_DEFAULTS.baseTick,
+  stepTicks: number = DISCOVERY_DEFAULTS.stepTicks,
+  radius: number = DISCOVERY_DEFAULTS.radius,
 ): number[] {
   if (
     !Number.isSafeInteger(stepTicks) ||
@@ -183,17 +215,12 @@ export function candidateLevels(
     baseTick > MAX_TICK
   )
     throw new Error("Invalid Tick grid");
-  if (
-    !Number.isInteger(radius) ||
-    radius < 0 ||
-    radius > 128 ||
-    !Number.isInteger(startRadius) ||
-    startRadius < 0 ||
-    startRadius > radius
-  )
-    throw new Error("Discovery radius must be between 0 and 128");
+  if (!Number.isInteger(radius) || radius < 0 || radius > MAX_DISCOVERY_RADIUS)
+    throw new Error(
+      `Discovery radius must be between 0 and ${MAX_DISCOVERY_RADIUS}`,
+    );
   const result: number[] = [];
-  for (let r = startRadius; r <= radius; r++)
+  for (let r = 0; r <= radius; r++)
     for (const t of r === 0
       ? [baseTick]
       : [baseTick - r * stepTicks, baseTick + r * stepTicks])
@@ -202,18 +229,12 @@ export function candidateLevels(
 }
 export function tickCandidates(
   pairId: bigint,
-  baseTick = 0,
-  stepTicks = 1000,
-  radius = 8,
-  startRadius = 0,
+  baseTick: number = DISCOVERY_DEFAULTS.baseTick,
+  stepTicks: number = DISCOVERY_DEFAULTS.stepTicks,
+  radius: number = DISCOVERY_DEFAULTS.radius,
 ): TickIdentity[] {
   const out: TickIdentity[] = [];
-  for (const canonicalTick of candidateLevels(
-    baseTick,
-    stepTicks,
-    radius,
-    startRadius,
-  ))
+  for (const canonicalTick of candidateLevels(baseTick, stepTicks, radius))
     for (const direction of [0, 1] as const)
       for (const durationDays of DURATIONS) {
         const priceTick = direction === 0 ? canonicalTick : -canonicalTick;

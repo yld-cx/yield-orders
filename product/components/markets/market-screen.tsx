@@ -2,7 +2,6 @@
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeftRight } from "lucide-react";
 import { displayTokens } from "@yld-cx/sdk/registry";
@@ -15,7 +14,6 @@ import {
 import type { Duration, Market } from "@yld-cx/sdk";
 import { useMarket } from "@/hooks/use-market";
 import { useYieldBook, type BookTick } from "@/hooks/use-yield-book";
-import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
 import { Button } from "@yld-cx/ui/components/ui/button";
@@ -67,17 +65,12 @@ function MarketContent({
   const [selectedId, setSelectedId] = useState<bigint>();
   const book = useYieldBook(market, pairId, exists);
   const network = getNetwork(market.network).slug;
-  const bookSelection = book.ticks.find((tick) => tick.id === selectedId);
-  const exactSelection = useQuery({
-    queryKey: ["tick", network, "selected", selectedId?.toString()],
-    queryFn: async (): Promise<BookTick> => ({
-      id: selectedId!,
-      state: await getSdk(network).getTick(selectedId!),
-    }),
-    enabled: selectedId !== undefined && !bookSelection,
-    refetchInterval: 15000,
-  });
-  const selected = bookSelection ?? exactSelection.data;
+  const [supplyAsset, setSupplyAsset] = useState(
+    () => displayTokens(market)[0].address,
+  );
+  const selected = book.levels.find(
+    (level) => level.id === selectedId && level.durationDays === duration,
+  );
   const natural = displayTokens(market);
   const display = inverted ? ([natural[1], natural[0]] as const) : natural;
   const ticks = book.ticks.filter(
@@ -97,8 +90,7 @@ function MarketContent({
   const estimatedYield = yieldTick
     ? marginalYieldPercent(yieldTick.state)
     : undefined;
-  const incomplete =
-    book.failed > 0 || book.discovery.isError || book.live.isError;
+  const incomplete = book.failed > 0 || book.discovery.isError;
   const available = (side: BookTick[], index: 0 | 1) =>
     !exists
       ? `0 ${display[index].symbol}`
@@ -225,12 +217,6 @@ function MarketContent({
           </div>
         </dl>
       </section>
-      {exactSelection.isError && !bookSelection && (
-        <Message error>
-          Selected Tick could not be refreshed.{" "}
-          {explainError(exactSelection.error)}
-        </Message>
-      )}
       {display.some((t) => !t.listed) && (
         <Message>
           ⚠ Unlisted token · Review token compatibility before interacting
@@ -238,29 +224,37 @@ function MarketContent({
       )}
       <div className="my-4 grid items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]">
         <SupplyForm
-          key={`supply/${selected?.id ?? "draft"}`}
+          key={`supply/${supplyAsset}/${duration}/${selected?.id ?? "draft"}`}
           market={market}
-          pairId={pairId}
           display={display}
           duration={duration}
           onDurationChange={changeDuration}
           selectedTick={selected}
+          assetAddress={supplyAsset}
+          onAssetChange={(address) => {
+            if (address !== supplyAsset) {
+              setSupplyAsset(address);
+              setSelectedId(undefined);
+            }
+          }}
           pairExists={exists}
         />
         <YieldBook
-          market={market}
           display={display}
           duration={duration}
           onDurationChange={changeDuration}
           selected={selected}
-          onSelect={(tick) => setSelectedId(tick.id)}
+          onSelect={(level) => {
+            setSelectedId(level.id);
+            setSupplyAsset(level.asset.toLowerCase());
+          }}
           book={book}
         />
         <UseForm
           key={`use/${selected?.id ?? "empty"}`}
           market={market}
           display={display}
-          tick={selected}
+          tick={selected?.status === "exists" ? selected : undefined}
           hasLiquidity={ticks.some((t) => t.state.availableSupply > 0n)}
           isPending={exists && book.discovery.isPending}
           isIncomplete={incomplete}
