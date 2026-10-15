@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useConnect,
   useConnectors,
@@ -30,7 +30,7 @@ export function distinctConnectors(
   );
   const seen = new Set<string>();
   return connectors.filter((c) => {
-    if (c.id === "injected" && announced.length > 0) return false;
+    if (c.id === "injected") return false;
     if (
       c.id === "coinbaseWalletSDK" &&
       announced.some((a) => /coinbase/i.test(a.name))
@@ -41,6 +41,45 @@ export function distinctConnectors(
     seen.add(identity);
     return true;
   });
+}
+function WalletOption({
+  connector,
+  pending,
+  onChoose,
+}: {
+  connector: Connector;
+  pending: boolean;
+  onChoose: (connector: Connector) => Promise<void>;
+}) {
+  const needsProvider =
+    connector.type === "injected" || connector.type === "safe";
+  const [available, setAvailable] = useState(!needsProvider);
+  useEffect(() => {
+    if (!needsProvider) return;
+    let active = true;
+    async function detect() {
+      try {
+        const provider = await connector.getProvider();
+        if (active) setAvailable(Boolean(provider));
+      } catch {
+        if (active) setAvailable(false);
+      }
+    }
+    void detect();
+    return () => {
+      active = false;
+    };
+  }, [connector, needsProvider]);
+  if (!available) return null;
+  return (
+    <Button
+      variant="outline"
+      disabled={pending}
+      onClick={() => void onChoose(connector)}
+    >
+      {connector.name}
+    </Button>
+  );
 }
 function Qr({ uri }: { uri: string }) {
   const qr = QRCode.create(uri, { errorCorrectionLevel: "L" });
@@ -115,18 +154,29 @@ export function WalletConnect() {
         <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {connection.isConnected ? "Your wallet" : "Connect wallet"}
+              {connection.isConnected ? "Your wallet" : "Connect Wallet"}
             </DialogTitle>
             <DialogDescription>
-              Choose your wallet. Your funds stay in your control.
+              {connection.isConnected
+                ? "Manage your connected wallet."
+                : "Choose your wallet to connect."}
             </DialogDescription>
           </DialogHeader>
-          {connection.address && (
+          {connection.isConnected && connection.address ? (
             <div className="flex flex-col gap-3">
-              <p>{connection.connector?.name}</p>
-              <code>{connection.address}</code>
               <p>
-                Wallet network:{" "}
+                {connection.connector?.id === "injected"
+                  ? "Connected wallet"
+                  : connection.connector?.name}
+              </p>
+              <code className="break-all" title={connection.address}>
+                <span className="sm:hidden">
+                  {shortAddress(connection.address)}
+                </span>
+                <span className="hidden sm:inline">{connection.address}</span>
+              </code>
+              <p>
+                Network:{" "}
                 {connection.chain?.name ??
                   `Unsupported (${connection.chainId})`}
               </p>
@@ -141,43 +191,38 @@ export function WalletConnect() {
                 Disconnect
               </Button>
             </div>
+          ) : (
+            <>
+              <div className="flex flex-col gap-2">
+                {distinctConnectors(connectors).map((c) => (
+                  <WalletOption
+                    key={c.uid}
+                    connector={c}
+                    pending={connect.isPending}
+                    onChoose={choose}
+                  />
+                ))}
+              </div>
+              {connect.isPending && <Message>Waiting for your wallet…</Message>}
+              {uri && (
+                <div className="space-y-3 text-center">
+                  <Qr uri={uri} />
+                  <p>Scan with a WalletConnect wallet.</p>
+                  <Button
+                    variant="outline"
+                    onClick={() =>
+                      void navigator.clipboard
+                        .writeText(uri)
+                        .catch(() => setError("Clipboard unavailable"))
+                    }
+                  >
+                    Copy connection link
+                  </Button>
+                </div>
+              )}
+              {error && <Message error>{error}</Message>}
+            </>
           )}
-          <div className="flex flex-col gap-2">
-            {distinctConnectors(connectors).map((c) => (
-              <Button
-                key={c.uid}
-                variant="outline"
-                disabled={connect.isPending}
-                onClick={() => void choose(c)}
-              >
-                {c.name}
-              </Button>
-            ))}
-          </div>
-          {connect.isPending && <Message>Waiting for your wallet…</Message>}
-          {uri && (
-            <div className="space-y-3 text-center">
-              <Qr uri={uri} />
-              <p>Scan with a WalletConnect wallet.</p>
-              <Button
-                variant="outline"
-                onClick={() =>
-                  void navigator.clipboard
-                    .writeText(uri)
-                    .catch(() => setError("Clipboard unavailable"))
-                }
-              >
-                Copy connection link
-              </Button>
-            </div>
-          )}
-          {!process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID && (
-            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-              Mobile WalletConnect is unavailable until a project ID is
-              configured.
-            </p>
-          )}
-          {error && <Message error>{error}</Message>}
         </DialogContent>
       </Dialog>
     </>

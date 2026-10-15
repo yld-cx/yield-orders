@@ -196,6 +196,8 @@ async function injectWallets(page: Page) {
         authorized = sessionStorage.getItem(rdns + ".authorized") === "true",
         chain = sessionStorage.getItem(rdns + ".chain") ?? "0x1";
       const events = new Map<string, ((value: unknown) => void)[]>();
+      const switchRequests: string[] = [];
+      let switchError: number | undefined;
       const provider = {
         request: async ({ method, params }: Request) => {
           if (method === "eth_requestAccounts") {
@@ -206,6 +208,11 @@ async function injectWallets(page: Page) {
           if (method === "eth_accounts") return authorized ? [address] : [];
           if (method === "eth_chainId") return chain;
           if (method === "wallet_switchEthereumChain") {
+            switchRequests.push(params![0].chainId);
+            if (switchError)
+              throw Object.assign(new Error("Network switch failed"), {
+                code: switchError,
+              });
             chain = params![0].chainId;
             sessionStorage.setItem(rdns + ".chain", chain);
             events.get("chainChanged")?.forEach((fn) => fn(chain));
@@ -238,6 +245,10 @@ async function injectWallets(page: Page) {
       window.addEventListener("eip6963:requestProvider", announce);
       announce();
       return {
+        switchRequests,
+        failSwitch: (code: number) => {
+          switchError = code;
+        },
         account: (next: string) => {
           address = next;
           sessionStorage.setItem(rdns + ".address", next);
@@ -570,6 +581,119 @@ test("shared market filters restore after reload and browser history, with a cen
   await expect(network).toContainText("Ethereum");
 });
 
+test("wallet options hide unavailable browser and Safe providers", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Connect wallet", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("button", { name: "Coinbase Wallet", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: /^(Injected|Browser wallet|Safe)$/ }),
+  ).toHaveCount(0);
+});
+
+test("wallet options name a late discovered wallet without requesting access", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/");
+  await page
+    .getByRole("button", { name: "Connect wallet", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: /^(Injected|Browser wallet|Rabby)$/ }),
+  ).toHaveCount(0);
+  await page.evaluate(() => {
+    const requests: string[] = [];
+    const provider = {
+      // Compatibility flags must not override the wallet's announced name.
+      isMetaMask: true,
+      request: async ({ method }: { method: string }) => {
+        requests.push(method);
+        if (method === "eth_requestAccounts" || method === "eth_accounts")
+          return ["0x0000000000000000000000000000000000000001"];
+        if (method === "eth_chainId") return "0x2105";
+        throw new Error(`Unsupported test method ${method}`);
+      },
+      on: () => {},
+      removeListener: () => {},
+    };
+    Object.assign(window, { testWalletRequests: requests, ethereum: provider });
+    window.dispatchEvent(
+      new CustomEvent("eip6963:announceProvider", {
+        detail: {
+          info: {
+            uuid: "00000000-0000-4000-8000-000000000003",
+            name: "Rabby",
+            rdns: "io.rabby",
+            icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
+          },
+          provider,
+        },
+      }),
+    );
+  });
+  const rabby = dialog.getByRole("button", {
+    name: "Rabby",
+    exact: true,
+  });
+  await expect(rabby).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: /^(Injected|Browser wallet|MetaMask)$/ }),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { testWalletRequests: string[] })
+          .testWalletRequests,
+    ),
+  ).toEqual([]);
+  await rabby.click();
+  const connected = page.getByRole("button", { name: "0x0000…0001" });
+  await expect(connected).toBeVisible();
+  await connected.click();
+  await expect(
+    page.getByRole("dialog").locator("p").filter({ hasText: /^Rabby$/ }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("heading", { name: "Your wallet", exact: true }),
+  ).toBeVisible();
+  await expect(dialog).toHaveAccessibleDescription("Manage your connected wallet.");
+  await expect(
+    dialog.getByRole("button", { name: /^(Rabby|Coinbase Wallet)$/ }),
+  ).toHaveCount(0);
+  const address = dialog.locator("code");
+  const fullAddress = address.getByText(
+    "0x0000000000000000000000000000000000000001",
+    { exact: true },
+  );
+  const shortAddress = address.getByText("0x0000…0001", { exact: true });
+  if (isMobile) {
+    await expect(shortAddress).toBeVisible();
+    await expect(fullAddress).toBeHidden();
+  } else {
+    await expect(fullAddress).toBeVisible();
+    await expect(shortAddress).toBeHidden();
+  }
+  await dialog.getByRole("button", { name: "Disconnect", exact: true }).click();
+  const connectWallet = page.getByRole("button", {
+    name: "Connect wallet",
+    exact: true,
+  });
+  await expect(connectWallet).toBeVisible();
+  await connectWallet.click();
+  await expect(dialog).toHaveAccessibleDescription("Choose your wallet to connect.");
+  await expect(rabby).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Disconnect" })).toHaveCount(0);
+});
+
 test("multiple injected providers, wallet selection, account and network switching", async ({
   page,
 }) => {
@@ -585,7 +709,7 @@ test("multiple injected providers, wallet selection, account and network switchi
     page.getByRole("button", { name: "Phantom", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Injected", exact: true }),
+    page.getByRole("button", { name: /^(Injected|Browser wallet|Safe)$/ }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   await expect(page.getByRole("button", { name: "0x0000…0001" })).toBeVisible();
@@ -613,6 +737,94 @@ test("multiple injected providers, wallet selection, account and network switchi
     page.getByRole("button", { name: "Switch wallet network" }),
   ).toHaveCount(0);
 });
+test("network selector switches the connected wallet and preserves market filters", async ({
+  page,
+}) => {
+  await injectWallets(page);
+  await page.goto("/?network=ethereum&search=WETH&duration=30&ref=test#markets");
+  await page.getByRole("button", { name: "Connect wallet", exact: true }).click();
+  await page.getByRole("button", { name: "MetaMask", exact: true }).click();
+  const wallet = page.getByRole("button", { name: "0x0000…0001" });
+  await expect(wallet).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { testWallet: { switchRequests: string[] } })
+          .testWallet.switchRequests,
+    ),
+  ).toEqual([]);
+  const network = page.getByRole("combobox", { name: "Network", exact: true });
+  await network.click();
+  await page.getByRole("option", { name: "Base", exact: true }).click();
+  await expect(network).toContainText("Base");
+  await expect(network).toBeEnabled();
+  await expect(page).toHaveURL(/network=base/);
+  const selectedUrl = new URL(page.url());
+  expect(selectedUrl.searchParams.get("ref")).toBe("test");
+  expect(selectedUrl.hash).toBe("#markets");
+  await expect(page.getByLabel("Search markets")).toHaveValue("WETH");
+  await expect(page.getByRole("combobox", { name: "Market duration" })).toContainText("30D");
+  await wallet.click();
+  await expect(page.getByRole("dialog")).toContainText(/network: Base/i);
+  await page.getByRole("dialog").press("Escape");
+  await page.getByRole("link", { name: "Open WETH / USDC", exact: true }).click();
+  await expect(page).toHaveURL(`/market/base/${key}`);
+  await network.click();
+  await page.getByRole("option", { name: "Robinhood", exact: true }).click();
+  await expect(page).toHaveURL(
+    (url) => url.pathname === "/" && url.searchParams.get("network") === "robinhood",
+  );
+  await expect(network).toBeEnabled();
+  await wallet.click();
+  await expect(page.getByRole("dialog")).toContainText(/network: Robinhood/i);
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as { testWallet: { switchRequests: string[] } })
+          .testWallet.switchRequests,
+    ),
+  ).toEqual(["0x2105", "0x1237"]);
+});
+
+for (const [reason, code] of [["rejected", 4001], ["unsupported", -32601]] as const) {
+  test(`network selector keeps browsing available when wallet switching is ${reason}`, async ({
+    page,
+  }) => {
+    await injectWallets(page);
+    await page.goto("/?network=ethereum");
+    await page.getByRole("button", { name: "Connect wallet", exact: true }).click();
+    await page.getByRole("button", { name: "MetaMask", exact: true }).click();
+    const wallet = page.getByRole("button", { name: "0x0000…0001" });
+    await expect(wallet).toBeVisible();
+    await page.evaluate((errorCode) => {
+      (window as unknown as { testWallet: { failSwitch: (code: number) => void } })
+        .testWallet.failSwitch(errorCode);
+    }, code);
+    const network = page.getByRole("combobox", { name: "Network", exact: true });
+    await network.click();
+    await page.getByRole("option", { name: "Base", exact: true }).click();
+    await expect(network).toContainText("Base");
+    await expect(network).toBeEnabled();
+    await expect(page).toHaveURL(/network=base/);
+    const feedback = page.getByRole("banner").getByRole("alert");
+    await expect(feedback).toContainText("Wallet network unchanged.");
+    await wallet.click();
+    await expect(page.getByRole("dialog")).toContainText(/network: Ethereum/i);
+    await page.getByRole("dialog").press("Escape");
+    await network.click();
+    await page.getByRole("option", { name: "Ethereum", exact: true }).click();
+    await expect(network).toContainText("Ethereum");
+    await expect(feedback).toHaveCount(0);
+    expect(
+      await page.evaluate(
+        () =>
+          (window as unknown as { testWallet: { switchRequests: string[] } })
+            .testWallet.switchRequests,
+      ),
+    ).toEqual(["0x2105"]);
+  });
+}
+
 test("duration, pair inversion, exact price snapping and bounded discovery", async ({
   page,
 }) => {

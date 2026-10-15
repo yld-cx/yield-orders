@@ -155,6 +155,17 @@ describe("product identity and security", () => {
       "WalletConnect",
     ]);
   });
+  it("omits the generic injected option when no named wallets are detected", () => {
+    const connectors = [
+      { id: "injected", type: "injected", name: "Injected" },
+      { id: "coinbaseWalletSDK", type: "coinbaseWallet", name: "Coinbase Wallet" },
+      { id: "walletConnect", type: "walletConnect", name: "WalletConnect" },
+    ] as Connector[];
+    expect(distinctConnectors(connectors).map((c) => c.name)).toEqual([
+      "Coinbase Wallet",
+      "WalletConnect",
+    ]);
+  });
   it("renders creation semantics and gas without inventing an economic creation fee", () => {
     const preview: Preview = {
       action: { kind: "createPair", tokenA: a, tokenB: b },
