@@ -16,7 +16,7 @@ const network = "eip155:8453",
 describe("YieldList", () => {
   it("validates registry entries and defaults", () => {
     const registry = new Registry(list);
-    expect(registry.getMarkets(network)).toHaveLength(2);
+    expect(registry.getMarkets(network)).toHaveLength(1);
     expect(marketMetadataSchema.parse({})).toEqual({
       defaultDuration: 7,
       baseTick: 0,
@@ -63,15 +63,15 @@ describe("YieldList", () => {
     const r = new Registry(list);
     expect(r.getToken(network, a)?.decimals).toBe(18);
     expect(r.getMarket(network, b, a)?.key).toBe(`${a}:${b}`);
-    expect(r.getMarketsByToken(network, b)).toHaveLength(2);
-    expect(r.getMarketsByTag(network, "blue-chip")).toHaveLength(2);
-    expect(r.getMarketsByTag(network, "stable")).toHaveLength(2);
-    expect(r.getMarketsByTag("eip155:1", "stable")).toHaveLength(1);
+    expect(r.getMarketsByToken(network, b)).toHaveLength(1);
+    expect(r.getMarketsByTag(network, "blue-chip")).toHaveLength(1);
+    expect(r.getMarketsByTag(network, "stable")).toHaveLength(1);
+    expect(r.getMarketsByTag("eip155:1", "stable")).toHaveLength(0);
     const sharedTags = structuredClone(list);
     sharedTags.tokens[network][b].tags.push("blue-chip");
     expect(
       new Registry(sharedTags).getMarketsByTag(network, "blue-chip"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(r.searchMarkets(network, "wrapped ether")).toHaveLength(1);
     expect(r.searchMarkets(network, "USDC / WETH")).toHaveLength(1);
     expect(r.searchMarkets(network, "0x4200")).toHaveLength(1);

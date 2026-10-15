@@ -81,7 +81,7 @@ function OpenMarketForm({
           <Button
             variant="outline"
             size="icon"
-            className="self-center"
+            className="self-center m-0!"
             aria-label="Swap Token A and Token B"
             onClick={() => {
               setA(b);
@@ -150,6 +150,14 @@ function OpenMarketForm({
                     })}
                     onSuccess={() => router.push(path)}
                   />
+                  <Button
+                    className="mt-4 w-full"
+                    variant="outline"
+                    render={<Link href={path} />}
+                    nativeButton={false}
+                  >
+                    Preview Market →
+                  </Button>
                 </>
               ))}
           </div>

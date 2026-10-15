@@ -1,5 +1,10 @@
-import { FORMAT_PRECISION, LARGE_PRICE_THRESHOLD } from "@yld-cx/sdk";
-import type { Token, TickState } from "@yld-cx/sdk";
+import {
+  FORMAT_PRECISION,
+  LARGE_PRICE_THRESHOLD,
+  MIN_TICK,
+  MAX_TICK,
+} from "@yld-cx/sdk";
+import type { Token, TickState, Market } from "@yld-cx/sdk";
 import { decimalFraction, formatRatio, humanPrice } from "@yld-cx/sdk/ethereum";
 
 export function tickPrice(
@@ -36,4 +41,18 @@ export function priceText(value: string) {
   return (
     integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (tail ? `.${tail}` : "")
   );
+}
+
+export function discoveryBaseTick(
+  value: string | null,
+  market: Pick<Market, "baseTick" | "stepTicks">,
+): number {
+  if (value === null || !/^-?\d+$/.test(value)) return market.baseTick;
+  const tick = Number(value);
+  return Number.isSafeInteger(tick) &&
+    tick % market.stepTicks === 0 &&
+    tick >= MIN_TICK &&
+    tick <= MAX_TICK
+    ? tick
+    : market.baseTick;
 }

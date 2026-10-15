@@ -16,13 +16,17 @@ import {
 import { useYieldBook, type BookLevel } from "@/hooks/use-yield-book";
 import { SupplyForm } from "@/components/markets/supply-form";
 import { YieldBook } from "@/components/markets/yield-book";
+import { discoveryBaseTick } from "@/lib/market-values";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   discover: vi.fn(),
   flow: vi.fn(),
 }));
-vi.mock("@tanstack/react-query", () => ({ useQuery: mocks.query }));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: mocks.query,
+  keepPreviousData: (data: unknown) => data,
+}));
 vi.mock("@/lib/rpc", () => ({ getSdk: () => ({ discover: mocks.discover }) }));
 vi.mock("@/components/transactions/transaction-flow", () => ({
   TransactionFlow: (props: { label: string }) => {
@@ -82,7 +86,11 @@ const result: DiscoveryResult = {
         : { identity, status: "missing" },
   ),
 };
-function readBook(data: DiscoveryResult | null = result, error?: Error) {
+function readBook(
+  data: DiscoveryResult | null = result,
+  error?: Error,
+  baseTick = market.baseTick,
+) {
   mocks.query.mockReturnValue({
     data: data ?? undefined,
     isError: !!error,
@@ -92,7 +100,7 @@ function readBook(data: DiscoveryResult | null = result, error?: Error) {
   });
   let book!: ReturnType<typeof useYieldBook>;
   function Harness() {
-    book = useYieldBook(market, pairId);
+    book = useYieldBook(market, pairId, baseTick);
     return null;
   }
   renderToStaticMarkup(<Harness />);
@@ -118,11 +126,49 @@ function supply(
 }
 beforeEach(() => vi.clearAllMocks());
 
+describe("URL discovery center", () => {
+  it.each([
+    null,
+    "",
+    " ",
+    "1.5",
+    "-195001",
+    "887273",
+    "-887273",
+    "Infinity",
+    "NaN",
+    "1e3",
+    "+1000",
+    "9007199254740993",
+  ])("safely ignores invalid base tick %s", (value) => {
+    expect(discoveryBaseTick(value, market)).toBe(market.baseTick);
+    expect(
+      discoveryBaseTick(value, {
+        ...market,
+        baseTick: DISCOVERY_DEFAULTS.baseTick,
+      }),
+    ).toBe(DISCOVERY_DEFAULTS.baseTick);
+  });
+  it.each(["-195000", "1000", "0", "887000", "-887000"])(
+    "uses valid aligned canonical base tick %s",
+    (value) => {
+      expect(discoveryBaseTick(value, market)).toBe(Number(value));
+    },
+  );
+  it("uses the market's stepTicks for URL validation", () => {
+    expect(discoveryBaseTick("1500", { baseTick: 0, stepTicks: 500 })).toBe(
+      1500,
+    );
+    expect(discoveryBaseTick("1501", { baseTick: 0, stepTicks: 500 })).toBe(0);
+  });
+});
+
 describe("configured Yield Book", () => {
   it("discovers the entire shared grid with active ticks refreshed every 15 seconds", async () => {
     const book = readBook();
     const options = mocks.query.mock.calls[0][0];
     expect(options.refetchInterval).toBe(QUERY_TIMING.liveRefresh);
+    expect(options).not.toHaveProperty("enabled");
     await options.queryFn();
     expect(mocks.discover).toHaveBeenCalledWith(pairId, {
       baseTick: market.baseTick,
@@ -143,10 +189,34 @@ describe("configured Yield Book", () => {
     });
     expect(book.levels[2].state).toBeUndefined();
   });
+  it("uses the effective center in discovery, cache keys and failed-read candidates", async () => {
+    const center = market.baseTick + market.stepTicks;
+    const book = readBook(null, new Error("RPC unavailable"), center);
+    const options = mocks.query.mock.calls[0][0];
+    await options.queryFn();
+    expect(mocks.discover).toHaveBeenCalledWith(pairId, {
+      baseTick: center,
+      stepTicks: market.stepTicks,
+    });
+    expect(options.queryKey).toContain(center);
+    expect(options.queryKey).not.toContain(market.baseTick);
+    const expected = tickCandidates(pairId, center, market.stepTicks);
+    expect(book.levels.map(({ id }) => id)).toEqual(
+      expected.map(({ id }) => id),
+    );
+    expect(book.levels).toHaveLength(84);
+    expect(book.failed).toBe(84);
+    expect(book.baseTick).toBe(center);
+    expect(
+      new Set(book.levels.map(({ durationDays }) => durationDays)),
+    ).toEqual(new Set([Duration.Weekly, Duration.Monthly]));
+  });
   it("renders confirmed missing ticks as zero and failed reads as unavailable", () => {
     const book = readBook();
     const html = renderToStaticMarkup(
       <YieldBook
+        stepTicks={market.stepTicks}
+        onBaseTickChange={vi.fn()}
         display={[market.token0, market.token1]}
         duration={Duration.Monthly}
         book={book}

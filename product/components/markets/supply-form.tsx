@@ -114,7 +114,7 @@ export function SupplyForm({
               onChange={onDurationChange}
             />
             {selected && (
-              <Card>
+              <Card className="mb-4">
                 <CardContent className="space-y-4">
                   <Metric label="You provide">
                     {amount || "0"} {asset.symbol}
@@ -135,7 +135,7 @@ export function SupplyForm({
             {validation && <Message error>{validation}</Message>}
             {selected?.status === "failed" && (
               <Message error>
-                Selected price level could not be read. Retry discovery.{" "}
+                Selected price level could not be read. Refresh discovery.{" "}
                 {selected.error}
               </Message>
             )}

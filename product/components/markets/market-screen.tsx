@@ -3,19 +3,21 @@ import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeftRight } from "lucide-react";
 import { displayTokens } from "@yld-cx/sdk/registry";
 import {
   getNetwork,
+  candidateLevels,
   explainError,
   marginalYieldPercent,
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
-import type { Duration, Market } from "@yld-cx/sdk";
+import type { Duration, Market, TickIdentity } from "@yld-cx/sdk";
 import { useMarket } from "@/hooks/use-market";
 import { useYieldBook, type BookTick } from "@/hooks/use-yield-book";
 import { amountText } from "@/lib/utils";
-import { tickPrice, priceText } from "@/lib/market-values";
+import { tickPrice, priceText, discoveryBaseTick } from "@/lib/market-values";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
@@ -62,15 +64,39 @@ function MarketContent({
 }) {
   const [inverted, setInverted] = useState(false);
   const [duration, setDuration] = useState<Duration>(market.defaultDuration);
-  const [selectedId, setSelectedId] = useState<bigint>();
-  const book = useYieldBook(market, pairId, exists);
+  const [selectedIdentity, setSelectedIdentity] = useState<TickIdentity>();
+  const params = useSearchParams();
+  const baseTick = discoveryBaseTick(params.get("baseTick"), market);
+  const book = useYieldBook(market, pairId, baseTick);
   const network = getNetwork(market.network).slug;
   const [supplyAsset, setSupplyAsset] = useState(
     () => displayTokens(market)[0].address,
   );
-  const selected = book.levels.find(
-    (level) => level.id === selectedId && level.durationDays === duration,
-  );
+  const selectionInRange =
+    !selectedIdentity ||
+    candidateLevels(baseTick, market.stepTicks).includes(
+      selectedIdentity.direction === 0
+        ? selectedIdentity.priceTick
+        : -selectedIdentity.priceTick,
+    );
+  if (selectedIdentity && !selectionInRange) setSelectedIdentity(undefined);
+  const selected = selectionInRange
+    ? book.levels.find(
+        (level) =>
+          level.id === selectedIdentity?.id && level.durationDays === duration,
+      )
+    : undefined;
+  const changeBaseTick = (next: number) => {
+    const query = new URLSearchParams(window.location.search);
+    if (next === market.baseTick) query.delete("baseTick");
+    else query.set("baseTick", String(next));
+    const search = query.toString();
+    window.history.pushState(
+      null,
+      "",
+      `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`,
+    );
+  };
   const natural = displayTokens(market);
   const display = inverted ? ([natural[1], natural[0]] as const) : natural;
   const ticks = book.ticks.filter(
@@ -92,22 +118,20 @@ function MarketContent({
     : undefined;
   const incomplete = book.failed > 0 || book.discovery.isError;
   const available = (side: BookTick[], index: 0 | 1) =>
-    !exists
-      ? `0 ${display[index].symbol}`
-      : incomplete
-        ? "Incomplete"
-        : book.discovery.isPending
-          ? "…"
-          : `${amountText(
-              side.reduce((sum, t) => sum + t.state.availableSupply, 0n),
-              display[index].decimals,
-            )} ${display[index].symbol}`;
+    incomplete
+      ? "Incomplete"
+      : book.discovery.isPending
+        ? "…"
+        : `${amountText(
+            side.reduce((sum, t) => sum + t.state.availableSupply, 0n),
+            display[index].decimals,
+          )} ${display[index].symbol}`;
   const changeDuration = (next: Duration) => {
     setDuration(next);
-    setSelectedId(undefined);
+    setSelectedIdentity(undefined);
   };
   // Reveal the market once its initial book is ready; refetches keep it visible.
-  if (exists && book.discovery.isPending)
+  if (book.discovery.isPending)
     return <LoadingScreen label="Loading market…" />;
   return (
     <>
@@ -149,7 +173,7 @@ function MarketContent({
             <Badge variant="secondary" data-intent="term">
               {duration}D
             </Badge>
-            {(!exists || !book.discovery.isPending) &&
+            {!book.discovery.isPending &&
               !incomplete &&
               !ticks.some((t) => t.state.availableSupply > 0n) && (
                 <Badge variant="outline">New · No liquidity</Badge>
@@ -190,7 +214,7 @@ function MarketContent({
             <dd>
               {reference
                 ? `${priceText(tickPrice(reference, display))} ${display[1].symbol}`
-                : exists && book.discovery.isPending
+                : book.discovery.isPending
                   ? "…"
                   : incomplete
                     ? "Incomplete"
@@ -219,7 +243,7 @@ function MarketContent({
       </section>
       {display.some((t) => !t.listed) && (
         <Message>
-          ⚠ Unlisted token · Review token compatibility before interacting
+          ⚠️ Unlisted token · Review token compatibility before interacting
         </Message>
       )}
       <div className="my-4 grid items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]">
@@ -234,18 +258,20 @@ function MarketContent({
           onAssetChange={(address) => {
             if (address !== supplyAsset) {
               setSupplyAsset(address);
-              setSelectedId(undefined);
+              setSelectedIdentity(undefined);
             }
           }}
           pairExists={exists}
         />
         <YieldBook
+          stepTicks={market.stepTicks}
+          onBaseTickChange={changeBaseTick}
           display={display}
           duration={duration}
           onDurationChange={changeDuration}
           selected={selected}
           onSelect={(level) => {
-            setSelectedId(level.id);
+            setSelectedIdentity(level);
             setSupplyAsset(level.asset.toLowerCase());
           }}
           book={book}
@@ -256,7 +282,7 @@ function MarketContent({
           display={display}
           tick={selected?.status === "exists" ? selected : undefined}
           hasLiquidity={ticks.some((t) => t.state.availableSupply > 0n)}
-          isPending={exists && book.discovery.isPending}
+          isPending={book.discovery.isPending}
           isIncomplete={incomplete}
         />
       </div>

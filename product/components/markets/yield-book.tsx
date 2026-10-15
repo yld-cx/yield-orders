@@ -1,13 +1,29 @@
 "use client";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
-import { DURATIONS, type Token, type Duration } from "@yld-cx/sdk";
+import { useId, useLayoutEffect, useRef } from "react";
+import { RefreshCw } from "lucide-react";
+import {
+  DURATIONS,
+  MIN_TICK,
+  MAX_TICK,
+  YIELD_BOOK_LAYOUT,
+  type Token,
+  type Duration,
+} from "@yld-cx/sdk";
 import { marginalYieldPercent, explainError } from "@yld-cx/sdk/ethereum";
 import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
 import type { useYieldBook, BookLevel } from "@/hooks/use-yield-book";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@yld-cx/ui/components/ui/select";
 
 function BookRow({
   level,
@@ -29,7 +45,8 @@ function BookRow({
   return (
     <Button
       variant={selected ? "secondary" : "ghost"}
-      className="grid h-auto min-h-10 w-full grid-cols-[1.05fr_1.2fr_1fr_1fr] gap-2 px-2 text-right text-xs [&>span:first-child]:text-left"
+      className="grid w-full grid-cols-[1.05fr_1.2fr_1fr_1fr] gap-2 px-2 text-right text-xs [&>span:first-child]:text-left"
+      style={{ height: `${YIELD_BOOK_LAYOUT.rowHeightRem}rem` }}
       onClick={onSelect}
       aria-pressed={selected}
       data-tick-id={level.id.toString()}
@@ -61,6 +78,8 @@ function BookRow({
 }
 
 export function YieldBook({
+  stepTicks,
+  onBaseTickChange,
   display,
   duration,
   selected,
@@ -68,6 +87,8 @@ export function YieldBook({
   onDurationChange,
   book,
 }: {
+  stepTicks: number;
+  onBaseTickChange: (baseTick: number) => void;
   display: readonly [Token, Token];
   duration: Duration;
   selected?: BookLevel;
@@ -75,7 +96,36 @@ export function YieldBook({
   onDurationChange: (duration: Duration) => void;
   book: ReturnType<typeof useYieldBook>;
 }) {
-  const { discovery, levels, ticks, checked, missing, failed, radius } = book;
+  const {
+    baseTick,
+    discovery,
+    levels,
+    ticks,
+    checked,
+    missing,
+    failed,
+    radius,
+  } = book;
+  const baseTickId = useId();
+  const baseTickItems = [
+    baseTick - stepTicks,
+    baseTick,
+    baseTick + stepTicks,
+  ].map((tick) => ({
+    value: String(tick),
+    label: String(tick),
+    disabled: tick < MIN_TICK || tick > MAX_TICK,
+  }));
+  const askScroll = useRef<HTMLDivElement>(null);
+  const bidScroll = useRef<HTMLDivElement>(null);
+  const hasLevels = levels.length > 0;
+  const baseAddress = display[0].address;
+  useLayoutEffect(() => {
+    if (askScroll.current)
+      askScroll.current.scrollTop = askScroll.current.scrollHeight;
+    if (bidScroll.current)
+      bidScroll.current.scrollTop = bidScroll.current.scrollHeight;
+  }, [duration, baseAddress, hasLevels]);
   const reference =
     selected ??
     ticks.find(
@@ -91,7 +141,26 @@ export function YieldBook({
               Choose a price level · current market depth
             </p>
           </div>
-          <Badge variant="outline">Exact ticks</Badge>
+          <div className="flex shrink-0 items-center gap-2">
+            <Badge variant="outline">Exact ticks</Badge>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Refresh discovery"
+              title="Refresh discovery"
+              disabled={discovery.isFetching}
+              onClick={() => void discovery.refetch()}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={
+                  discovery.isFetching
+                    ? "animate-spin motion-reduce:animate-none"
+                    : undefined
+                }
+              />
+            </Button>
+          </div>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="text-xs text-muted-foreground">
@@ -135,7 +204,11 @@ export function YieldBook({
               {index === 0 ? "Ask" : "Bid"} · {asset.symbol} liquidity
             </div>
             <div
-              className="max-h-80 overflow-y-auto"
+              ref={index === 0 ? askScroll : bidScroll}
+              className="overflow-y-auto"
+              style={{
+                maxHeight: `${YIELD_BOOK_LAYOUT.visibleRows * YIELD_BOOK_LAYOUT.rowHeightRem}rem`,
+              }}
               role="group"
               aria-label={`${index === 0 ? "Ask" : "Bid"} price levels`}
             >
@@ -167,13 +240,52 @@ export function YieldBook({
                 ))}
             </div>
             {index === 0 && (
-              <div className="my-3 flex flex-wrap justify-center gap-2 border-y border-dashed py-3 text-xs text-muted-foreground">
-                Reference price{" "}
-                <strong>
-                  {reference
-                    ? `${priceText(tickPrice(reference, display))} ${display[1].symbol}`
-                    : "Not set"}
-                </strong>
+              <div
+                role="group"
+                aria-label="Reference price and base tick"
+                className="my-3 flex flex-wrap items-center justify-between gap-2 border-y border-dashed py-3 text-xs text-muted-foreground"
+              >
+                <p>
+                  Reference price{" "}
+                  <strong>
+                    {reference
+                      ? `${priceText(tickPrice(reference, display))} ${display[1].symbol}`
+                      : "Not set"}
+                  </strong>
+                </p>
+                <div className="flex items-center gap-2">
+                  <label htmlFor={baseTickId}>Base tick</label>
+                  <Select
+                    items={baseTickItems}
+                    value={String(baseTick)}
+                    onValueChange={(value) => {
+                      const next = baseTickItems.find(
+                        (item) => item.value === value && !item.disabled,
+                      );
+                      if (next) onBaseTickChange(Number(next.value));
+                    }}
+                  >
+                    <SelectTrigger
+                      id={baseTickId}
+                      aria-label="Base tick"
+                      size="sm"
+                      className="text-xs"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {baseTickItems.map((item) => (
+                        <SelectItem
+                          key={item.value}
+                          value={item.value}
+                          disabled={item.disabled}
+                        >
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             )}
           </div>
@@ -185,16 +297,8 @@ export function YieldBook({
         )}
         <p className="text-xs text-muted-foreground">
           {checked} identities checked · {missing} do not exist · {failed}{" "}
-          failed. Radius ±{radius} grid steps.
+          failed.
         </p>
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={discovery.isFetching}
-          onClick={() => void discovery.refetch()}
-        >
-          Retry discovery
-        </Button>
         <p className="mt-3 border-t pt-3 text-xs leading-relaxed text-muted-foreground">
           Available is executable liquidity. In Use excludes liquidity already
           moved to Resolving. A concrete transaction preview is authoritative.

@@ -1,5 +1,5 @@
 "use client";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   DISCOVERY_DEFAULTS,
   QUERY_TIMING,
@@ -27,7 +27,11 @@ export type BookLevel = TickIdentity & {
     | { status: "failed"; error: string; state?: never }
   );
 
-export function useYieldBook(market: Market, pairId: bigint, enabled = true) {
+export function useYieldBook(
+  market: Market,
+  pairId: bigint,
+  baseTick = market.baseTick,
+) {
   const network = getNetwork(market.network).slug;
   const discovery = useQuery({
     queryKey: [
@@ -35,29 +39,27 @@ export function useYieldBook(market: Market, pairId: bigint, enabled = true) {
       network,
       market.key,
       "book",
-      market.baseTick,
+      baseTick,
       market.stepTicks,
       DISCOVERY_DEFAULTS.radius,
     ],
     queryFn: () =>
       getSdk(network).discover(pairId, {
-        baseTick: market.baseTick,
+        baseTick,
         stepTicks: market.stepTicks,
       }),
+    placeholderData: keepPreviousData,
     staleTime: QUERY_TIMING.marketRefresh,
     refetchInterval: QUERY_TIMING.liveRefresh,
-    enabled,
   });
   const reads: DiscoveryRead[] =
     discovery.data?.reads ??
     (discovery.isError
-      ? tickCandidates(pairId, market.baseTick, market.stepTicks).map(
-          (identity) => ({
-            identity,
-            status: "failed",
-            error: explainError(discovery.error),
-          }),
-        )
+      ? tickCandidates(pairId, baseTick, market.stepTicks).map((identity) => ({
+          identity,
+          status: "failed",
+          error: explainError(discovery.error),
+        }))
       : []);
   const levels: BookLevel[] = reads.map((read) => {
     const identity = read.identity;
@@ -98,6 +100,7 @@ export function useYieldBook(market: Market, pairId: bigint, enabled = true) {
       level.status === "exists",
   );
   return {
+    baseTick,
     discovery,
     levels,
     ticks,

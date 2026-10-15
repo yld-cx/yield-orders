@@ -13,7 +13,8 @@ export const DISCOVERY_DEFAULTS = {
   radius: 10,
 } as const;
 export const MAX_DISCOVERY_RADIUS = 128;
-export const DISCOVERY_BATCH_SIZE = 40;
+export const DISCOVERY_BATCH_SIZE = 100;
+export const YIELD_BOOK_LAYOUT = { visibleRows: 5, rowHeightRem: 2.5 } as const;
 
 export const PORTFOLIO_DEFAULTS = { offset: 0, limit: 24 } as const;
 export const MAX_PORTFOLIO_PAGE_SIZE = 100;
