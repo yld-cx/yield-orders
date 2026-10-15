@@ -627,6 +627,7 @@ export class EthereumClient {
     onStatus?.("pending", hash);
     const receipt = await waitForTransactionReceipt(wallet, {
       hash,
+      timeout: 0,
       confirmations: 1,
       onReplaced: (replacement) => {
         if (replacement.reason === "cancelled")
