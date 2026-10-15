@@ -15,7 +15,7 @@ import sitemap from "@/app/sitemap";
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 describe("product identity and security", () => {
-  it("discloses the frozen Close fee and how it is paid before opening a Use", () => {
+  it("discloses the frozen Close fee and maturity settlement before opening a Use", () => {
     const preview: Preview = {
       action: {
         kind: "use",
@@ -45,8 +45,7 @@ describe("product identity and security", () => {
     const html = renderToStaticMarkup(<TransactionPreview preview={preview} />);
     expect(html).toContain("Close fee at maturity");
     expect(html).toContain("20 raw Quote units");
-    expect(html).toContain("deducted from locked Quote");
-    expect(html).toContain("no additional Quote payment is required");
+    expect(html).toContain("Close settles locked Quote at maturity.");
   });
   it("round-trips shared market filters, preserving search text and unrelated parameters", () => {
     const filters = {
