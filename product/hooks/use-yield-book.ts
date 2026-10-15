@@ -22,7 +22,8 @@ export function useYieldBook(market: Market, pairId: bigint, enabled = true) {
         startRadius: pageParam === 0 ? 0 : pageParam + 1,
       }),
     getNextPageParam: (last) => (last.radius >= 128 ? undefined : last.radius),
-    staleTime: Infinity,
+    staleTime: 30000,
+    refetchInterval: 30000,
     enabled,
   });
   const knownIds = [...sdk.knownTicks.values()]
@@ -33,7 +34,7 @@ export function useYieldBook(market: Market, pairId: bigint, enabled = true) {
   const live = useQuery({
     queryKey: ["known-ticks", network, market.key, knownIds],
     queryFn: () => sdk.refreshKnownTicks(pairId),
-    enabled: !!discovery.data,
+    enabled: enabled && !!discovery.data,
     refetchInterval: 15000,
     staleTime: 0,
   });

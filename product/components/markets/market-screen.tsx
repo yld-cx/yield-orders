@@ -9,7 +9,7 @@ import { displayTokens } from "@yld-cx/sdk/registry";
 import {
   getNetwork,
   explainError,
-  formatRatio,
+  marginalYieldPercent,
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
 import type { Duration, Market } from "@yld-cx/sdk";
@@ -63,9 +63,20 @@ function MarketContent({
 }) {
   const [inverted, setInverted] = useState(false);
   const [duration, setDuration] = useState<Duration>(market.defaultDuration);
-  const [selected, setSelected] = useState<BookTick>();
+  const [selectedId, setSelectedId] = useState<bigint>();
   const book = useYieldBook(market, pairId, exists);
   const network = getNetwork(market.network).slug;
+  const bookSelection = book.ticks.find((tick) => tick.id === selectedId);
+  const exactSelection = useQuery({
+    queryKey: ["tick", network, "selected", selectedId?.toString()],
+    queryFn: async (): Promise<BookTick> => ({
+      id: selectedId!,
+      state: await getSdk(network).getTick(selectedId!),
+    }),
+    enabled: selectedId !== undefined && !bookSelection,
+    refetchInterval: 15000,
+  });
+  const selected = bookSelection ?? exactSelection.data;
   const natural = displayTokens(market);
   const display = inverted ? ([natural[1], natural[0]] as const) : natural;
   const ticks = book.ticks.filter(
@@ -82,15 +93,9 @@ function MarketContent({
     ask.find((t) => t.state.availableSupply > 0n) ??
     bid.find((t) => t.state.availableSupply > 0n);
   const yieldTick = ask.find((t) => t.state.availableSupply > 0n);
-  const sample = yieldTick
-    ? yieldTick.state.availableSupply / 1000000n || 1n
-    : 0n;
-  const yieldQuote = useQuery({
-    queryKey: ["quote", network, yieldTick?.id.toString(), sample.toString()],
-    queryFn: () => getSdk(network).quoteUse(yieldTick!.id, sample),
-    enabled: !!yieldTick,
-    refetchInterval: 15000,
-  });
+  const estimatedYield = yieldTick
+    ? marginalYieldPercent(yieldTick.state)
+    : undefined;
   const incomplete =
     book.failed > 0 || book.discovery.isError || book.live.isError;
   const available = (side: BookTick[], index: 0 | 1) =>
@@ -106,7 +111,7 @@ function MarketContent({
             )} ${display[index].symbol}`;
   const changeDuration = (next: Duration) => {
     setDuration(next);
-    setSelected(undefined);
+    setSelectedId(undefined);
   };
   return (
     <>
@@ -205,11 +210,9 @@ function MarketContent({
             <dd className="text-ask">
               {incomplete
                 ? "Incomplete"
-                : yieldQuote.data
-                  ? `${formatRatio(yieldQuote.data[1] * 100n, sample, 4)}%`
-                  : yieldQuote.isError
-                    ? "Read failed"
-                    : "—"}
+                : estimatedYield !== undefined
+                  ? `${estimatedYield}%`
+                  : "—"}
             </dd>
           </div>
           <div>
@@ -218,6 +221,12 @@ function MarketContent({
           </div>
         </dl>
       </section>
+      {exactSelection.isError && !bookSelection && (
+        <Message error>
+          Selected Tick could not be refreshed.{" "}
+          {explainError(exactSelection.error)}
+        </Message>
+      )}
       {display.some((t) => !t.listed) && (
         <Message>
           ⚠ Unlisted token · Review token compatibility before interacting
@@ -240,7 +249,7 @@ function MarketContent({
           duration={duration}
           onDurationChange={changeDuration}
           selected={selected}
-          onSelect={setSelected}
+          onSelect={(tick) => setSelectedId(tick.id)}
           book={book}
         />
         <UseForm

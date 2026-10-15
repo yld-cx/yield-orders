@@ -15,6 +15,39 @@ import sitemap from "@/app/sitemap";
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 describe("product identity and security", () => {
+  it("discloses the frozen Close fee and how it is paid before opening a Use", () => {
+    const preview: Preview = {
+      action: {
+        kind: "use",
+        tickId: 1n,
+        amount: 1000n,
+        maxFullTermYieldAsset: 100n,
+        deadline: 200n,
+      },
+      account: a,
+      chainId: 8453,
+      blockNumber: 10n,
+      timestamp: 100n,
+      gas: 40000n,
+      position: {
+        tickId: 1n,
+        tickSeq: 0n,
+        user: a,
+        assetAmount: 1000n,
+        quotePrincipal: 2000n,
+        fullTermYieldAsset: 100n,
+        closeFee: 20n,
+        openedAt: 100n,
+        maturity: 604900n,
+        status: 1,
+      },
+    };
+    const html = renderToStaticMarkup(<TransactionPreview preview={preview} />);
+    expect(html).toContain("Close fee at maturity");
+    expect(html).toContain("20 raw Quote units");
+    expect(html).toContain("deducted from locked Quote");
+    expect(html).toContain("no additional Quote payment is required");
+  });
   it("round-trips shared market filters, preserving search text and unrelated parameters", () => {
     const filters = {
       search: "WETH / USDC +",

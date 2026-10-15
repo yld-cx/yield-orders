@@ -29,6 +29,11 @@ import { tickCandidates, tickIdFor } from "./math.ts";
 import { protocolErrorName } from "./errors.ts";
 type Return<N extends "withdraw" | "collect" | "repay" | "swap" | "close"> =
   ContractFunctionReturnType<typeof protocolAbi, "nonpayable", N>;
+export interface InputRequirement {
+  token: Address;
+  amount: bigint;
+  allowanceAmount: bigint;
+}
 export interface Preview {
   action: EconomicAction;
   account: Address;
@@ -43,7 +48,7 @@ export interface Preview {
   repay?: Return<"repay">;
   swap?: Return<"swap">;
   close?: Return<"close">;
-  input?: { token: Address; amount: bigint };
+  input?: InputRequirement;
   gas: bigint;
 }
 export type DiscoveryRead =
@@ -424,25 +429,40 @@ export class EthereumClient {
   }
   async requiredInput(
     action: EconomicAction,
-  ): Promise<{ token: Address; amount: bigint } | undefined> {
+    atBlock?: { number: bigint; timestamp: bigint },
+  ): Promise<InputRequirement | undefined> {
     if (action.kind === "supply")
       return {
-        token: (await this.getTick(action.tickId)).asset,
+        token: (await this.getTick(action.tickId, atBlock?.number)).asset,
         amount: action.amount,
+        allowanceAmount: action.amount,
       };
     if (action.kind === "use" || action.kind === "swap") {
-      const tick = await this.getTick(action.tickId);
-      const [quote] = await this.quoteUse(action.tickId, action.amount);
+      const tick = await this.getTick(action.tickId, atBlock?.number);
+      const [quote] = await this.quoteUse(
+        action.tickId,
+        action.amount,
+        atBlock?.number,
+      );
       return {
         token: tick.quote,
-        amount: action.kind === "swap" ? action.maxQuoteIn : quote,
+        amount: quote,
+        allowanceAmount: action.kind === "swap" ? action.maxQuoteIn : quote,
       };
     }
     if (action.kind === "repay") {
-      const p = await this.getUsePosition(action.positionId);
+      const block = atBlock ?? (await this.publicClient.getBlock());
+      const p = await this.getUsePosition(action.positionId, block.number);
+      if (block.timestamp >= p.maturity)
+        throw new Error("Position has matured. Refresh and review Close.");
+      const elapsed =
+        block.timestamp > p.openedAt ? block.timestamp - p.openedAt : 1n;
+      const term = p.maturity - p.openedAt;
+      const accruedYield = (p.fullTermYieldAsset * elapsed + term - 1n) / term;
       return {
-        token: (await this.getTick(p.tickId)).asset,
-        amount: p.assetAmount + action.maxYieldAsset,
+        token: (await this.getTick(p.tickId, block.number)).asset,
+        amount: p.assetAmount + accruedYield,
+        allowanceAmount: p.assetAmount + action.maxYieldAsset,
       };
     }
     return undefined;
@@ -526,7 +546,7 @@ export class EthereumClient {
       blockNumber,
       timestamp: block.timestamp,
       gas,
-      input: await this.requiredInput(action),
+      input: await this.requiredInput(action, block),
     };
     let cursor = 1;
     if (includeProvider)
@@ -638,10 +658,8 @@ export class EthereumClient {
       this.allowance(input.token, account),
     ]);
     if (balance < input.amount)
-      throw new Error(
-        "Insufficient token balance for the reviewed execution limit",
-      );
-    if (allowance >= input.amount) return;
+      throw new Error("Insufficient token balance for this action");
+    if (allowance >= input.allowanceAmount) return;
     const approve = async (
       amount: bigint,
       stage: "approving" | "approving-reset",
@@ -659,7 +677,7 @@ export class EthereumClient {
     };
     // Exact allowance, with explicit reset for zero-first tokens.
     if (allowance > 0n) await approve(0n, "approving-reset");
-    await approve(input.amount, "approving");
+    await approve(input.allowanceAmount, "approving");
   }
   async execute(
     preview: Preview,

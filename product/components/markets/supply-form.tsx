@@ -12,7 +12,7 @@ import {
   protocolErrorName,
   explainError,
   humanPrice,
-  formatRatio,
+  marginalYieldPercent,
 } from "@yld-cx/sdk/ethereum";
 import { getSdk } from "@/lib/rpc";
 import {
@@ -103,13 +103,7 @@ export function SupplyForm({
   });
   const exists = !!selected || tick.data?.exists;
   const state = selected?.state ?? tick.data?.state;
-  const sample = state ? state.availableSupply / 1000000n || 1n : 0n;
-  const estimatedYield = useQuery({
-    queryKey: ["quote", network, id?.toString(), sample.toString()],
-    queryFn: () => getSdk(network).quoteUse(id!, sample),
-    enabled: !!state && state.availableSupply > 0n,
-    refetchInterval: 15000,
-  });
+  const estimatedYield = state ? marginalYieldPercent(state) : undefined;
   const postedPrice = selected
     ? tickPrice(selected, display)
     : snap
@@ -176,7 +170,9 @@ export function SupplyForm({
                     size="xs"
                     variant="ghost"
                     onClick={() => {
-                      setAssetAddress(selectedTick.state.asset.toLowerCase());
+                      const nextAsset = selectedTick.state.asset.toLowerCase();
+                      if (nextAsset !== assetAddress) setAmount("");
+                      setAssetAddress(nextAsset);
                       setExact(true);
                     }}
                   >
@@ -206,11 +202,9 @@ export function SupplyForm({
                     {postedPrice} {display[1].symbol} / {display[0].symbol}
                   </Metric>
                   <Metric label="Estimated Yield">
-                    {estimatedYield.data
-                      ? `${formatRatio(estimatedYield.data[1] * 100n, sample, 4)}% / ${selected?.state.durationDays ?? duration}D`
-                      : estimatedYield.isError
-                        ? "Read failed"
-                        : "Yield when used and returned"}
+                    {estimatedYield !== undefined
+                      ? `${estimatedYield}% / ${selected?.state.durationDays ?? duration}D`
+                      : "Yield when used and returned"}
                   </Metric>
                   <details className="my-3 space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
                     <summary>Price details</summary>

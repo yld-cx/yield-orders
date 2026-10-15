@@ -8,6 +8,7 @@ import {
   type NetworkSlug,
   type Preview,
   type TransactionStage,
+  type InputRequirement,
   getNetwork,
 } from "@yld-cx/sdk/ethereum";
 import { getSdk } from "@/lib/rpc";
@@ -41,7 +42,6 @@ export function TransactionFlow({
   onSuccess?: (result: TransactionResult) => void;
 }) {
   const account = useConnection();
-  // Account/network/form changes remount the review so stale approval is never reused.
   return (
     <TransactionSession
       key={`${account.address}:${account.chainId}`}
@@ -72,10 +72,7 @@ function TransactionSession({
     [action, setAction] = useState<EconomicAction>(),
     [hash, setHash] = useState<string>(),
     [open, setOpen] = useState(false);
-  const [required, setRequired] = useState<{
-    token: `0x${string}`;
-    amount: bigint;
-  }>();
+  const [required, setRequired] = useState<InputRequirement>();
   const account = useConnection(),
     wallet = useWalletClient(),
     queries = useQueryClient();
@@ -117,8 +114,8 @@ function TransactionSession({
           sdk.allowance(input.token, account.address),
         ]);
         if (balance < input.amount)
-          throw new Error("Insufficient balance for the execution limit");
-        if (allowance < input.amount) {
+          throw new Error("Insufficient balance for this action");
+        if (allowance < input.allowanceAmount) {
           setStage("approval");
           return;
         }
@@ -219,8 +216,8 @@ function TransactionSession({
               <p>
                 Approve{" "}
                 {token
-                  ? `${amountText(required.amount, token.decimals)} ${token.symbol}`
-                  : `${required.amount} raw units of ${shortAddress(required.token)}`}
+                  ? `${amountText(required.allowanceAmount, token.decimals)} ${token.symbol}`
+                  : `${required.allowanceAmount} raw units of ${shortAddress(required.token)}`}
                 .
               </p>
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">

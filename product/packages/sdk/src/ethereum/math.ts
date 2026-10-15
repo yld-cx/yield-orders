@@ -1,6 +1,6 @@
 import { encodeAbiParameters, keccak256, type Address } from "viem";
 import { canonicalPair } from "../registry/addresses.ts";
-import type { Direction, TickIdentity } from "../types/index.ts";
+import type { Direction, TickIdentity, TickState } from "../types/index.ts";
 import { DURATIONS } from "../constants.ts";
 import { TICK_MULTIPLIERS } from "./tick-constants.ts";
 export const MIN_TICK = -887272,
@@ -22,7 +22,8 @@ export function priceAtTick(tick: number): bigint {
   return (s * s) >> 64n;
 }
 export function decimalFraction(value: string): readonly [bigint, bigint] {
-  if (value.length > 160 || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value))
+  // Covers uint8 token decimals and prices across the full TickMath range.
+  if (value.length > 512 || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value))
     throw new Error("Enter a plain positive decimal");
   const [whole, fraction = ""] = value.split(".");
   return [BigInt(whole + fraction), 10n ** BigInt(fraction.length)];
@@ -45,6 +46,19 @@ export function formatRatio(n: bigint, d: bigint, precision = 12): string {
     .padStart(precision, "0")
     .replace(/0+$/, "");
   return f ? `${whole}.${f}` : whole.toString();
+}
+export function marginalYieldPercent(
+  tick: Pick<TickState, "availableSupply" | "activeWorking" | "durationDays">,
+): string | undefined {
+  const { availableSupply, activeWorking, durationDays } = tick;
+  if (availableSupply <= 0n || activeWorking < 0n || durationDays <= 0n)
+    return undefined;
+  const principalCubed = (availableSupply + activeWorking) ** 3n;
+  return formatRatio(
+    durationDays * (principalCubed + 99n * activeWorking ** 3n),
+    100n * principalCubed,
+    4,
+  );
 }
 export function humanPrice(
   priceX128: bigint,

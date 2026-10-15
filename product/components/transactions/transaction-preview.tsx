@@ -68,6 +68,9 @@ export function TransactionPreview({
             {a(preview.position.fullTermYieldAsset)}
           </Metric>
           <Metric label="Yield paid now">0</Metric>
+          <Metric label="Close fee at maturity">
+            {q(preview.position.closeFee)}
+          </Metric>
           <Metric label="Maturity">
             {timestampText(preview.position.maturity)}
           </Metric>

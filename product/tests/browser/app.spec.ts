@@ -13,6 +13,8 @@ import {
   priceAtTick,
   humanPrice,
 } from "../../packages/sdk/src/ethereum/index.js";
+import type { TickState } from "../../packages/sdk/src/types/index.js";
+type TickOverrides = Map<bigint, Partial<TickState> | null>;
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   key = `${a}:${b}`;
@@ -25,6 +27,7 @@ const pairId = pairIdFor(a, b),
 function contractCall(
   data: Hex,
   pairExists = true,
+  tickOverrides?: TickOverrides,
 ): { success: boolean; returnData: Hex } {
   try {
     const decoded = decodeFunctionData({ abi: protocolAbi, data });
@@ -48,7 +51,11 @@ function contractCall(
     }
     if (decoded.functionName === "getTick") {
       const id = decoded.args[0];
-      if (![id7, id30, bid7, bid30, directId].includes(id))
+      if (
+        tickOverrides?.get(id) === null ||
+        (![id7, id30, bid7, bid30, directId].includes(id) &&
+          !tickOverrides?.has(id))
+      )
         throw new Error("missing");
       const bid = id === bid7 || id === bid30;
       return {
@@ -69,6 +76,7 @@ function contractCall(
             activeWorking: 0n,
             activePrincipal: 1000n * 10n ** 18n,
             settleCursor: 0n,
+            ...tickOverrides?.get(id),
           },
         }),
       };
@@ -110,7 +118,11 @@ function contractCall(
     };
   }
 }
-async function rpc(page: Page, pairExists = true) {
+async function rpc(
+  page: Page,
+  pairExists = true,
+  tickOverrides?: TickOverrides,
+) {
   await page.route(
     /https:\/\/(mainnet\.base\.org|ethereum-rpc\.publicnode\.com|rpc\.mainnet\.chain\.robinhood\.com)\/?$/,
     async (route) => {
@@ -140,13 +152,13 @@ async function rpc(page: Page, pairExists = true) {
                   abi: multicall3Abi,
                   functionName: "aggregate3",
                   result: decoded.args[0].map((c) =>
-                    contractCall(c.callData, pairExists),
+                    contractCall(c.callData, pairExists, tickOverrides),
                   ),
                 }),
               };
             }
           } catch {}
-          value ??= contractCall(call.data, pairExists);
+          value ??= contractCall(call.data, pairExists, tickOverrides);
           if (!value.success)
             return {
               id: item.id,
@@ -653,7 +665,7 @@ test("prototype market overview and inversion preserve canonical economics", asy
   await expect(overview.getByLabel("WETH crowned token")).toBeVisible();
   await expect(overview.getByText("1,000 WETH", { exact: true })).toBeVisible();
   await expect(overview.getByText("1,000 USDC", { exact: true })).toBeVisible();
-  await expect(overview.getByText("1%", { exact: true })).toBeVisible();
+  await expect(overview.getByText("0.07%", { exact: true })).toBeVisible();
   await page.getByLabel("Posted price").fill("3000");
   await page.getByLabel("Amount", { exact: true }).fill("1");
   await page.getByText("Price details", { exact: true }).click();
@@ -688,6 +700,95 @@ test("prototype market overview and inversion preserve canonical economics", asy
   await expect(
     page.getByRole("button", { name: "Preview Swap", exact: true }),
   ).toBeVisible();
+});
+
+test("returning to a selected price clears amounts only when the supplied token changes", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  await page
+    .locator(".yield-book button[aria-pressed]")
+    .filter({ hasText: "WETH" })
+    .first()
+    .click();
+  const amount = page.getByLabel("Amount", { exact: true });
+  await amount.fill("2");
+  await page
+    .getByRole("button", { name: "Use selected price", exact: true })
+    .click();
+  await expect(amount).toHaveValue("2");
+  await page.getByRole("tab", { name: "Bid · USDC", exact: true }).click();
+  await amount.fill("100");
+  await page
+    .getByRole("button", { name: "Use selected price", exact: true })
+    .click();
+  await expect(
+    page.getByRole("tab", { name: "Ask · WETH", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(amount).toHaveValue("");
+});
+
+test("selected grid and exact Ticks refresh availability and Yield without losing entered amounts", async ({
+  page,
+}) => {
+  const overrides: TickOverrides = new Map();
+  await rpc(page, true, overrides);
+  await page.clock.install();
+  await page.goto(`/market/base/${key}`);
+  await page
+    .locator(".yield-book button[aria-pressed]")
+    .filter({ hasText: "WETH" })
+    .first()
+    .click();
+  const usePanel = page
+    .getByRole("tabpanel")
+    .filter({ has: page.getByLabel("You receive") });
+  const supply = page.getByLabel("Provide liquidity", { exact: true });
+  await page.getByLabel("Amount", { exact: true }).fill("3");
+  await page.getByLabel("You receive").fill("1");
+  await expect(usePanel.getByText("1,000 WETH", { exact: true })).toBeVisible();
+  overrides.set(id7, {
+    availableSupply: 500n * 10n ** 18n,
+    activeWorking: 500n * 10n ** 18n,
+  });
+  await page.clock.fastForward(16000);
+  await expect(usePanel.getByText("500 WETH", { exact: true })).toBeVisible();
+  await expect(supply.getByText("0.9362% / 7D", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("3");
+  await expect(page.getByLabel("You receive")).toHaveValue("1");
+
+  await page.getByText("More price levels", { exact: true }).click();
+  await page.getByLabel("Exact Tick ID").fill(directId.toString());
+  await page.getByRole("button", { name: "Select exact Tick · 7D" }).click();
+  await expect(usePanel.getByText("1,000 WETH", { exact: true })).toBeVisible();
+  overrides.set(directId, {
+    availableSupply: 250n * 10n ** 18n,
+    activeWorking: 750n * 10n ** 18n,
+  });
+  await page.clock.fastForward(16000);
+  await expect(usePanel.getByText("250 WETH", { exact: true })).toBeVisible();
+  await expect(supply.getByText("2.9935% / 7D", { exact: true })).toBeVisible();
+});
+
+test("periodic discovery finds a newly funded level that was previously missing", async ({
+  page,
+}) => {
+  const newId = tickIdFor(pairId, 0, -197000, 7);
+  const overrides: TickOverrides = new Map([[newId, null]]);
+  await rpc(page, true, overrides);
+  await page.clock.install();
+  await page.goto(`/market/base/${key}`);
+  const rows = page
+    .locator(".yield-book button[aria-pressed]")
+    .filter({ hasText: "WETH" });
+  await expect(rows).toHaveCount(1);
+  overrides.set(newId, {
+    priceX128: priceAtTick(-197000),
+    availableSupply: 25n * 10n ** 18n,
+  });
+  await page.clock.fastForward(31000);
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: "25 WETH" })).toBeVisible();
 });
 
 test("prototype branding, background and copy", async ({ page }, testInfo) => {

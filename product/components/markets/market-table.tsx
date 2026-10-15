@@ -23,11 +23,11 @@ import {
 } from "lucide-react";
 import { displayTokens } from "@yld-cx/sdk/registry";
 import {
-  formatRatio,
+  marginalYieldPercent,
   getNetwork,
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
-import { type Market, type Duration } from "@yld-cx/sdk";
+import { type Market, type Duration, type Tick } from "@yld-cx/sdk";
 import { registry, marketPath } from "@/lib/registry";
 import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
@@ -141,14 +141,8 @@ function MarketRow({
           </TableCell>
           <TableCell className="p-4 text-right first:text-left">
             <YieldReference
-              market={market}
               duration={duration}
-              ticks={(query.data?.failed || query.isError ? [] : s.side).map(
-                (t) => ({
-                  id: t.id,
-                  available: t.state.availableSupply,
-                }),
-              )}
+              ticks={query.data?.failed || query.isError ? [] : s.side}
             />
           </TableCell>
         </Fragment>
@@ -160,34 +154,18 @@ function MarketRow({
   );
 }
 function YieldReference({
-  market,
   duration,
   ticks,
 }: {
-  market: Market;
   duration: Duration;
-  ticks: {
-    id: bigint;
-    available: bigint;
-  }[];
+  ticks: Tick[];
 }) {
-  const network = getNetwork(market.network).slug;
-  const tick = ticks.find((t) => t.available > 0n);
-  const sample = tick ? tick.available / 1000000n || 1n : 0n;
-  const quote = useQuery({
-    queryKey: ["quote", network, tick?.id.toString(), sample.toString()],
-    queryFn: () => getSdk(network).quoteUse(tick!.id, sample),
-    enabled: !!tick,
-    refetchInterval: 30000,
-  });
+  const tick = ticks.find((t) => t.state.availableSupply > 0n);
+  const estimatedYield = tick ? marginalYieldPercent(tick.state) : undefined;
   return (
     <>
       <div className="text-primary">
-        {quote.data
-          ? `${formatRatio(quote.data[1] * 100n, sample, 4)}%`
-          : quote.isError
-            ? "Read failed"
-            : "—"}
+        {estimatedYield !== undefined ? `${estimatedYield}%` : "—"}
       </div>
       <small>{tick ? `${duration}D reference` : "No liquidity yet"}</small>
     </>

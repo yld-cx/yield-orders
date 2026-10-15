@@ -11,8 +11,63 @@ import {
   tokenAmount,
   snappedPrice,
   humanPrice,
+  marginalYieldPercent,
+  MAX_AMOUNT,
 } from "@yld-cx/sdk/ethereum";
+import { priceText } from "@/lib/market-values";
 describe("protocol price and Tick identity", () => {
+  it("accepts supported high-decimal amounts and generated extreme prices", () => {
+    expect(tokenAmount(`0.${"0".repeat(254)}1`, 255)).toBe(1n);
+    expect(tokenAmount(`0.${"0".repeat(224)}1`, 255)).toBe(MAX_AMOUNT);
+    for (const price of [1n, Q128, priceAtTick(887272)])
+      for (const inverted of [false, true])
+        for (const [assetDecimals, quoteDecimals] of [
+          [0, 255],
+          [255, 0],
+        ]) {
+          const value = humanPrice(
+            price,
+            assetDecimals,
+            quoteDecimals,
+            inverted,
+          );
+          expect(() => priceText(value)).not.toThrow();
+        }
+    expect(() => tokenAmount("1".repeat(513), 0)).toThrow();
+  });
+  it("uses the marginal curve without inflating Yield for small raw supplies", () => {
+    for (const availableSupply of [1n, 1000000n, 10n ** 30n]) {
+      expect(
+        marginalYieldPercent({
+          availableSupply,
+          activeWorking: 0n,
+          durationDays: 7n,
+        }),
+      ).toBe("0.07");
+      expect(
+        marginalYieldPercent({
+          availableSupply,
+          activeWorking: 0n,
+          durationDays: 30n,
+        }),
+      ).toBe("0.3");
+    }
+    // At 50% utilization: 7 * (1 + 99 * 0.5^3) / 100 = 0.93625%.
+    expect(
+      marginalYieldPercent({
+        availableSupply: 500n,
+        activeWorking: 500n,
+        durationDays: 7n,
+      }),
+    ).toBe("0.9362");
+    expect(
+      marginalYieldPercent({
+        availableSupply: 0n,
+        activeWorking: 500n,
+        durationDays: 7n,
+      }),
+    ).toBeUndefined();
+  });
   it("never formats a positive extreme-decimal price as zero", () => {
     expect(humanPrice(1n, 0, 255)).not.toBe("0");
   });

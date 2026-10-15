@@ -13,6 +13,7 @@ import {
   Q128,
   type Preview,
 } from "@yld-cx/sdk/ethereum";
+import type { EconomicAction } from "@yld-cx/sdk";
 const address = "0x0000000000000000000000000000000000000001";
 const owner = "0x0000000000000000000000000000000000000002";
 const state = {
@@ -33,6 +34,124 @@ function client(methods: object) {
     runtimeCodeHash: keccak256("0x1234"),
   });
 }
+describe("balance requirements and approval caps", () => {
+  const repay: EconomicAction = {
+    kind: "repay",
+    positionId: 1n,
+    maxYieldAsset: 100n,
+  };
+  const swap: EconomicAction = {
+    kind: "swap",
+    tickId: 42n,
+    amount: 1000n,
+    maxQuoteIn: 1005n,
+    deadline: 300n,
+  };
+  function setup(balance: bigint, allowance = 0n, timestamp = 110n) {
+    const readContract = vi.fn(
+      async ({ functionName }: { functionName: string }) => {
+        if (functionName === "getTick") return state;
+        if (functionName === "getPosition")
+          return {
+            tickId: 42n,
+            assetAmount: 1000n,
+            fullTermYieldAsset: 100n,
+            openedAt: 100n,
+            maturity: 200n,
+          };
+        if (functionName === "quoteUse") return [1000n, 100n];
+        if (functionName === "balanceOf") return balance;
+        if (functionName === "allowance") return allowance;
+        throw new Error(`Unexpected read: ${functionName}`);
+      },
+    );
+    const simulateContract = vi.fn(async () => ({ request: {} }));
+    const sdk = client({
+      getChainId: async () => 8453,
+      getCode: async () => "0x1234",
+      getBlock: async () => ({ number: 99n, timestamp }),
+      readContract,
+      simulateContract,
+      waitForTransactionReceipt: async () => ({ status: "success" }),
+    });
+    const writeContract = vi.fn(async () => "0x1234");
+    const wallet = {
+      getChainId: async () => 8453,
+      getAddresses: async () => [owner],
+      writeContract,
+    } as unknown as WalletClient;
+    return { sdk, wallet, readContract, simulateContract, writeContract };
+  }
+  it("pins early repayment estimates and rounds elapsed Yield up", async () => {
+    const { sdk, readContract } = setup(1010n);
+    expect(await sdk.requiredInput(repay)).toEqual({
+      token: address,
+      amount: 1010n,
+      allowanceAmount: 1100n,
+    });
+    expect(
+      readContract.mock.calls.every(
+        ([call]) => "blockNumber" in call && call.blockNumber === 99n,
+      ),
+    ).toBe(true);
+    expect(
+      (await setup(1001n, 0n, 100n).sdk.requiredInput(repay))?.amount,
+    ).toBe(1001n);
+  });
+  it.each([
+    { action: repay, balance: 1010n, cap: 1100n },
+    { action: swap, balance: 1000n, cap: 1005n },
+  ])(
+    "approves the $action.kind cap with only the current transfer balance",
+    async ({ action, balance, cap }) => {
+      const { sdk, wallet, simulateContract, writeContract } = setup(
+        balance,
+        1n,
+      );
+      await sdk.approve(action, wallet, owner);
+      expect(simulateContract.mock.calls).toHaveLength(2);
+      expect(simulateContract).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          functionName: "approve",
+          args: [address, 0n],
+        }),
+      );
+      expect(simulateContract).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          functionName: "approve",
+          args: [address, cap],
+        }),
+      );
+      expect(writeContract).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("keeps actual Swap payment separate from its tolerance cap", async () => {
+    expect(await setup(1000n).sdk.requiredInput(swap)).toEqual({
+      token: owner,
+      amount: 1000n,
+      allowanceAmount: 1005n,
+    });
+  });
+  it("rejects insufficient current balance before requesting approval", async () => {
+    const { sdk, wallet, writeContract } = setup(1009n);
+    await expect(sdk.approve(repay, wallet, owner)).rejects.toThrow(
+      "Insufficient token balance",
+    );
+    expect(writeContract).not.toHaveBeenCalled();
+  });
+  it("does not reset an allowance that already covers the cap", async () => {
+    const { sdk, wallet, writeContract } = setup(1010n, 1100n);
+    await sdk.approve(repay, wallet, owner);
+    expect(writeContract).not.toHaveBeenCalled();
+  });
+  it("directs matured repayments to a fresh Close review", async () => {
+    await expect(
+      setup(1100n, 0n, 200n).sdk.requiredInput(repay),
+    ).rejects.toThrow("review Close");
+  });
+});
 describe("direct reads and write safety", () => {
   it.each(["cancelled", "replaced"])(
     "does not confirm an unrelated %s transaction",

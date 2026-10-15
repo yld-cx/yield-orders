@@ -4,7 +4,11 @@ import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DURATIONS, type Market, type Token, type Duration } from "@yld-cx/sdk";
-import { getNetwork, formatRatio, explainError } from "@yld-cx/sdk/ethereum";
+import {
+  getNetwork,
+  marginalYieldPercent,
+  explainError,
+} from "@yld-cx/sdk/ethereum";
 import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
@@ -27,14 +31,7 @@ function BookRow({
   display: readonly [Token, Token];
   side: "ask" | "bid";
 }) {
-  const sample = tick.state.availableSupply / 1000000n || 1n;
-  const network = getNetwork(asset.network).slug;
-  const yieldQuote = useQuery({
-    queryKey: ["quote", network, tick.id.toString(), sample.toString()],
-    queryFn: () => getSdk(network).quoteUse(tick.id, sample),
-    enabled: tick.state.availableSupply > 0n,
-    refetchInterval: 15000,
-  });
+  const estimatedYield = marginalYieldPercent(tick.state);
   return (
     <Button
       variant={selected ? "secondary" : "ghost"}
@@ -51,11 +48,7 @@ function BookRow({
       </span>
       <span>{amountText(tick.state.activeWorking, asset.decimals)}</span>
       <span className={side === "ask" ? "text-ask" : "text-bid"}>
-        {yieldQuote.data
-          ? `${formatRatio(yieldQuote.data[1] * 100n, sample, 4)}%`
-          : yieldQuote.isError
-            ? "Failed"
-            : "—"}
+        {estimatedYield !== undefined ? `${estimatedYield}%` : "—"}
       </span>
     </Button>
   );
