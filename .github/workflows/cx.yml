@@ -1,0 +1,38 @@
+name: Product CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "product/**"
+      - ".github/workflows/cx.yml"
+  push:
+    branches: [main]
+    paths:
+      - "product/**"
+      - ".github/workflows/cx.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  product:
+    name: Product
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./product
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: product/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
