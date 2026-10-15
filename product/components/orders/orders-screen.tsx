@@ -12,6 +12,7 @@ import { useNetwork } from "@/components/layout/providers";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Input } from "@yld-cx/ui/components/ui/input";
 import { Message } from "@/components/forms/financial-fields";
+import LoadingScreen from "@/components/layout/loading-screen";
 import { WalletConnect } from "@/components/wallet/wallet-connect";
 import { ProviderCard, UseCard } from "./position-card";
 import { registry } from "@/lib/registry";
@@ -149,55 +150,59 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
               </Button>
             ))}
           </div>
-          {query.isPending && (
-            <Message>Reading your onchain portfolio…</Message>
-          )}
-          {query.isError && (
-            <Message error>
-              Portfolio could not be read. {explainError(query.error)}
-            </Message>
-          )}
           <TabsContent value={tab}>
-            <div className="mt-4 grid gap-4 md:grid-cols-2">
-              {tab === "provide"
-                ? filteredProviders.map((p) => (
-                    <ProviderCard
-                      key={p.tickId.toString()}
-                      network={network}
-                      {...p}
-                    />
-                  ))
-                : filteredUses.map((p) => (
-                    <UseCard
-                      key={p.positionId.toString()}
-                      network={network}
-                      {...p}
-                      timestamp={timestamp}
-                    />
-                  ))}
-            </div>
-            {query.isSuccess &&
-              (tab === "provide" ? filteredProviders : filteredUses).length ===
-                0 && (
-                <Card className="items-center text-center [&_h2]:text-xl [&_h3]:text-lg [&_p]:max-w-xl [&_p]:text-muted-foreground">
-                  <CardContent className="space-y-4">
-                    <h3>
-                      No{" "}
-                      {tab === "provide" ? "Provide positions" : "active Uses"}{" "}
-                      match these filters.
-                    </h3>
-                  </CardContent>
-                </Card>
+            <div className="mt-4 min-h-64" aria-busy={query.isPending}>
+              {query.isPending && (
+                <LoadingScreen className="min-h-64" label="Loading Orders…" />
               )}
-            {query.hasNextPage && (
-              <Button
-                variant="outline"
-                disabled={query.isFetchingNextPage}
-                onClick={() => void query.fetchNextPage()}
-              >
-                Load more Orders
-              </Button>
-            )}
+              {query.isError && (
+                <Message error>
+                  Portfolio could not be read. {explainError(query.error)}
+                </Message>
+              )}
+              <div className="grid gap-4 md:grid-cols-2">
+                {tab === "provide"
+                  ? filteredProviders.map((p) => (
+                      <ProviderCard
+                        key={p.tickId.toString()}
+                        network={network}
+                        {...p}
+                      />
+                    ))
+                  : filteredUses.map((p) => (
+                      <UseCard
+                        key={p.positionId.toString()}
+                        network={network}
+                        {...p}
+                        timestamp={timestamp}
+                      />
+                    ))}
+              </div>
+              {query.isSuccess &&
+                (tab === "provide" ? filteredProviders : filteredUses)
+                  .length === 0 && (
+                  <Card className="items-center text-center [&_h2]:text-xl [&_h3]:text-lg [&_p]:max-w-xl [&_p]:text-muted-foreground">
+                    <CardContent className="space-y-4">
+                      <h3>
+                        No{" "}
+                        {tab === "provide"
+                          ? "Provide positions"
+                          : "active Uses"}{" "}
+                        match these filters.
+                      </h3>
+                    </CardContent>
+                  </Card>
+                )}
+              {query.hasNextPage && (
+                <Button
+                  variant="outline"
+                  disabled={query.isFetchingNextPage}
+                  onClick={() => void query.fetchNextPage()}
+                >
+                  Load more Orders
+                </Button>
+              )}
+            </div>
             <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
               {tab === "provide"
                 ? "Provide positions remain visible while Active liquidity, Resolving principal, or claimable assets remain. Yield comes from Repay; Swap/Close creates Quote proceeds."

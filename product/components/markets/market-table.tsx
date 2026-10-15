@@ -43,6 +43,7 @@ import {
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Input } from "@yld-cx/ui/components/ui/input";
 import { DurationSelect } from "@/components/forms/financial-fields";
+import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
 import { PairIcons } from "./token-icon";
 function MarketRow({
   market,
@@ -123,25 +124,29 @@ function MarketRow({
         <Fragment key={i}>
           <TableCell className="p-4 text-right first:text-left">
             <div className={i === 0 ? "text-ask" : "text-bid"}>
-              {query.isPending
-                ? "Loading…"
-                : query.isError
-                  ? "Read failed"
-                  : query.data?.failed
-                    ? "Incomplete"
-                    : `${amountText(s.available, tokens[i].decimals)} ${tokens[i].symbol}`}
+              {query.isPending ? (
+                <Skeleton
+                  className="ml-auto h-5 w-20 motion-reduce:animate-none"
+                  aria-label="Loading liquidity…"
+                />
+              ) : query.isError ? (
+                "Read failed"
+              ) : query.data?.failed ? (
+                "Incomplete"
+              ) : (
+                `${amountText(s.available, tokens[i].decimals)} ${tokens[i].symbol}`
+              )}
             </div>
-            <small>
-              {query.isSuccess && !query.data.failed
+            <small className={query.isPending ? "invisible" : undefined}>
+              {query.isPending || (query.isSuccess && !query.data.failed)
                 ? "Available"
-                : query.isPending
-                  ? ""
-                  : "Refresh to retry"}
+                : "Refresh to retry"}
             </small>
           </TableCell>
           <TableCell className="p-4 text-right first:text-left">
             <YieldReference
               duration={duration}
+              pending={query.isPending}
               ticks={query.data?.failed || query.isError ? [] : s.side}
             />
           </TableCell>
@@ -156,18 +161,31 @@ function MarketRow({
 function YieldReference({
   duration,
   ticks,
+  pending,
 }: {
   duration: Duration;
   ticks: Tick[];
+  pending: boolean;
 }) {
   const tick = ticks.find((t) => t.state.availableSupply > 0n);
   const estimatedYield = tick ? marginalYieldPercent(tick.state) : undefined;
   return (
     <>
       <div className="text-primary">
-        {estimatedYield !== undefined ? `${estimatedYield}%` : "—"}
+        {pending ? (
+          <Skeleton
+            className="ml-auto h-5 w-12 motion-reduce:animate-none"
+            aria-label="Loading yield…"
+          />
+        ) : estimatedYield !== undefined ? (
+          `${estimatedYield}%`
+        ) : (
+          "—"
+        )}
       </div>
-      <small>{tick ? `${duration}D reference` : "No liquidity yet"}</small>
+      <small className={pending ? "invisible" : undefined}>
+        {tick || pending ? `${duration}D reference` : "No liquidity yet"}
+      </small>
     </>
   );
 }
@@ -270,25 +288,25 @@ export function MarketTable() {
         <Card className="gap-0 p-0">
           <CardContent className="space-y-4">
             {markets.length > 0 ? (
-              <Table className="[&_tr>:nth-child(4)]:hidden [&_tr>:nth-child(5)]:hidden [&_tr>:nth-child(6)]:hidden md:[&_tr>:nth-child(4)]:table-cell md:[&_tr>:nth-child(5)]:table-cell md:[&_tr>:nth-child(6)]:table-cell">
+              <Table className="min-w-[28rem] table-fixed md:min-w-[48rem] [&_tr>:nth-child(4)]:hidden [&_tr>:nth-child(5)]:hidden [&_tr>:nth-child(6)]:hidden md:[&_tr>:nth-child(4)]:table-cell md:[&_tr>:nth-child(5)]:table-cell md:[&_tr>:nth-child(6)]:table-cell">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="px-4 text-right first:text-left">
+                    <TableHead className="w-[45%] px-4 text-right first:text-left md:w-[30%]">
                       Market
                     </TableHead>
-                    <TableHead className="px-4 text-right first:text-left">
+                    <TableHead className="w-[30%] px-4 text-right first:text-left md:w-[15%]">
                       Ask liquidity
                     </TableHead>
-                    <TableHead className="px-4 text-right first:text-left">
+                    <TableHead className="w-[25%] px-4 text-right first:text-left md:w-[15%]">
                       Ask Yield
                     </TableHead>
-                    <TableHead className="px-4 text-right first:text-left">
+                    <TableHead className="px-4 text-right first:text-left md:w-[15%]">
                       Bid liquidity
                     </TableHead>
-                    <TableHead className="px-4 text-right first:text-left">
+                    <TableHead className="px-4 text-right first:text-left md:w-[15%]">
                       Bid Yield
                     </TableHead>
-                    <TableHead className="px-4 text-right first:text-left">
+                    <TableHead className="px-4 text-right first:text-left md:w-[10%]">
                       <span className="sr-only">Open</span>
                     </TableHead>
                   </TableRow>

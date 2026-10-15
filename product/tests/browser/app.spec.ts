@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
   decodeFunctionData,
+  encodeFunctionData,
   encodeFunctionResult,
   encodeErrorResult,
   multicall3Abi,
@@ -287,6 +288,128 @@ test.beforeEach(async ({ page }) => {
   });
   await rpc(page);
 });
+test("market keeps one spinner through initial reads and preserves content during refresh", async ({
+  page,
+}) => {
+  let releasePair!: () => void;
+  let releaseBook!: () => void;
+  const pairReady = new Promise<void>((resolve) => (releasePair = resolve));
+  let bookReady = new Promise<void>((resolve) => (releaseBook = resolve));
+  let bookRequests = 0;
+  const pairCall = encodeFunctionData({
+    abi: protocolAbi,
+    functionName: "getPair",
+    args: [a, b],
+  }).slice(2);
+  await page.route("https://mainnet.base.org", async (route) => {
+    if (route.request().postData()!.includes(pairCall)) await pairReady;
+    else {
+      bookRequests++;
+      await bookReady;
+    }
+    await route.fallback();
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto(`/market/base/${key}`);
+  const loading = page
+    .getByRole("status")
+    .filter({ hasText: "Loading market…" });
+  await expect(loading).toBeVisible();
+  await expect(loading.locator('[aria-hidden="true"]')).toHaveCSS(
+    "animation-name",
+    "none",
+  );
+  const spinner = loading.locator("svg");
+  await expect(spinner).toHaveCSS("color", "rgb(0, 255, 76)");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(spinner).toHaveCSS("animation-name", "spin");
+  await expect(spinner).toHaveCSS("animation-iteration-count", "infinite");
+  await expect(spinner).toHaveCSS("animation-timing-function", "linear");
+  const initialSpinner = await loading.boundingBox();
+  const initialFooter = await page.locator("footer").boundingBox();
+  releasePair();
+  await expect.poll(() => bookRequests).toBeGreaterThan(0);
+  await expect(loading).toBeVisible();
+  expect(await loading.boundingBox()).toEqual(initialSpinner);
+  expect(await page.locator("footer").boundingBox()).toEqual(initialFooter);
+  await expect(page.getByRole("heading", { name: "Yield Book" })).toHaveCount(
+    0,
+  );
+  releaseBook();
+  await expect(page.getByRole("heading", { name: "Yield Book" })).toBeVisible();
+  await expect(loading).toHaveCount(0);
+  await page.getByLabel("Posted price").fill("3000");
+  await page.getByLabel("Amount", { exact: true }).fill("1");
+  await page.getByText("More price levels", { exact: true }).click();
+  bookReady = new Promise<void>((resolve) => (releaseBook = resolve));
+  await page.getByRole("button", { name: "Retry discovery" }).click();
+  await expect(
+    page.getByRole("button", { name: "Retry discovery" }),
+  ).toBeDisabled();
+  await expect(loading).toHaveCount(0);
+  await expect(page.getByLabel("Posted price")).toHaveValue("3000");
+  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1");
+  releaseBook();
+  await expect(
+    page.getByRole("button", { name: "Retry discovery" }),
+  ).toBeEnabled();
+});
+
+test("market lookup reserves space while loading", async ({ page }) => {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => (release = resolve));
+  await page.route("https://mainnet.base.org", async (route) => {
+    await ready;
+    await route.fallback();
+  });
+  await page.goto("/market/open");
+  const loading = page
+    .getByRole("status")
+    .filter({ hasText: "Checking market…" });
+  await expect(loading).toBeVisible();
+  const description = page.getByText(
+    "Creating a pair does not supply liquidity",
+    {
+      exact: false,
+    },
+  );
+  const before = await description.boundingBox();
+  release();
+  await expect(
+    page.getByRole("button", { name: "View Market →" }),
+  ).toBeVisible();
+  await expect(loading).toHaveCount(0);
+  expect(await description.boundingBox()).toEqual(before);
+});
+
+test("market summary cells keep their positions when reads finish", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => (release = resolve));
+  await page.route("https://mainnet.base.org", async (route) => {
+    await ready;
+    await route.fallback();
+  });
+  await page.goto("/");
+  const row = page.getByRole("row").filter({
+    has: page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  });
+  await expect(row.locator('[data-slot="skeleton"]').first()).toBeVisible();
+  await expect(row.getByRole("status")).toHaveCount(0);
+  const cells = row.getByRole("cell");
+  const before = await cells.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().toJSON()),
+  );
+  release();
+  await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(0);
+  expect(
+    await cells.evaluateAll((nodes) =>
+      nodes.map((node) => node.getBoundingClientRect().toJSON()),
+    ),
+  ).toEqual(before);
+});
+
 test("market search, tags, network isolation and responsive layout", async ({
   page,
 }, testInfo) => {

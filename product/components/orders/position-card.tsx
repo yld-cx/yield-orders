@@ -22,6 +22,7 @@ import { getSdk } from "@/lib/rpc";
 import { useToken } from "@/hooks/use-market";
 import { amountText, timestampText } from "@/lib/utils";
 import { Metric, Message } from "@/components/forms/financial-fields";
+import LoadingScreen from "@/components/layout/loading-screen";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
 import { Field, FieldLabel } from "@yld-cx/ui/components/ui/field";
 import { Checkbox } from "@yld-cx/ui/components/ui/checkbox";
@@ -102,7 +103,7 @@ export function ProviderCard({
     return (
       <Card className="min-w-0">
         <CardContent className="space-y-4">
-          <Message>Reading position token metadata…</Message>
+          <LoadingScreen className="min-h-64" label="Loading position…" />
         </CardContent>
       </Card>
     );
@@ -284,7 +285,7 @@ export function UseCard({
     return (
       <Card className="min-w-0">
         <CardContent className="space-y-4">
-          <Message>Reading position token metadata…</Message>
+          <LoadingScreen className="min-h-64" label="Loading position…" />
         </CardContent>
       </Card>
     );

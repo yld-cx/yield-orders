@@ -20,6 +20,7 @@ import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
+import LoadingScreen from "@/components/layout/loading-screen";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
 import { YieldBook } from "./yield-book";
 import { SupplyForm } from "./supply-form";
@@ -35,7 +36,7 @@ export function MarketScreen({
   pair: string;
 }) {
   const result = useMarket(network, pair);
-  if (result.isPending) return <Message>Reading market…</Message>;
+  if (result.isPending) return <LoadingScreen label="Loading market…" />;
   if (result.error || !result.market)
     return (
       <Message error>
@@ -104,7 +105,7 @@ function MarketContent({
       : incomplete
         ? "Incomplete"
         : book.discovery.isPending
-          ? "Loading…"
+          ? "…"
           : `${amountText(
               side.reduce((sum, t) => sum + t.state.availableSupply, 0n),
               display[index].decimals,
@@ -113,6 +114,9 @@ function MarketContent({
     setDuration(next);
     setSelectedId(undefined);
   };
+  // Reveal the market once its initial book is ready; refetches keep it visible.
+  if (exists && book.discovery.isPending)
+    return <LoadingScreen label="Loading market…" />;
   return (
     <>
       <div className="flex flex-wrap items-center gap-3 py-6 text-xs text-muted-foreground">
@@ -195,7 +199,7 @@ function MarketContent({
               {reference
                 ? `${priceText(tickPrice(reference, display))} ${display[1].symbol}`
                 : exists && book.discovery.isPending
-                  ? "Loading…"
+                  ? "…"
                   : incomplete
                     ? "Incomplete"
                     : "Not set"}

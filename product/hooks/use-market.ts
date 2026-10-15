@@ -12,6 +12,7 @@ export function useToken(
 ) {
   return useQuery<Token>({
     queryKey: ["token", network, address.toLowerCase()],
+    initialData: () => registry.getToken(getNetwork(network).id, address),
     queryFn: async () =>
       registry.getToken(getNetwork(network).id, address) ??
       (await getSdk(network).tokenMetadata(address as Address)),

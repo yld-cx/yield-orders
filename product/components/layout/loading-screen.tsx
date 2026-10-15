@@ -1,10 +1,28 @@
-import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
-export default function LoadingScreen() {
+import { cn } from "@yld-cx/ui/lib/utils";
+import { LoaderIcon } from "lucide-react";
+
+export default function LoadingScreen({
+  label = "Loading…",
+  className,
+}: {
+  label?: string;
+  className?: string;
+}) {
   return (
-    <div role="status" className="my-8 space-y-4">
-      <p className="text-sm text-muted-foreground">Loading yld.cx…</p>
-      <Skeleton className="h-8 w-48" />
-      <Skeleton className="h-40 w-full" />
+    <div
+      className={cn(
+        "flex min-h-[70svh] items-center justify-center",
+        className,
+      )}
+    >
+      <span role="status" className="inline-flex items-center justify-center">
+        <LoaderIcon
+          aria-hidden="true"
+          strokeWidth={1}
+          className="size-50 text-brand opacity-3 motion-safe:animate-[spin_10s_linear_infinite]"
+        />
+        <span className="sr-only">{label}</span>
+      </span>
     </div>
   );
 }

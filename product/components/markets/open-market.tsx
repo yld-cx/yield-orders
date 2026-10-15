@@ -15,6 +15,7 @@ import { TokenSelector } from "./token-selector";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
+import LoadingScreen from "@/components/layout/loading-screen";
 import { useToken } from "@/hooks/use-market";
 import { ArrowDownUp } from "lucide-react";
 export function OpenMarket() {
@@ -100,53 +101,58 @@ function OpenMarketForm({
             <Message error>{explainError(tokenB.error)}</Message>
           )}
           {validation && <Message>{validation}</Message>}
-          {query.isFetching && key && (
-            <Message>Checking canonical onchain pair…</Message>
-          )}
-          {query.isError && (
-            <Message error>{explainError(query.error)}</Message>
-          )}
-          {query.data &&
-            key &&
-            (query.data[3] ? (
-              <>
-                <Message>
-                  <strong>Market found</strong>
-                  <br />
-                  {tokenA.data?.symbol ?? "Token A"} /{" "}
-                  {tokenB.data?.symbol ?? "Token B"} already exists on{" "}
-                  {getNetwork(network).name}.
-                </Message>
-                <Button
-                  className="w-full"
-                  render={<Link href={path} />}
-                  nativeButton={false}
-                >
-                  View Market →
-                </Button>
-              </>
-            ) : (
-              <>
-                <Message>New market · Ready to create</Message>
-                <TransactionFlow
-                  key={`${network}/${key}`}
-                  network={network}
-                  label="Create Market"
-                  disabled={
-                    !tokenA.data ||
-                    !tokenB.data ||
-                    !!tokenA.error ||
-                    !!tokenB.error
-                  }
-                  prepare={async () => ({
-                    kind: "createPair",
-                    tokenA: a as Address,
-                    tokenB: b as Address,
-                  })}
-                  onSuccess={() => router.push(path)}
-                />
-              </>
-            ))}
+          <div className="min-h-40" aria-busy={query.isLoading}>
+            {query.isLoading && (
+              <LoadingScreen
+                className="min-h-40 [&_svg]:size-16"
+                label="Checking market…"
+              />
+            )}
+            {query.isError && (
+              <Message error>{explainError(query.error)}</Message>
+            )}
+            {query.data &&
+              key &&
+              (query.data[3] ? (
+                <>
+                  <Message>
+                    <strong>Market found</strong>
+                    <br />
+                    {tokenA.data?.symbol ?? "Token A"} /{" "}
+                    {tokenB.data?.symbol ?? "Token B"} already exists on{" "}
+                    {getNetwork(network).name}.
+                  </Message>
+                  <Button
+                    className="w-full"
+                    render={<Link href={path} />}
+                    nativeButton={false}
+                  >
+                    View Market →
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Message>New market · Ready to create</Message>
+                  <TransactionFlow
+                    key={`${network}/${key}`}
+                    network={network}
+                    label="Create Market"
+                    disabled={
+                      !tokenA.data ||
+                      !tokenB.data ||
+                      !!tokenA.error ||
+                      !!tokenB.error
+                    }
+                    prepare={async () => ({
+                      kind: "createPair",
+                      tokenA: a as Address,
+                      tokenB: b as Address,
+                    })}
+                    onSuccess={() => router.push(path)}
+                  />
+                </>
+              ))}
+          </div>
         </CardContent>
       </Card>
       <p className="mx-auto mt-6 max-w-xl text-center text-xs leading-relaxed text-muted-foreground">

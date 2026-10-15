@@ -6,9 +6,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       <AppHeader />
       <main
         id="main"
-        className="mx-auto min-h-[70vh] max-w-[1380px] px-4 pb-16 sm:px-6 lg:px-9"
+        className="mx-auto max-w-[1380px] px-4 pb-16 sm:px-6 lg:px-9"
       >
-        {children}
+        <div className="min-h-[70svh]">{children}</div>
         <footer className="mt-10 flex flex-wrap justify-between gap-4 border-t pt-6 text-xs text-muted-foreground">
           <span>
             ♛ yld˙ᶜˣ · Open. Permissionless. Immutable.{" "}

@@ -16,6 +16,7 @@ import { useYieldBook, type BookTick } from "@/hooks/use-yield-book";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Input } from "@yld-cx/ui/components/ui/input";
 import { Message } from "@/components/forms/financial-fields";
+import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
 function BookRow({
   tick,
   asset,
@@ -133,9 +134,6 @@ export function YieldBook({
           <span>In use</span>
           <span>Yield</span>
         </div>
-        {discovery.isFetching && !discovery.data && (
-          <Message>Checking supported price levels…</Message>
-        )}
         {discovery.isError && (
           <Message error>{explainError(discovery.error)}</Message>
         )}
@@ -245,17 +243,22 @@ export function YieldBook({
               inputMode="numeric"
             />
           </Field>
-          {direct.isFetching && directId && (
-            <Message>Reading exact Tick…</Message>
-          )}
-          {direct.isError && (
-            <Message error>{explainError(direct.error)}</Message>
-          )}
-          {direct.data && (
-            <Button variant="outline" onClick={() => onSelect(direct.data)}>
-              Select exact Tick · {direct.data.state.durationDays.toString()}D
-            </Button>
-          )}
+          <div className="flex min-h-9 items-center">
+            {direct.isLoading && (
+              <Skeleton
+                className="h-9 w-40 motion-reduce:animate-none"
+                aria-label="Loading Tick…"
+              />
+            )}
+            {direct.isError && (
+              <Message error>{explainError(direct.error)}</Message>
+            )}
+            {direct.data && (
+              <Button variant="outline" onClick={() => onSelect(direct.data)}>
+                Select exact Tick · {direct.data.state.durationDays.toString()}D
+              </Button>
+            )}
+          </div>
         </details>
         <p className="mt-3 border-t pt-3 text-xs leading-relaxed text-muted-foreground">
           Available is executable liquidity. In Use excludes liquidity already
