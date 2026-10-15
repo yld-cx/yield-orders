@@ -128,6 +128,7 @@ function TransactionSession({
   }
   async function approve() {
     setError("");
+    setHash(undefined);
     try {
       if (!wallet.data || !account.address || !action)
         throw new Error("Wallet unavailable");
@@ -140,6 +141,7 @@ function TransactionSession({
   }
   async function execute() {
     setError("");
+    setHash(undefined);
     try {
       if (!wallet.data || !preview || preview.account !== account.address)
         throw new Error("Wallet changed. Review a new preview.");
