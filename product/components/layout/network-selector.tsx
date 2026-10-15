@@ -1,7 +1,7 @@
 "use client";
 import { usePathname, useRouter } from "next/navigation";
 import { useConnection, useSwitchChain } from "wagmi";
-import { explainError, getNetwork, networks } from "@yld-cx/sdk/ethereum";
+import { getNetwork, networks } from "@yld-cx/sdk/ethereum";
 import { marketFilterParams, parseMarketFilters } from "@/lib/market-filters";
 import { useNetwork } from "./providers";
 import {
@@ -71,13 +71,6 @@ export function NetworkSelector() {
           ))}
         </SelectContent>
       </Select>
-      {connection.isConnected &&
-        connection.chainId !== current.chain.id &&
-        switchChain.error && (
-          <p role="alert" className="text-xs text-destructive">
-            Wallet network unchanged. {explainError(switchChain.error)}
-          </p>
-        )}
     </div>
   );
 }

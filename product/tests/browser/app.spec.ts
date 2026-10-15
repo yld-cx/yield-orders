@@ -646,7 +646,9 @@ test("wallet options name a late discovered wallet without requesting access", a
   });
   await expect(rabby).toBeVisible();
   await expect(
-    dialog.getByRole("button", { name: /^(Injected|Browser wallet|MetaMask)$/ }),
+    dialog.getByRole("button", {
+      name: /^(Injected|Browser wallet|MetaMask)$/,
+    }),
   ).toHaveCount(0);
   expect(
     await page.evaluate(
@@ -660,12 +662,17 @@ test("wallet options name a late discovered wallet without requesting access", a
   await expect(connected).toBeVisible();
   await connected.click();
   await expect(
-    page.getByRole("dialog").locator("p").filter({ hasText: /^Rabby$/ }),
+    page
+      .getByRole("dialog")
+      .locator("p")
+      .filter({ hasText: /^Rabby$/ }),
   ).toBeVisible();
   await expect(
     dialog.getByRole("heading", { name: "Your wallet", exact: true }),
   ).toBeVisible();
-  await expect(dialog).toHaveAccessibleDescription("Manage your connected wallet.");
+  await expect(dialog).toHaveAccessibleDescription(
+    "Manage your connected wallet.",
+  );
   await expect(
     dialog.getByRole("button", { name: /^(Rabby|Coinbase Wallet)$/ }),
   ).toHaveCount(0);
@@ -689,9 +696,13 @@ test("wallet options name a late discovered wallet without requesting access", a
   });
   await expect(connectWallet).toBeVisible();
   await connectWallet.click();
-  await expect(dialog).toHaveAccessibleDescription("Choose your wallet to connect.");
+  await expect(dialog).toHaveAccessibleDescription(
+    "Choose your wallet to connect.",
+  );
   await expect(rabby).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Disconnect" })).toHaveCount(0);
+  await expect(dialog.getByRole("button", { name: "Disconnect" })).toHaveCount(
+    0,
+  );
 });
 
 test("multiple injected providers, wallet selection, account and network switching", async ({
@@ -741,8 +752,12 @@ test("network selector switches the connected wallet and preserves market filter
   page,
 }) => {
   await injectWallets(page);
-  await page.goto("/?network=ethereum&search=WETH&duration=30&ref=test#markets");
-  await page.getByRole("button", { name: "Connect wallet", exact: true }).click();
+  await page.goto(
+    "/?network=ethereum&search=WETH&duration=30&ref=test#markets",
+  );
+  await page
+    .getByRole("button", { name: "Connect wallet", exact: true })
+    .click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   const wallet = page.getByRole("button", { name: "0x0000…0001" });
   await expect(wallet).toBeVisible();
@@ -763,16 +778,21 @@ test("network selector switches the connected wallet and preserves market filter
   expect(selectedUrl.searchParams.get("ref")).toBe("test");
   expect(selectedUrl.hash).toBe("#markets");
   await expect(page.getByLabel("Search markets")).toHaveValue("WETH");
-  await expect(page.getByRole("combobox", { name: "Market duration" })).toContainText("30D");
+  await expect(
+    page.getByRole("combobox", { name: "Market duration" }),
+  ).toContainText("30D");
   await wallet.click();
   await expect(page.getByRole("dialog")).toContainText(/network: Base/i);
   await page.getByRole("dialog").press("Escape");
-  await page.getByRole("link", { name: "Open WETH / USDC", exact: true }).click();
+  await page
+    .getByRole("link", { name: "Open WETH / USDC", exact: true })
+    .click();
   await expect(page).toHaveURL(`/market/base/${key}`);
   await network.click();
   await page.getByRole("option", { name: "Robinhood", exact: true }).click();
   await expect(page).toHaveURL(
-    (url) => url.pathname === "/" && url.searchParams.get("network") === "robinhood",
+    (url) =>
+      url.pathname === "/" && url.searchParams.get("network") === "robinhood",
   );
   await expect(network).toBeEnabled();
   await wallet.click();
@@ -786,28 +806,39 @@ test("network selector switches the connected wallet and preserves market filter
   ).toEqual(["0x2105", "0x1237"]);
 });
 
-for (const [reason, code] of [["rejected", 4001], ["unsupported", -32601]] as const) {
+for (const [reason, code] of [
+  ["rejected", 4001],
+  ["unsupported", -32601],
+] as const) {
   test(`network selector keeps browsing available when wallet switching is ${reason}`, async ({
     page,
   }) => {
     await injectWallets(page);
     await page.goto("/?network=ethereum");
-    await page.getByRole("button", { name: "Connect wallet", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Connect wallet", exact: true })
+      .click();
     await page.getByRole("button", { name: "MetaMask", exact: true }).click();
     const wallet = page.getByRole("button", { name: "0x0000…0001" });
     await expect(wallet).toBeVisible();
     await page.evaluate((errorCode) => {
-      (window as unknown as { testWallet: { failSwitch: (code: number) => void } })
-        .testWallet.failSwitch(errorCode);
+      (
+        window as unknown as {
+          testWallet: { failSwitch: (code: number) => void };
+        }
+      ).testWallet.failSwitch(errorCode);
     }, code);
-    const network = page.getByRole("combobox", { name: "Network", exact: true });
+    const network = page.getByRole("combobox", {
+      name: "Network",
+      exact: true,
+    });
     await network.click();
     await page.getByRole("option", { name: "Base", exact: true }).click();
     await expect(network).toContainText("Base");
     await expect(network).toBeEnabled();
     await expect(page).toHaveURL(/network=base/);
     const feedback = page.getByRole("banner").getByRole("alert");
-    await expect(feedback).toContainText("Wallet network unchanged.");
+    await expect(feedback).toHaveCount(0);
     await wallet.click();
     await expect(page.getByRole("dialog")).toContainText(/network: Ethereum/i);
     await page.getByRole("dialog").press("Escape");
