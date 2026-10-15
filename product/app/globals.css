@@ -1,0 +1,163 @@
+@import "@yld-cx/ui/styles.css";
+@source "../components";
+@source "../hooks";
+@source "../lib";
+@source "./";
+@theme inline {
+  --color-brand: var(--brand);
+  --color-ask: var(--ask);
+  --color-bid: var(--bid);
+  --color-rent: var(--rent);
+}
+:root {
+  color-scheme: dark;
+  --radius: 0.625rem;
+  --background: #000000;
+  --foreground: #f5f7f6;
+  --card: #090c0f;
+  --card-foreground: var(--foreground);
+  --popover: #151a20;
+  --popover-foreground: var(--foreground);
+  --gold: #e7b94d;
+  --primary: var(--gold);
+  --primary-foreground: #211a0c;
+  --secondary: #1b222a;
+  --secondary-foreground: var(--foreground);
+  --muted: #171d23;
+  --muted-foreground: #8e989f;
+  --accent: #252f39;
+  --accent-foreground: var(--foreground);
+  --destructive: #f39a9a;
+  --border: #1c242c;
+  --input: #394550;
+  --ring: var(--gold);
+  --brand: #00ff4c;
+  --ask: #f1a2a8;
+  --bid: #9fe4be;
+  --rent: #d3c3ff;
+  --swap: #f1f4f7;
+  --ask-surface: #5a353c;
+  --bid-surface: #27553b;
+  --rent-surface: #4b3d68;
+  --swap-surface: #3a4351;
+  --term-surface: #35302a;
+  --token-start: #687f9c;
+  --token-end: #323e50;
+  --token-border: #303947;
+}
+/* Only color variables change inside semantic controls; shadcn owns all states. */
+[data-intent="ask"] {
+  --intent: var(--ask);
+  --intent-surface: var(--ask-surface);
+}
+[data-intent="bid"] {
+  --intent: var(--bid);
+  --intent-surface: var(--bid-surface);
+}
+[data-intent="rent"] {
+  --intent: var(--rent);
+  --intent-surface: var(--rent-surface);
+}
+[data-intent="swap"] {
+  --intent: var(--swap);
+  --intent-surface: var(--swap-surface);
+}
+[data-intent="term"] {
+  --intent: var(--gold);
+  --intent-surface: var(--term-surface);
+}
+[data-intent] {
+  --foreground: var(--intent);
+  --background: var(--intent-surface);
+  --input: var(--intent-surface);
+  --border: var(--intent-surface);
+  --primary: var(--intent-surface);
+  --primary-foreground: var(--intent);
+  --secondary: var(--intent-surface);
+  --secondary-foreground: var(--intent);
+  --accent: var(--intent-surface);
+  --accent-foreground: var(--intent);
+}
+body {
+  background:
+    radial-gradient(
+      circle at 50% -10%,
+      color-mix(in srgb, var(--brand) 7%, transparent),
+      transparent 28%
+    ),
+    linear-gradient(
+      color-mix(in srgb, var(--brand) 3%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--brand) 3%, transparent) 1px,
+      transparent 1px
+    ),
+    var(--background);
+  background-size:
+    auto,
+    28px 28px,
+    28px 28px,
+    auto;
+}
+/* The market banner and crowned token are the remaining custom artwork. */
+.market-banner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px;
+  align-items: center;
+  gap: 24px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(105deg, var(--card), var(--muted));
+}
+.market-banner > dl {
+  grid-column: 1/-1;
+}
+.token-orb {
+  display: grid;
+  place-items: center;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: 6px solid var(--token-border);
+  background: linear-gradient(155deg, var(--token-start), var(--token-end));
+  transform: rotate(-9deg);
+}
+.token-orb svg {
+  width: 54px;
+  height: 74px;
+}
+.token-orb img {
+  width: 72px;
+  height: 72px;
+}
+@media (min-width: 1024px) {
+  .market-banner {
+    grid-template-columns: minmax(0, 1fr) 172px minmax(0, 1fr);
+    padding: 32px;
+  }
+  .market-banner > dl {
+    grid-column: auto;
+  }
+}
+@media (max-width: 480px) {
+  .market-banner {
+    grid-template-columns: minmax(0, 1fr) 76px;
+    padding: 16px;
+    gap: 16px;
+  }
+  .token-orb {
+    width: 72px;
+    height: 72px;
+  }
+  .token-orb svg {
+    width: 40px;
+    height: 54px;
+  }
+  .token-orb img {
+    width: 54px;
+    height: 54px;
+  }
+}

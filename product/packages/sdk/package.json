@@ -1,0 +1,31 @@
+{
+  "name": "@yld-cx/sdk",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./ethereum": {
+      "types": "./dist/ethereum/index.d.ts",
+      "default": "./dist/ethereum/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "default": "./dist/registry/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@yld-cx/ethereum-protocol": "0.3.1",
+    "viem": "2.57.6",
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalEnv": ["NODE_ENV"],
+  "tasks": {
+    "build": {
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {},
+    "//#build:app": {
+      "dependsOn": [
+        "@yld-cx/sdk#build",
+        "@yld-cx/ui#typecheck",
+        "//#validate:registry",
+        "//#typecheck:app"
+      ],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": ["NEXT_PUBLIC_*"],
+      "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**"]
+    },
+    "//#typecheck:app": {
+      "dependsOn": ["@yld-cx/sdk#typecheck", "@yld-cx/ui#typecheck"],
+      "cache": false
+    },
+    "//#lint": { "cache": false },
+    "//#test": { "cache": false },
+    "//#validate:registry": { "cache": false }
+  }
+}

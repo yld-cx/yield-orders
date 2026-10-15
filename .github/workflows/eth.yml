@@ -1,9 +1,16 @@
-name: Tests
+name: Ethereum protocol CI
 
 on:
   pull_request:
+    branches: [main]
+    paths:
+      - "protocol/ethereum/**"
+      - ".github/workflows/eth.yml"
   push:
     branches: [main]
+    paths:
+      - "protocol/ethereum/**"
+      - ".github/workflows/eth.yml"
   workflow_dispatch:
 
 permissions:
