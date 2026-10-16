@@ -1,62 +1,100 @@
 "use client";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { DURATIONS, type Market, type Token, type Duration } from "@yld-cx/sdk";
+import { useId, useLayoutEffect, useRef } from "react";
+import { RefreshCw } from "lucide-react";
 import {
-  getNetwork,
-  marginalYieldPercent,
-  explainError,
-} from "@yld-cx/sdk/ethereum";
-import { getSdk } from "@/lib/rpc";
+  DURATIONS,
+  MIN_TICK,
+  MAX_TICK,
+  YIELD_BOOK_LAYOUT,
+  type Token,
+  type Duration,
+} from "@yld-cx/sdk";
+import { marginalYieldPercent, explainError } from "@yld-cx/sdk/ethereum";
 import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
-import { useYieldBook, type BookTick } from "@/hooks/use-yield-book";
+import type { useYieldBook, BookLevel } from "@/hooks/use-yield-book";
 import { Button } from "@yld-cx/ui/components/ui/button";
-import { Input } from "@yld-cx/ui/components/ui/input";
 import { Message } from "@/components/forms/financial-fields";
-import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@yld-cx/ui/components/ui/select";
+
 function BookRow({
-  tick,
+  level,
   asset,
   onSelect,
   selected,
   display,
   side,
 }: {
-  tick: BookTick;
+  level: BookLevel;
   asset: Token;
   onSelect: () => void;
   selected: boolean;
   display: readonly [Token, Token];
   side: "ask" | "bid";
 }) {
-  const estimatedYield = marginalYieldPercent(tick.state);
+  const estimatedYield =
+    level.status === "exists" ? marginalYieldPercent(level.state) : undefined;
+  const available = level.state?.availableSupply ?? 0n;
+  const inUse = level.state?.activeWorking ?? 0n;
+  const total = available + inUse;
+  const utilization = total > 0n ? Number((inUse * 10000n) / total) / 100 : 0;
   return (
     <Button
-      variant={selected ? "secondary" : "ghost"}
-      className="grid h-auto min-h-10 w-full grid-cols-[1.05fr_1.2fr_1fr_1fr] gap-2 px-2 text-right text-xs [&>span:first-child]:text-left"
+      variant="ghost"
+      className="relative isolate grid w-full grid-cols-[1.05fr_1.2fr_1fr_1fr] gap-2 overflow-hidden px-2 text-right text-xs hover:border-primary hover:bg-transparent aria-pressed:border-primary dark:hover:bg-transparent [&>span:first-child]:text-left"
+      style={{ height: `${YIELD_BOOK_LAYOUT.rowHeightRem}rem` }}
       onClick={onSelect}
       aria-pressed={selected}
+      data-tick-id={level.id.toString()}
+      data-status={level.status}
     >
       <span className={side === "ask" ? "text-ask" : "text-bid"}>
-        {priceText(tickPrice(tick, display))}
+        {priceText(tickPrice(level, display))}
       </span>
       <span>
-        {amountText(tick.state.availableSupply, asset.decimals)}{" "}
-        <small>{asset.symbol}</small>
+        {level.status === "failed" ? (
+          "Read failed"
+        ) : (
+          <>
+            {amountText(level.state?.availableSupply ?? 0n, asset.decimals)}{" "}
+            <small>{asset.symbol}</small>
+          </>
+        )}
       </span>
-      <span>{amountText(tick.state.activeWorking, asset.decimals)}</span>
+      <span>
+        {level.status === "failed"
+          ? "—"
+          : amountText(level.state?.activeWorking ?? 0n, asset.decimals)}
+      </span>
       <span className={side === "ask" ? "text-ask" : "text-bid"}>
         {estimatedYield !== undefined ? `${estimatedYield}%` : "—"}
       </span>
+      {utilization > 0 && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 right-0 -z-10 rounded-[inherit]"
+          style={{
+            width: `${utilization}%`,
+            backgroundColor: `color-mix(in srgb, var(--${side}-surface) 10%, var(--card))`,
+          }}
+        />
+      )}
     </Button>
   );
 }
-import { Field, FieldLabel } from "@yld-cx/ui/components/ui/field";
+
 export function YieldBook({
-  market,
+  referencePrice,
+  stepTicks,
+  onBaseTickChange,
   display,
   duration,
   selected,
@@ -64,39 +102,41 @@ export function YieldBook({
   onDurationChange,
   book,
 }: {
-  market: Market;
+  referencePrice: string;
+  stepTicks: number;
+  onBaseTickChange: (baseTick: number) => void;
   display: readonly [Token, Token];
   duration: Duration;
-  selected?: BookTick;
-  onSelect: (tick: BookTick) => void;
+  selected?: BookLevel;
+  onSelect: (level: BookLevel) => void;
   onDurationChange: (duration: Duration) => void;
   book: ReturnType<typeof useYieldBook>;
 }) {
-  const { discovery, live, ticks, checked, missing, failed, radius } = book;
-  const [directId, setDirectId] = useState("");
-  const network = getNetwork(market.network).slug;
-  const reference =
-    selected ??
-    ticks.find(
-      (t) =>
-        t.state.durationDays === BigInt(duration) &&
-        t.state.availableSupply > 0n,
-    );
-  const direct = useQuery({
-    queryKey: ["tick", network, "exact", directId],
-    enabled: /^[1-9]\d{0,77}$/.test(directId),
-    queryFn: async () => {
-      const id = BigInt(directId);
-      if (id >= 1n << 256n) throw new Error("Tick ID outside uint256");
-      const state = await getSdk(network).getTick(id);
-      const addresses = [state.asset.toLowerCase(), state.quote.toLowerCase()]
-        .sort()
-        .join(":");
-      if (addresses !== market.key)
-        throw new Error("This Tick belongs to another market");
-      return { id, state };
-    },
-  });
+  const { baseTick, discovery, levels, checked, failed } = book;
+  const baseTickId = useId();
+  const baseTickItems = [
+    baseTick - stepTicks * 100,
+    baseTick - stepTicks * 10,
+    baseTick - stepTicks,
+    baseTick,
+    baseTick + stepTicks,
+    baseTick + stepTicks * 10,
+    baseTick + stepTicks * 100,
+  ].map((tick) => ({
+    value: String(tick),
+    label: String(tick),
+    disabled: tick < MIN_TICK || tick > MAX_TICK,
+  }));
+  const askScroll = useRef<HTMLDivElement>(null);
+  const bidScroll = useRef<HTMLDivElement>(null);
+  const hasLevels = levels.length > 0;
+  const baseAddress = display[0].address;
+  useLayoutEffect(() => {
+    if (askScroll.current)
+      askScroll.current.scrollTop = askScroll.current.scrollHeight;
+    if (bidScroll.current)
+      bidScroll.current.scrollTop = bidScroll.current.scrollHeight;
+  }, [duration, baseAddress, hasLevels]);
   return (
     <Card className="min-w-0 yield-book">
       <CardContent className="space-y-4">
@@ -107,7 +147,26 @@ export function YieldBook({
               Choose a price level · current market depth
             </p>
           </div>
-          <Badge variant="outline">Exact ticks</Badge>
+          <div className="flex shrink-0 items-center gap-2">
+            <Badge variant="outline">Exact ticks</Badge>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Refresh discovery"
+              title="Refresh discovery"
+              disabled={discovery.isFetching}
+              onClick={() => void discovery.refetch()}
+            >
+              <RefreshCw
+                aria-hidden="true"
+                className={
+                  discovery.isFetching
+                    ? "animate-spin motion-reduce:animate-none"
+                    : undefined
+                }
+              />
+            </Button>
+          </div>
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <span className="text-xs text-muted-foreground">
@@ -135,12 +194,9 @@ export function YieldBook({
           <span>Yield</span>
         </div>
         {discovery.isError && (
-          <Message error>{explainError(discovery.error)}</Message>
-        )}
-        {live.isError && (
           <Message error>
-            Known Tick refresh failed. Displayed balances may be stale.{" "}
-            {explainError(live.error)}
+            Discovery refresh failed. Displayed balances may be stale.{" "}
+            {explainError(discovery.error)}
           </Message>
         )}
         {[display, [display[1], display[0]] as const].map(([asset], index) => (
@@ -153,52 +209,87 @@ export function YieldBook({
               />
               {index === 0 ? "Ask" : "Bid"} · {asset.symbol} liquidity
             </div>
-            {ticks
-              .filter(
-                (t) =>
-                  t.state.asset.toLowerCase() === asset.address.toLowerCase() &&
-                  t.state.durationDays === BigInt(duration),
-              )
-              .sort((a, b) => {
-                const comparison =
-                  a.state.priceX128 < b.state.priceX128
-                    ? -1
-                    : a.state.priceX128 > b.state.priceX128
-                      ? 1
-                      : 0;
-                return index === 0 ? -comparison : comparison;
-              })
-              .map((t) => (
-                <BookRow
-                  key={t.id.toString()}
-                  tick={t}
-                  asset={asset}
-                  display={display}
-                  side={index === 0 ? "ask" : "bid"}
-                  selected={selected?.id === t.id}
-                  onSelect={() => onSelect(t)}
-                />
-              ))}
-            {!discovery.isFetching &&
-              !ticks.some(
-                (t) =>
-                  t.state.asset.toLowerCase() === asset.address.toLowerCase() &&
-                  t.state.durationDays === BigInt(duration),
-              ) && (
-                <p className="p-4 text-sm text-muted-foreground">
-                  {failed > 0 || discovery.isError || live.isError
-                    ? "Read failed"
-                    : `No ${index === 0 ? "Ask" : "Bid"} liquidity yet`}
-                </p>
-              )}
+            <div
+              ref={index === 0 ? askScroll : bidScroll}
+              className="overflow-y-auto"
+              style={{
+                maxHeight: `${YIELD_BOOK_LAYOUT.visibleRows * YIELD_BOOK_LAYOUT.rowHeightRem}rem`,
+              }}
+              role="group"
+              aria-label={`${index === 0 ? "Ask" : "Bid"} price levels`}
+            >
+              {levels
+                .filter(
+                  (level) =>
+                    level.asset.toLowerCase() === asset.address.toLowerCase() &&
+                    level.durationDays === duration,
+                )
+                .sort((a, b) => {
+                  const comparison =
+                    a.priceX128 < b.priceX128
+                      ? -1
+                      : a.priceX128 > b.priceX128
+                        ? 1
+                        : 0;
+                  return index === 0 ? -comparison : comparison;
+                })
+                .map((level) => (
+                  <BookRow
+                    key={level.id.toString()}
+                    level={level}
+                    asset={asset}
+                    display={display}
+                    side={index === 0 ? "ask" : "bid"}
+                    selected={selected?.id === level.id}
+                    onSelect={() => onSelect(level)}
+                  />
+                ))}
+            </div>
             {index === 0 && (
-              <div className="my-3 flex flex-wrap justify-center gap-2 border-y border-dashed py-3 text-xs text-muted-foreground">
-                Reference price{" "}
-                <strong>
-                  {reference
-                    ? `${priceText(tickPrice(reference, display))} ${display[1].symbol}`
-                    : "Not set"}
-                </strong>
+              <div
+                role="group"
+                aria-label="Reference price and base tick"
+                className="my-3 flex flex-wrap items-center justify-between gap-2 border-y border-dashed py-3 text-xs text-muted-foreground"
+              >
+                <p>
+                  Reference price{" "}
+                  <strong>
+                    {referencePrice} {display[1].symbol}
+                  </strong>
+                </p>
+                <div className="flex items-center gap-2">
+                  <label htmlFor={baseTickId}>Base tick</label>
+                  <Select
+                    items={baseTickItems}
+                    value={String(baseTick)}
+                    onValueChange={(value) => {
+                      const next = baseTickItems.find(
+                        (item) => item.value === value && !item.disabled,
+                      );
+                      if (next) onBaseTickChange(Number(next.value));
+                    }}
+                  >
+                    <SelectTrigger
+                      id={baseTickId}
+                      aria-label="Base tick"
+                      size="sm"
+                      className="text-xs"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {baseTickItems.map((item) => (
+                        <SelectItem
+                          key={item.value}
+                          value={item.value}
+                          disabled={item.disabled}
+                        >
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             )}
           </div>
@@ -208,61 +299,8 @@ export function YieldBook({
             Some reads failed. They are not zero liquidity.
           </Message>
         )}
-        <details className="my-3 space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
-          <summary>More price levels</summary>
-          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-            {checked} identities checked · {missing} do not exist · {failed}{" "}
-            failed. Radius ±{radius} grid steps.
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={discovery.isFetchingNextPage || !discovery.hasNextPage}
-              onClick={() => void discovery.fetchNextPage()}
-            >
-              Load more price levels
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={discovery.isFetching}
-              onClick={() => void discovery.refetch()}
-            >
-              Retry discovery
-            </Button>
-          </div>
-          <Field className="my-4">
-            <FieldLabel htmlFor="exact-tick">Open an exact Tick ID</FieldLabel>
-            <Input
-              id="exact-tick"
-              aria-label="Exact Tick ID"
-              value={directId}
-              onChange={(e) => setDirectId(e.target.value.trim())}
-              placeholder="uint256 Tick ID"
-              inputMode="numeric"
-            />
-          </Field>
-          <div className="flex min-h-9 items-center">
-            {direct.isLoading && (
-              <Skeleton
-                className="h-9 w-40 motion-reduce:animate-none"
-                aria-label="Loading Tick…"
-              />
-            )}
-            {direct.isError && (
-              <Message error>{explainError(direct.error)}</Message>
-            )}
-            {direct.data && (
-              <Button variant="outline" onClick={() => onSelect(direct.data)}>
-                Select exact Tick · {direct.data.state.durationDays.toString()}D
-              </Button>
-            )}
-          </div>
-        </details>
         <p className="mt-3 border-t pt-3 text-xs leading-relaxed text-muted-foreground">
-          Available is executable liquidity. In Use excludes liquidity already
-          moved to Resolving. A concrete transaction preview is authoritative.
+          {checked} ticks checked. Step: {stepTicks} ticks.
         </p>
       </CardContent>
     </Card>

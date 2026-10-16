@@ -150,7 +150,6 @@ function TransactionSession({
         predicate: (q) =>
           [
             "ticks",
-            "known-ticks",
             "pair",
             "portfolio",
             "quote",

@@ -1,3 +1,4 @@
+import { SAFE_INFO_TIMEOUT_MS } from "@yld-cx/sdk";
 import { createConfig, createStorage, cookieStorage, http } from "wagmi";
 import { injected } from "wagmi/connectors/injected";
 import { coinbaseWallet } from "wagmi/connectors/coinbaseWallet";
@@ -17,7 +18,7 @@ export function makeWagmiConfig() {
           /^https:\/\/app\.safe\.global$/,
           /^https:\/\/safe\.global$/,
         ],
-        unstable_getInfoTimeout: 10_000,
+        unstable_getInfoTimeout: SAFE_INFO_TIMEOUT_MS,
       }),
       injected({ shimDisconnect: true }),
       coinbaseWallet({
@@ -40,9 +41,9 @@ export function makeWagmiConfig() {
         : []),
     ],
     transports: {
-      1: http(rpcUrls.ethereum),
-      8453: http(rpcUrls.base),
-      4663: http(rpcUrls.robinhood),
+      [mainnet.id]: http(rpcUrls.ethereum),
+      [base.id]: http(rpcUrls.base),
+      [robinhood.id]: http(rpcUrls.robinhood),
     },
   });
 }

@@ -1,5 +1,10 @@
 "use client";
 import {
+  QUERY_TIMING,
+  QUERY_RETRY_COUNT,
+  NETWORK_COOKIE_MAX_AGE_SECONDS,
+} from "@yld-cx/sdk";
+import {
   createContext,
   useContext,
   useState,
@@ -30,7 +35,11 @@ export function Providers({
     () =>
       new QueryClient({
         defaultOptions: {
-          queries: { staleTime: 15000, retry: 1, refetchOnWindowFocus: true },
+          queries: {
+            staleTime: QUERY_TIMING.defaultStale,
+            retry: QUERY_RETRY_COUNT,
+            refetchOnWindowFocus: true,
+          },
         },
       }),
   );
@@ -44,7 +53,7 @@ export function Providers({
   // Remember URL selections for screens that do not have market filters.
   if (network !== savedNetwork) setNetwork(network);
   useEffect(() => {
-    document.cookie = `yld.network=${network}; Path=/; SameSite=Lax; Max-Age=31536000${location.protocol === "https:" ? "; Secure" : ""}`;
+    document.cookie = `yld.network=${network}; Path=/; SameSite=Lax; Max-Age=${NETWORK_COOKIE_MAX_AGE_SECONDS}${location.protocol === "https:" ? "; Secure" : ""}`;
   }, [network]);
   return (
     <WagmiProvider config={config} initialState={initialState}>

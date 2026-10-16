@@ -24,6 +24,16 @@ import type {
   TransactionResult,
   UsePosition,
 } from "../types/index.ts";
+import {
+  DISCOVERY_DEFAULTS,
+  DISCOVERY_BATCH_SIZE,
+  PORTFOLIO_DEFAULTS,
+  MAX_PORTFOLIO_PAGE_SIZE,
+  TOKEN_METADATA_LIMITS,
+  SHORT_ADDRESS,
+  RECEIPT_TIMEOUT_MS,
+  TRANSACTION_CONFIRMATIONS,
+} from "../constants.ts";
 import { protocolAbi } from "./abi.ts";
 import { deploymentFor, getNetwork } from "./networks.ts";
 import { tickCandidates, tickIdFor } from "./math.ts";
@@ -171,7 +181,6 @@ export class EthereumClient {
   readonly runtimeCodeHash: Hex;
   // Only verified identities are cached. Liquidity is always freshly read.
   readonly knownTicks = new Map<bigint, TickIdentity>();
-  private readonly checkedMissing = new Set<bigint>();
   constructor(
     readonly publicClient: PublicClient,
     readonly network: EvmNetwork,
@@ -263,7 +272,10 @@ export class EthereumClient {
     const [symbol, name, decimals, code] = await Promise.all([
       this.publicClient
         .readContract({ address: token, abi: erc20Abi, functionName: "symbol" })
-        .catch(() => `${token.slice(0, 6)}…${token.slice(-4)}`),
+        .catch(
+          () =>
+            `${token.slice(0, SHORT_ADDRESS.prefix)}…${token.slice(-SHORT_ADDRESS.suffix)}`,
+        ),
       this.publicClient
         .readContract({ address: token, abi: erc20Abi, functionName: "name" })
         .catch(() => "Unlisted token"),
@@ -279,8 +291,8 @@ export class EthereumClient {
     return {
       address: token.toLowerCase(),
       network: this.network,
-      symbol: symbol.slice(0, 32),
-      name: name.slice(0, 100),
+      symbol: symbol.slice(0, TOKEN_METADATA_LIMITS.symbol),
+      name: name.slice(0, TOKEN_METADATA_LIMITS.name),
       decimals,
       listed: false,
     };
@@ -291,21 +303,19 @@ export class EthereumClient {
       baseTick?: number;
       stepTicks?: number;
       radius?: number;
-      startRadius?: number;
     } = {},
   ): Promise<DiscoveryResult> {
-    const radius = config.radius ?? 8;
+    const radius = config.radius ?? DISCOVERY_DEFAULTS.radius;
     const identities = tickCandidates(
       pairId,
       config.baseTick,
       config.stepTicks,
       radius,
-      config.startRadius,
     );
     const blockNumber = await this.publicClient.getBlockNumber();
     const reads: DiscoveryRead[] = [];
-    for (let i = 0; i < identities.length; i += 40) {
-      const batch = identities.slice(i, i + 40);
+    for (let i = 0; i < identities.length; i += DISCOVERY_BATCH_SIZE) {
+      const batch = identities.slice(i, i + DISCOVERY_BATCH_SIZE);
       try {
         const results = await this.publicClient.multicall({
           contracts: batch.map((t) => ({
@@ -323,14 +333,12 @@ export class EthereumClient {
             result = results[j];
           if (result.status === "success") {
             this.knownTicks.set(identity.id, identity);
-            this.checkedMissing.delete(identity.id);
             reads.push({
               identity,
               status: "exists",
               tick: { ...identity, state: result.result },
             });
           } else if (protocolErrorName(result.error) === "NotFound") {
-            this.checkedMissing.add(identity.id);
             reads.push({ identity, status: "missing" });
           } else
             reads.push({
@@ -365,8 +373,8 @@ export class EthereumClient {
   }
   async portfolio(
     owner: Address,
-    offset = 0,
-    limit = 24,
+    offset: number = PORTFOLIO_DEFAULTS.offset,
+    limit: number = PORTFOLIO_DEFAULTS.limit,
     atBlock?: bigint,
   ): Promise<PortfolioPage> {
     if (
@@ -374,7 +382,7 @@ export class EthereumClient {
       offset < 0 ||
       !Number.isInteger(limit) ||
       limit < 1 ||
-      limit > 100
+      limit > MAX_PORTFOLIO_PAGE_SIZE
     )
       throw new Error("Invalid portfolio page");
     const block = await this.publicClient.getBlock(
@@ -627,8 +635,8 @@ export class EthereumClient {
     onStatus?.("pending", hash);
     const receipt = await waitForTransactionReceipt(wallet, {
       hash,
-      timeout: 0,
-      confirmations: 1,
+      timeout: RECEIPT_TIMEOUT_MS,
+      confirmations: TRANSACTION_CONFIRMATIONS,
       onReplaced: (replacement) => {
         if (replacement.reason === "cancelled")
           throw new Error("Transaction cancelled");
@@ -736,7 +744,6 @@ export class EthereumClient {
         durationDays: Number(created.args.durationDays) as Duration,
       };
       this.knownTicks.set(identity.id, identity);
-      this.checkedMissing.delete(identity.id);
     }
     const pair = parseEventLogs({
       abi: protocolAbi,

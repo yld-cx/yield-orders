@@ -1,3 +1,4 @@
+import { RPC_TIMEOUT_MS, RPC_RETRY_COUNT } from "@yld-cx/sdk";
 import { createPublicClient, http, type PublicClient } from "viem";
 import { EthereumClient, networks, getNetwork } from "@yld-cx/sdk/ethereum";
 export const rpcUrls = {
@@ -31,7 +32,10 @@ export function getSdk(network: string): EthereumClient {
     sdk = new EthereumClient(
       createPublicClient({
         chain: n.chain,
-        transport: http(rpcUrls[n.slug], { timeout: 15000, retryCount: 1 }),
+        transport: http(rpcUrls[n.slug], {
+          timeout: RPC_TIMEOUT_MS,
+          retryCount: RPC_RETRY_COUNT,
+        }),
         batch: { multicall: true },
       }) as PublicClient,
       n.id,

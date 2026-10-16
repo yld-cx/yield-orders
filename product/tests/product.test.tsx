@@ -158,7 +158,11 @@ describe("product identity and security", () => {
   it("omits the generic injected option when no named wallets are detected", () => {
     const connectors = [
       { id: "injected", type: "injected", name: "Injected" },
-      { id: "coinbaseWalletSDK", type: "coinbaseWallet", name: "Coinbase Wallet" },
+      {
+        id: "coinbaseWalletSDK",
+        type: "coinbaseWallet",
+        name: "Coinbase Wallet",
+      },
       { id: "walletConnect", type: "walletConnect", name: "WalletConnect" },
     ] as Connector[];
     expect(distinctConnectors(connectors).map((c) => c.name)).toEqual([

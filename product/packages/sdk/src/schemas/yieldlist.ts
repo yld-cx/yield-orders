@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { DEFAULT_DURATION, DURATIONS } from "../constants.ts";
+import {
+  DEFAULT_DURATION,
+  DURATIONS,
+  DISCOVERY_DEFAULTS,
+  MIN_TICK,
+  MAX_TICK,
+  TOKEN_METADATA_LIMITS,
+} from "../constants.ts";
 // Avoid even the caught eval-capability probe in nonce-only browser CSPs.
 z.config({ jitless: true });
 import {
@@ -36,13 +43,13 @@ const logoSchema = z
     "Use a hosted token logo under /tokens",
   );
 export const tokenMetadataSchema = z.strictObject({
-  symbol: z.string().trim().min(1).max(32),
-  name: z.string().trim().min(1).max(100),
-  decimals: z.number().int().min(0).max(255),
+  symbol: z.string().trim().min(1).max(TOKEN_METADATA_LIMITS.symbol),
+  name: z.string().trim().min(1).max(TOKEN_METADATA_LIMITS.name),
+  decimals: z.number().int().min(0).max(TOKEN_METADATA_LIMITS.decimals),
   logoURI: logoSchema.optional(),
   tags: z
     .array(categorySchema)
-    .max(6)
+    .max(TOKEN_METADATA_LIMITS.tags)
     .refine((v) => new Set(v).size === v.length, "Duplicate tags")
     .optional(),
 });
@@ -54,8 +61,13 @@ export const marketMetadataSchema = z
       .int()
       .positive()
       .max(Number.MAX_SAFE_INTEGER)
-      .default(1000),
-    baseTick: z.number().int().min(-887272).max(887272).default(0),
+      .default(DISCOVERY_DEFAULTS.stepTicks),
+    baseTick: z
+      .number()
+      .int()
+      .min(MIN_TICK)
+      .max(MAX_TICK)
+      .default(DISCOVERY_DEFAULTS.baseTick),
     telegramPost: z
       .url()
       .refine((v) => {
