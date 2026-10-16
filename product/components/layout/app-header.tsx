@@ -8,6 +8,7 @@ import { LayoutGrid, List } from "lucide-react";
 import { networks, type NetworkSlug } from "@yld-cx/sdk/ethereum";
 import { WalletConnect } from "@/components/wallet/wallet-connect";
 import { Button } from "@yld-cx/ui/components/ui/button";
+import { Badge } from "@yld-cx/ui/components/ui/badge";
 export function AppHeader() {
   const pathname = usePathname();
   const { setNetwork } = useNetwork();
@@ -15,13 +16,15 @@ export function AppHeader() {
   return (
     <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
       <div className="mx-auto flex min-h-16 max-w-[1380px] flex-wrap items-center gap-3 px-4 py-3 sm:gap-6 sm:px-6 lg:px-9">
-        <Link
-          href="/"
-          className="inline-flex shrink-0 items-center"
-          aria-label="yld.cx home"
-        >
-          <BrandLogo />
-        </Link>
+        <div className="flex shrink-0 items-center gap-2">
+          <Link
+            href="/"
+            className="inline-flex shrink-0 items-center"
+            aria-label="yld.cx home"
+          >
+            <BrandLogo />
+          </Link>
+        </div>
         <nav aria-label="Main navigation" className="flex items-center gap-1">
           <Button
             render={<Link href="/" />}
@@ -51,6 +54,9 @@ export function AppHeader() {
           </Button>
         </nav>
         <div className="ml-auto flex items-center gap-2">
+          <Badge className="border-green-500 bg-black text-white p-3">
+            Public beta
+          </Badge>
           <NetworkSelector />
           <WalletConnect />
         </div>
