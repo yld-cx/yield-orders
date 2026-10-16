@@ -36,7 +36,7 @@ export function SocialImage({
         justifyContent: "space-between",
         width: "100%",
         height: "100%",
-        padding: "66px 72px",
+        padding: "77px",
         backgroundColor: "#000000",
         backgroundImage:
           "radial-gradient(circle at 50% -10%, rgba(0,255,76,0.07), rgba(0,255,76,0) 28%), linear-gradient(rgba(0,255,76,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,76,0.03) 1px, transparent 1px)",
@@ -72,12 +72,12 @@ export function SocialImage({
             fontWeight: "bold",
           }}
         >
-          Yield Orders {network ? `on ${network}` : ""}
+          Yield Orders {network ? `on ${network}` : ""} 👑
         </div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         {logos && (
-          <div style={{ display: "flex", gap: 18 }}>
+          <div style={{ display: "flex", gap: 20 }}>
             {logos.map((src, index) => (
               <img
                 key={index}

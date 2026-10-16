@@ -99,10 +99,11 @@ export async function loadYieldList(
   return new Registry(await r.json());
 }
 const quotePreference = ["USD", "EUR", "ETH"];
-export function displayTokens(
-  market: Pick<Market, "token0" | "token1">,
-): readonly [Token, Token] {
-  const rank = (t: Token) => {
+export function displayTokens<T extends Pick<Token, "symbol">>(market: {
+  token0: T;
+  token1: T;
+}): readonly [T, T] {
+  const rank = (t: T) => {
     const symbol = t.symbol.toUpperCase();
     const i = quotePreference.findIndex((quote) => symbol.includes(quote));
     return i < 0 ? quotePreference.length : i;

@@ -2154,6 +2154,11 @@ async function transactionRpc(
       use?: Partial<UsePosition>;
     };
     balance?: bigint;
+    atomic?: "supported" | "unsupported" | "missing" | "safe";
+    allowanceLag?: number;
+    zeroFirst?: boolean;
+    simulationUnsupported?: boolean;
+    sendUnsupported?: boolean;
   },
 ) {
   expect(keccak256(protocolRuntime)).toBe(
@@ -2170,6 +2175,15 @@ async function transactionRpc(
     timestamp: 0x68e00000n,
     settlement: false,
     receiptUnknown: false,
+    batchPending: false,
+    batchReverted: false,
+    receiptReverted: false,
+    pendingAllowance: undefined as bigint | undefined,
+    allowanceReads: 0,
+    batches: [] as {
+      atomicRequired?: boolean;
+      calls: { to: string; data: Hex }[];
+    }[],
   };
   const selectedId = options.direction === 1 ? bid7 : id7;
   const overrides: TickOverrides = new Map([
@@ -2239,7 +2253,16 @@ async function transactionRpc(
       if (
         token.functionName === "balanceOf" ||
         token.functionName === "allowance"
-      )
+      ) {
+        if (
+          token.functionName === "allowance" &&
+          state.pendingAllowance !== undefined
+        ) {
+          if (state.allowanceReads-- <= 0) {
+            state.allowance = state.pendingAllowance;
+            state.pendingAllowance = undefined;
+          }
+        }
         return {
           success: true,
           returnData: encodeFunctionResult({
@@ -2249,6 +2272,27 @@ async function transactionRpc(
               token.functionName === "allowance"
                 ? state.allowance
                 : (options.balance ?? 10n ** 30n),
+          }),
+        };
+      }
+      if (
+        token.functionName === "approve" &&
+        options.zeroFirst &&
+        state.allowance > 0n &&
+        token.args[1] > 0n
+      )
+        return {
+          success: false,
+          returnData: encodeErrorResult({
+            abi: [
+              {
+                type: "error",
+                name: "Error",
+                inputs: [{ name: "message", type: "string" }],
+              },
+            ],
+            errorName: "Error",
+            args: ["Reset allowance first"],
           }),
         };
       if (token.functionName === "approve")
@@ -2263,6 +2307,24 @@ async function transactionRpc(
     } catch {}
     try {
       const decoded = decodeFunctionData({ abi: protocolAbi, data });
+      if (decoded.functionName === "nextPositionId")
+        return {
+          success: true,
+          returnData: encodeFunctionResult({
+            abi: protocolAbi,
+            functionName: "nextPositionId",
+            result: 1n,
+          }),
+        };
+      if (decoded.functionName === "getPosition")
+        return {
+          success: true,
+          returnData: encodeFunctionResult({
+            abi: protocolAbi,
+            functionName: "getPosition",
+            result: use,
+          }),
+        };
       if (options.positions) {
         if (
           decoded.functionName === "getEarnPositions" ||
@@ -2288,15 +2350,6 @@ async function transactionRpc(
               abi: protocolAbi,
               functionName: "getEarnPosition",
               result: provider,
-            }),
-          };
-        if (decoded.functionName === "getPosition")
-          return {
-            success: true,
-            returnData: encodeFunctionResult({
-              abi: protocolAbi,
-              functionName: "getPosition",
-              result: use,
             }),
           };
       }
@@ -2394,6 +2447,14 @@ async function transactionRpc(
               }),
             );
           } else if (action.functionName === "supply") results.push("0x");
+          else if (action.functionName === "use")
+            results.push(
+              encodeFunctionResult({
+                abi: protocolAbi,
+                functionName: "use",
+                result: 1n,
+              }),
+            );
           else if (action.functionName === "getEarnPosition")
             results.push(
               encodeFunctionResult({
@@ -2447,7 +2508,108 @@ async function transactionRpc(
         jsonrpc: "2.0",
         error: { code, message, data },
       });
-      if (item.method === "eth_getCode") result = protocolRuntime;
+      if (item.method === "wallet_getCapabilities") {
+        if (!options.atomic || options.atomic === "missing")
+          return error("Method not found", -32601);
+        result = {
+          "0x2105":
+            options.atomic === "safe"
+              ? { atomicBatch: { supported: true } }
+              : { atomic: { status: options.atomic } },
+        };
+      } else if (item.method === "wallet_sendCalls") {
+        if (options.sendUnsupported)
+          return error("Atomicity not supported", 5760);
+        if (state.reject) {
+          state.reject = false;
+          return error("User rejected batch");
+        }
+        const batch = item.params[0] as {
+          atomicRequired?: boolean;
+          calls: { to: string; data: Hex }[];
+        };
+        state.batches.push(batch);
+        state.writes.push(
+          batch.calls.flatMap((c) => {
+            try {
+              const approval = decodeFunctionData({
+                abi: erc20Abi,
+                data: c.data,
+              });
+              if (approval.functionName !== "approve") throw new Error();
+              return ["approve"];
+            } catch {
+              const decoded = decodeFunctionData({
+                abi: protocolAbi,
+                data: c.data,
+              });
+              return decoded.functionName === "multicall"
+                ? decoded.args[0].map(
+                    (data) =>
+                      decodeFunctionData({ abi: protocolAbi, data })
+                        .functionName,
+                  )
+                : [];
+            }
+          }),
+        );
+        result = { id: "wallet-batch-1" };
+      } else if (item.method === "wallet_getCallsStatus")
+        result = {
+          version: options.atomic === "safe" ? "1.0" : "2.0.0",
+          id: "wallet-batch-1",
+          chainId: "0x2105",
+          ...(options.atomic === "safe" ? {} : { atomic: true }),
+          status: state.batchPending ? 100 : state.batchReverted ? 500 : 200,
+          receipts: state.batchPending
+            ? []
+            : [
+                {
+                  transactionHash: txHash,
+                  blockNumber: "0x989680",
+                  blockHash: `0x${"34".repeat(32)}`,
+                  status: state.batchReverted ? "0x0" : "0x1",
+                  gasUsed: "0x493e0",
+                  logs: [],
+                },
+              ],
+        };
+      else if (item.method === "eth_simulateV1") {
+        if (options.simulationUnsupported)
+          return error("Method not found", -32601);
+        const params = item.params[0] as {
+          blockStateCalls: { calls: { data?: Hex }[] }[];
+        };
+        const actualAllowance = state.allowance;
+        result = params.blockStateCalls.map((block) => ({
+          number: "0x989680",
+          timestamp: `0x${state.timestamp.toString(16)}`,
+          hash: `0x${"34".repeat(32)}`,
+          transactions: [],
+          calls: block.calls.map((c) => {
+            const value = c.data
+              ? call(c.data)
+              : { success: true, returnData: "0x" };
+            if (c.data && value.success) {
+              try {
+                const token = decodeFunctionData({
+                  abi: erc20Abi,
+                  data: c.data,
+                });
+                if (token.functionName === "approve")
+                  state.allowance = token.args[1];
+              } catch {}
+            }
+            return {
+              status: value.success ? "0x1" : "0x0",
+              returnData: value.returnData,
+              gasUsed: "0x493e0",
+              logs: [],
+            };
+          }),
+        }));
+        state.allowance = actualAllowance;
+      } else if (item.method === "eth_getCode") result = protocolRuntime;
       else if (item.method === "eth_chainId") result = "0x2105";
       else if (item.method === "eth_blockNumber") result = "0x989680";
       else if (item.method === "eth_getBlockByNumber")
@@ -2498,7 +2660,8 @@ async function transactionRpc(
             state.reject = false;
             return error("User rejected approval");
           }
-          state.allowance = approval.args[1];
+          state.pendingAllowance = approval.args[1];
+          state.allowanceReads = options.allowanceLag ?? 0;
           state.writes.push(["approve"]);
         } else {
           const decoded = decodeFunctionData({ abi: protocolAbi, data });
@@ -2545,7 +2708,7 @@ async function transactionRpc(
           transactionIndex: "0x0",
           from: "0x0000000000000000000000000000000000000001",
           to: deploymentFor("eip155:8453").address,
-          status: "0x1",
+          status: state.receiptReverted ? "0x0" : "0x1",
           gasUsed: "0x493e0",
           cumulativeGasUsed: "0x493e0",
           effectiveGasPrice: "0x1",
@@ -2624,6 +2787,7 @@ test("approval rejection and zero-first approval recover inside the same preview
     tick: false,
     allowance: 1n,
     reject: true,
+    zeroFirst: true,
   });
   const dialog = page.getByRole("dialog");
   await expect(
@@ -3257,3 +3421,299 @@ test("execution tolerance accepts only digits and disables autocomplete", async 
     page.getByRole("alert").filter({ hasText: "Tolerance must be" }),
   ).toBeVisible();
 });
+
+for (const atomic of ["supported", "safe"] as const) {
+  test(`${atomic === "safe" ? "Safe legacy capabilities" : "smart account capabilities"} uses one atomic approve and Provide submission`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: false,
+      tick: false,
+      allowance: 0n,
+      atomic,
+    });
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByRole("button", { name: "Approve & Provide", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+    ).toBeVisible();
+    expect(state.batches).toHaveLength(1);
+    expect(state.batches[0].atomicRequired).toBe(true);
+    expect(state.writes).toEqual([
+      ["approve", "createPair", "createTick", "supply"],
+    ]);
+    expect(state.batches[0]).not.toHaveProperty("experimental_fallback");
+  });
+}
+for (const atomic of ["missing", "unsupported"] as const) {
+  test(`${atomic} capabilities uses sequential approval and confirmation in one preview`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: 0n,
+      atomic,
+    });
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByRole("button", { name: "Approve WETH", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
+    ).toBeVisible();
+    expect(state.writes).toEqual([["approve"]]);
+    await dialog
+      .getByRole("button", { name: "Confirm Provide", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+    ).toBeVisible();
+    expect(state.writes).toEqual([["approve"], ["supply"]]);
+    expect(state.batches).toEqual([]);
+  });
+}
+test("Rent advances from confirmed approval to Confirm Rent despite delayed allowance RPC reads", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    allowance: 0n,
+    allowanceLag: 3,
+  });
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  await page.getByLabel("You receive", { exact: true }).fill("1");
+  await page.getByRole("button", { name: "Preview Rent", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("button", { name: "Approve USDC", exact: true })
+    .click();
+  await expect(
+    dialog.getByText(
+      "Approval confirmed. Synchronizing allowance and refreshing simulation…",
+    ),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Rent", exact: true }),
+  ).toBeVisible({ timeout: 15000 });
+  await expect(
+    dialog.getByRole("button", { name: "Approve USDC", exact: true }),
+  ).toHaveCount(0);
+  expect(state.writes).toEqual([["approve"]]);
+  await dialog
+    .getByRole("button", { name: "Confirm Rent", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["approve"], ["use"]]);
+});
+test("pending atomic batch survives reload and never resubmits while awaiting multisig execution", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    allowance: 0n,
+    atomic: "safe",
+  });
+  state.batchPending = true;
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("button", { name: "Approve & Provide", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", {
+      name: "Check transaction confirmation",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toHaveCount(0);
+  await page.reload();
+  await page.locator(`[data-tick-id="${id7}"]`).click();
+  await page.getByLabel("Amount", { exact: true }).fill("1");
+  await page
+    .getByRole("button", { name: "Preview Provide", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", {
+      name: "Check transaction confirmation",
+      exact: true,
+    })
+    .click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toHaveCount(0);
+  expect(state.batches).toHaveLength(1);
+  state.batchPending = false;
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible({ timeout: 10000 });
+  expect(state.batches).toHaveLength(1);
+});
+test("batch rejection permits a deliberate retry and reverted batch requires a new preview", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    allowance: 0n,
+    atomic: "supported",
+    reject: true,
+  });
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("button", { name: "Approve & Provide", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(state.batches).toHaveLength(0);
+  state.batchReverted = true;
+  await dialog
+    .getByRole("button", { name: "Approve & Provide", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Retry Provide", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toHaveCount(0);
+  expect(state.batches).toHaveLength(1);
+});
+test("atomic zero-first approval resets then approves exactly once in the wallet batch", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    allowance: 1n,
+    atomic: "supported",
+    zeroFirst: true,
+  });
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("button", { name: "Approve & Provide", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["approve", "approve", "supply"]]);
+  const amounts = state.batches[0].calls
+    .slice(0, -1)
+    .map((c) => decodeFunctionData({ abi: erc20Abi, data: c.data }).args?.[1]);
+  expect(amounts).toEqual([0n, 10n ** 18n]);
+});
+
+for (const failure of ["simulationUnsupported", "sendUnsupported"] as const) {
+  test(`${failure} returns to explicit sequential approval without a non-atomic sendCalls fallback`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: 0n,
+      atomic: "supported",
+      [failure]: true,
+    });
+    const dialog = page.getByRole("dialog");
+    if (failure === "sendUnsupported")
+      await dialog
+        .getByRole("button", { name: "Approve & Provide", exact: true })
+        .click();
+    await expect(
+      dialog.getByRole("button", { name: "Approve WETH", exact: true }),
+    ).toBeVisible();
+    expect(state.writes).toEqual([]);
+    await dialog
+      .getByRole("button", { name: "Approve WETH", exact: true })
+      .click();
+    await dialog
+      .getByRole("button", { name: "Confirm Provide", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+    ).toBeVisible();
+    expect(state.writes).toEqual([["approve"], ["supply"]]);
+    expect(state.batches).toEqual([]);
+  });
+}
+for (const atomic of [undefined, "supported"] as const) {
+  test(`duplicate clicks submit only one ${atomic ? "atomic batch" : "transaction"}`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: atomic ? 0n : 10n ** 30n,
+      atomic,
+    });
+    const dialog = page.getByRole("dialog");
+    const confirm = dialog.getByRole("button", {
+      name: atomic ? "Approve & Provide" : "Confirm Provide",
+      exact: true,
+    });
+    await confirm.evaluate((button: HTMLButtonElement) => {
+      button.click();
+      button.click();
+    });
+    await expect(
+      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+    ).toBeVisible();
+    expect(state.writes).toHaveLength(1);
+  });
+}
+for (const approval of [false, true]) {
+  test(`pending ${approval ? "approval" : "action"} recovers after reload without resubmission`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: approval ? 0n : 10n ** 30n,
+    });
+    state.receiptUnknown = true;
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByRole("button", {
+        name: approval ? "Approve WETH" : "Confirm Provide",
+        exact: true,
+      })
+      .click();
+    await expect(
+      dialog.getByRole("button", {
+        name: approval
+          ? "Check approval confirmation"
+          : "Check transaction confirmation",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.reload();
+    await page.locator(`[data-tick-id="${id7}"]`).click();
+    await page.getByLabel("Amount", { exact: true }).fill("1");
+    await page
+      .getByRole("button", { name: "Preview Provide", exact: true })
+      .click();
+    state.receiptUnknown = false;
+    await dialog
+      .getByRole("button", {
+        name: approval
+          ? "Check approval confirmation"
+          : "Check transaction confirmation",
+        exact: true,
+      })
+      .click();
+    await expect(
+      approval
+        ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
+        : dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+    ).toBeVisible();
+    expect(state.writes).toEqual([[approval ? "approve" : "supply"]]);
+  });
+}

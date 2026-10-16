@@ -1,6 +1,5 @@
 import { ImageResponse } from "next/og";
-import { parseMarketRoute, registry, marketLabel } from "@/lib/registry";
-import { displayTokens } from "@yld-cx/sdk/registry";
+import { parseMarketRoute, marketTokens, marketLabel } from "@/lib/registry";
 import { SocialImage, tokenLogoData } from "@/components/layout/social-image";
 export async function GET(
   _request: Request,
@@ -20,15 +19,11 @@ export async function GET(
   } catch {
     return new Response("Invalid market", { status: 404 });
   }
-  const [a, b] = route.key.split(":"),
-    market = registry.getMarket(route.network.id, a, b),
-    tokens = market ? displayTokens(market) : undefined;
-  const logos = tokens
-    ? ((await Promise.all(tokens.map(tokenLogoData))) as [string, string])
-    : ((await Promise.all([tokenLogoData({}), tokenLogoData({})])) as [
-        string,
-        string,
-      ]);
+  const tokens = marketTokens(route.network.id, route.key);
+  const logos = (await Promise.all(tokens.map(tokenLogoData))) as [
+    string,
+    string,
+  ];
   return new ImageResponse(
     <SocialImage
       label={marketLabel(route.network.id, route.key)}

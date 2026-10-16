@@ -71,16 +71,41 @@ describe("balance requirements and approval caps", () => {
         throw new Error(`Unexpected read: ${functionName}`);
       },
     );
-    const simulateContract = vi.fn(async () => ({ request: {} }));
+    const simulateContract = vi.fn(
+      async ({ args }: { args: readonly [string, bigint] }) => {
+        if (allowance > 0n && args[1] > 0n)
+          throw new BaseError("zero first", {
+            cause: new ContractFunctionRevertedError({
+              abi: protocolAbi,
+              functionName: "approve",
+              message: "reset allowance",
+            }),
+          });
+        return { request: { args } };
+      },
+    );
+    const getTransactionReceipt = vi.fn(async () => ({
+      status: "success",
+      blockNumber: 100n,
+    }));
     const sdk = client({
       getChainId: async () => 8453,
       getCode: async () => "0x1234",
       getBlock: async () => ({ number: 99n, timestamp }),
       readContract,
+      getTransactionReceipt: async () => ({
+        status: "success",
+        transactionHash: "0x1234",
+        blockNumber: 100n,
+      }),
       simulateContract,
     });
-    const writeContract = vi.fn(async () => "0x1234");
-    const getTransactionReceipt = vi.fn(async () => ({ status: "success" }));
+    const writeContract = vi.fn(
+      async ({ args }: { args: readonly [string, bigint] }) => {
+        allowance = args[1];
+        return "0x1234";
+      },
+    );
     const wallet = {
       uid: "approval-wallet",
       getChainId: async () => 8453,
@@ -127,16 +152,16 @@ describe("balance requirements and approval caps", () => {
         getTransactionReceipt,
       } = setup(balance, 1n);
       await sdk.approve(action, wallet, owner);
-      expect(simulateContract.mock.calls).toHaveLength(2);
+      expect(simulateContract.mock.calls).toHaveLength(3);
       expect(simulateContract).toHaveBeenNthCalledWith(
-        1,
+        2,
         expect.objectContaining({
           functionName: "approve",
           args: [address, 0n],
         }),
       );
       expect(simulateContract).toHaveBeenNthCalledWith(
-        2,
+        3,
         expect.objectContaining({
           functionName: "approve",
           args: [address, cap],
@@ -176,12 +201,12 @@ describe("direct reads and write safety", () => {
   it.each(["cancelled", "replaced", "repriced"])(
     "handles a %s replacement without treating changed data as success",
     async (reason) => {
-      const sdk = client({
+      const methods: Record<string, unknown> = {
         getChainId: async () => 8453,
         getCode: async () => "0x1234",
         getBlock: async () => ({ number: 1n, timestamp: 1n }),
         simulateContract: async () => ({ request: {} }),
-      });
+      };
       const getTransactionReceipt = vi
         .fn()
         .mockRejectedValueOnce(
@@ -226,6 +251,16 @@ describe("direct reads and write safety", () => {
           ],
         }),
       } as unknown as WalletClient;
+      Object.assign(methods, {
+        ...wallet,
+        getBlock: async (args?: { includeTransactions?: boolean }) =>
+          args?.includeTransactions
+            ? (
+                wallet as unknown as { getBlock: () => Promise<unknown> }
+              ).getBlock()
+            : { number: 1n, timestamp: 1n },
+      });
+      const sdk = client(methods);
       const preview: Preview = {
         action: { kind: "createPair", tokenA: address, tokenB: owner },
         plan: {

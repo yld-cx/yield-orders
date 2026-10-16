@@ -3,3 +3,4 @@ export * from "./math.ts";
 export * from "./networks.ts";
 export * from "./errors.ts";
 export * from "./client.ts";
+export * from "./operations.ts";

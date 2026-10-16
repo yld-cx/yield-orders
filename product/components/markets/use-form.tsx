@@ -183,7 +183,7 @@ export function UseForm({
                     </FieldDescription>
                   </Field>
                 </details>
-                <Card>
+                <Card className="mb-4">
                   <CardContent className="space-y-4">
                     <Metric label="Available">
                       {amountText(tick.state.availableSupply, asset.decimals)}{" "}
