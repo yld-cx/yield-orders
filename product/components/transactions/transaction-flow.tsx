@@ -125,10 +125,14 @@ function TransactionSession({
   }
   async function review() {
     if (locked.current) return;
+    setOpen(true);
+    if (waiting) return;
     locked.current = true;
+    setAction(undefined);
+    setPreview(undefined);
+    setRequired(undefined);
     setError("");
     setHash(undefined);
-    setOpen(true);
     setStage("preparing");
     try {
       if (!account.address) throw new Error("Connect your wallet first");
@@ -251,10 +255,7 @@ function TransactionSession({
           account.chainId !== sdk.chainId ||
           !wallet.data
         }
-        onClick={() => {
-          if (action) setOpen(true);
-          else void review();
-        }}
+        onClick={() => void review()}
       >
         <span aria-hidden="true">👀</span> {actionName}
       </Button>

@@ -2169,6 +2169,7 @@ async function transactionRpc(
     simulations: [] as string[],
     timestamp: 0x68e00000n,
     settlement: false,
+    receiptUnknown: false,
   };
   const selectedId = options.direction === 1 ? bid7 : id7;
   const overrides: TickOverrides = new Map([
@@ -2516,7 +2517,27 @@ async function transactionRpc(
           );
         }
         result = txHash;
-      } else if (item.method === "eth_getTransactionReceipt")
+      } else if (
+        item.method === "eth_getTransactionReceipt" &&
+        state.receiptUnknown
+      )
+        return error("Receipt tracking unavailable", -32601);
+      else if (item.method === "eth_getTransactionByHash")
+        result = {
+          hash: txHash,
+          blockNumber: "0x989680",
+          blockHash: `0x${"34".repeat(32)}`,
+          transactionIndex: "0x0",
+          from: "0x0000000000000000000000000000000000000001",
+          to: deploymentFor("eip155:8453").address,
+          nonce: "0x0",
+          input: "0x",
+          value: "0x0",
+          gas: "0x493e0",
+          gasPrice: "0x1",
+          type: "0x0",
+        };
+      else if (item.method === "eth_getTransactionReceipt")
         result = {
           transactionHash: txHash,
           blockNumber: "0x989680",
@@ -2976,3 +2997,168 @@ test("Use retains its estimate with insufficient Asset and changes to Close at m
   ).toBeVisible();
   expect(state.writes).toEqual([["close"]]);
 });
+
+test("reopening Withdraw prepares fresh principal and simulates again before confirming", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: {},
+  });
+  await page.goto("/orders");
+  const withdraw = page.getByRole("button", {
+    name: "Preview Withdraw",
+    exact: true,
+  });
+  await withdraw.click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Withdraw", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog
+      .locator("dl")
+      .filter({ has: page.getByText("Withdraw principal", { exact: true }) })
+      .locator("dd"),
+  ).toHaveText("100 WETH");
+  const simulations = state.simulations.length;
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  state.provider.activePrincipal = 50n * 10n ** 18n;
+  await withdraw.click();
+  await expect(
+    dialog
+      .locator("dl")
+      .filter({ has: page.getByText("Withdraw principal", { exact: true }) })
+      .locator("dd"),
+  ).toHaveText("50 WETH");
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Withdraw", exact: true }),
+  ).toBeVisible();
+  expect(state.simulations.length - simulations).toBe(1);
+  expect(state.writes).toEqual([]);
+});
+
+test("reopening clears stale previews, approval state and errors before refreshing", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, { pair: true, tick: true });
+  const dialog = page.getByRole("dialog");
+  const reopen = page.getByRole("button", {
+    name: "Preview Provide",
+    exact: true,
+  });
+  await expect(
+    dialog.getByText("Your Active liquidity after", { exact: true }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  state.allowance = 0n;
+  await reopen.click();
+  await expect(
+    dialog.getByRole("button", { name: "Approve WETH", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Your Active liquidity after", { exact: true }),
+  ).toHaveCount(0);
+  state.reject = true;
+  await dialog
+    .getByRole("button", { name: "Approve WETH", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  state.allowance = 10n ** 30n;
+  // Hold the refresh so cleared state is also checked while the simulation is in flight.
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("https://mainnet.base.org", async (route) => {
+    const body = route.request().postDataJSON();
+    const requests = Array.isArray(body) ? body : [body];
+    if (
+      requests.some((r: { method: string }) => r.method === "eth_estimateGas")
+    )
+      await ready;
+    await route.fallback();
+  });
+  await reopen.click();
+  await expect(
+    dialog.getByText("Reading and simulating current state…", { exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "Approve WETH", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByText("Your Active liquidity after", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
+  ).toHaveCount(0);
+  release();
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+});
+
+for (const submitted of ["approval", "transaction"] as const) {
+  test(`reopening preserves an unknown ${submitted} and resumes tracking without resubmission`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: submitted === "approval" ? 0n : 10n ** 30n,
+    });
+    const dialog = page.getByRole("dialog");
+    state.receiptUnknown = true;
+    await dialog
+      .getByRole("button", {
+        name: submitted === "approval" ? "Approve WETH" : "Confirm Provide",
+        exact: true,
+      })
+      .click();
+    const check =
+      submitted === "approval"
+        ? "Check approval confirmation"
+        : "Check transaction confirmation";
+    await expect(
+      dialog.getByRole("button", { name: check, exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Confirmation is still unknown",
+    );
+    const hash = await dialog
+      .getByRole("link", { name: "View transaction" })
+      .getAttribute("href");
+    const writes = state.writes.map((calls) => [...calls]);
+    expect(writes).toEqual([[submitted === "approval" ? "approve" : "supply"]]);
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    // A fresh simulation would now fail; reopening must retain the submitted action instead.
+    state.fail = true;
+    await page
+      .getByRole("button", { name: "Preview Provide", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: check, exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("link", { name: "View transaction" }),
+    ).toHaveAttribute("href", hash!);
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Confirmation is still unknown",
+    );
+    expect(state.writes).toEqual(writes);
+    state.receiptUnknown = false;
+    state.fail = false;
+    await dialog.getByRole("button", { name: check, exact: true }).click();
+    await expect(
+      submitted === "approval"
+        ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
+        : dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+    ).toBeVisible();
+    expect(state.writes).toEqual(writes);
+  });
+}
