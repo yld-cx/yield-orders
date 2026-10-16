@@ -23,6 +23,7 @@ import {
   TabsTrigger,
   TabsContent,
 } from "@yld-cx/ui/components/ui/tabs";
+import { RefreshCw } from "lucide-react";
 export function OrdersScreen() {
   const { network } = useNetwork(),
     account = useConnection();
@@ -114,19 +115,25 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
               </TabsTrigger>
               <TabsTrigger value="use">Use ({uses.length})</TabsTrigger>
             </TabsList>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-3">
               <Input
                 aria-label="Filter Orders by token or address"
-                placeholder="Token, market, or address"
+                placeholder="Token, market or address"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />
               <Button
-                variant="outline"
+                variant="ghost"
                 disabled={query.isFetching}
                 onClick={() => void query.refetch()}
               >
-                Refresh
+                <RefreshCw
+                  className={
+                    query.isFetching
+                      ? "animate-spin motion-reduce:animate-none"
+                      : undefined
+                  }
+                />
               </Button>
             </div>
           </div>
@@ -160,7 +167,7 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
                   Portfolio could not be read. {explainError(query.error)}
                 </Message>
               )}
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4">
                 {tab === "provide"
                   ? filteredProviders.map((p) => (
                       <ProviderCard

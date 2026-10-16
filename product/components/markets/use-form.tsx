@@ -166,7 +166,7 @@ export function UseForm({
                       value={tolerance}
                       onChange={(event) => setTolerance(event.target.value)}
                     />
-                    <FieldDescription>
+                    <FieldDescription className="text-xs">
                       {TRANSACTION_DEFAULTS.toleranceBps} ={" "}
                       {(TRANSACTION_DEFAULTS.toleranceBps /
                         Number(BASIS_POINTS)) *

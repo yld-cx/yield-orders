@@ -268,7 +268,6 @@ function MarketContent({
               setSelectedIdentity(undefined);
             }
           }}
-          pairExists={exists}
         />
         <YieldBook
           referencePrice={referencePrice}
@@ -305,7 +304,7 @@ function MarketContent({
             </p>
             <TransactionFlow
               network={network}
-              label="Create Market"
+              label="Preview Create Market"
               prepare={async () => ({
                 kind: "createPair",
                 tokenA: market.token0.address as `0x${string}`,

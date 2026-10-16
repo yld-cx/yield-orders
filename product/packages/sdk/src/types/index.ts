@@ -66,7 +66,20 @@ export interface TransactionResult {
   pairId?: bigint;
 }
 export type EconomicAction =
-  | { kind: "supply"; tickId: bigint; amount: bigint; referrer?: Address }
+  | {
+      kind: "supply";
+      tickId: bigint;
+      amount: bigint;
+      referrer?: Address;
+      /** Resolve and atomically initialize this identity when necessary. */
+      initialize?: {
+        tokenA: Address;
+        tokenB: Address;
+        direction: Direction;
+        priceTick: number;
+        durationDays: Duration;
+      };
+    }
   | {
       kind: "withdraw";
       tickId: bigint;

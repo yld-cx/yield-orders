@@ -9,6 +9,7 @@ import {
 } from "viem";
 import {
   EthereumClient,
+  actionData,
   protocolAbi,
   tickCandidates,
   Q128,
@@ -172,12 +173,13 @@ describe("balance requirements and approval caps", () => {
   });
 });
 describe("direct reads and write safety", () => {
-  it.each(["cancelled", "replaced"])(
-    "does not confirm an unrelated %s transaction",
+  it.each(["cancelled", "replaced", "repriced"])(
+    "handles a %s replacement without treating changed data as success",
     async (reason) => {
       const sdk = client({
         getChainId: async () => 8453,
         getCode: async () => "0x1234",
+        getBlock: async () => ({ number: 1n, timestamp: 1n }),
         simulateContract: async () => ({ request: {} }),
       });
       const getTransactionReceipt = vi
@@ -217,23 +219,37 @@ describe("direct reads and write safety", () => {
               from: owner,
               to: reason === "cancelled" ? owner : address,
               nonce: 0,
-              value: reason === "cancelled" ? 0n : 2n,
-              input: "0xcd",
+              value:
+                reason === "cancelled" ? 0n : reason === "repriced" ? 1n : 2n,
+              input: reason === "repriced" ? "0xab" : "0xcd",
             },
           ],
         }),
       } as unknown as WalletClient;
       const preview: Preview = {
         action: { kind: "createPair", tokenA: address, tokenB: owner },
+        plan: {
+          calls: [
+            actionData({ kind: "createPair", tokenA: address, tokenB: owner }),
+          ],
+        },
         account: owner,
         chainId: 8453,
         blockNumber: 1n,
         timestamp: 1n,
         gas: 1n,
       };
-      await expect(sdk.execute(preview, wallet)).rejects.toThrow(
-        reason === "cancelled" ? "cancelled" : "different data",
-      );
+      if (reason === "repriced") {
+        const status = vi.fn();
+        await expect(
+          sdk.execute(preview, wallet, status),
+        ).resolves.toMatchObject({ hash: "0x5678" });
+        expect(status).toHaveBeenCalledWith("pending", "0x5678");
+      } else {
+        await expect(sdk.execute(preview, wallet)).rejects.toThrow(
+          reason === "cancelled" ? "cancelled" : "different data",
+        );
+      }
     },
   );
   it("blocks a wrong chain, absent code and hash mismatch", async () => {

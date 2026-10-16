@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { test, expect, type Page } from "@playwright/test";
 import {
   decodeFunctionData,
@@ -5,6 +6,8 @@ import {
   encodeFunctionResult,
   encodeErrorResult,
   multicall3Abi,
+  erc20Abi,
+  keccak256,
   type Hex,
 } from "viem";
 import {
@@ -14,6 +17,7 @@ import {
   priceAtTick,
   humanPrice,
   tickCandidates,
+  deploymentFor,
 } from "../../packages/sdk/src/ethereum/index.js";
 import {
   DISCOVERY_DEFAULTS,
@@ -22,7 +26,11 @@ import {
   QUERY_TIMING,
   YIELD_BOOK_LAYOUT,
 } from "../../packages/sdk/src/constants.js";
-import type { TickState } from "../../packages/sdk/src/types/index.js";
+import type {
+  ProviderPosition,
+  UsePosition,
+  TickState,
+} from "../../packages/sdk/src/types/index.js";
 type TickOverrides = Map<bigint, Partial<TickState> | null>;
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
@@ -192,8 +200,8 @@ async function rpc(
     },
   );
 }
-async function injectWallets(page: Page) {
-  await page.addInitScript(() => {
+async function injectWallets(page: Page, transactions = false) {
+  await page.addInitScript((transactions) => {
     type Request = { method: string; params?: { chainId: string }[] };
     const create = (
       initial: string,
@@ -226,6 +234,19 @@ async function injectWallets(page: Page) {
             sessionStorage.setItem(rdns + ".chain", chain);
             events.get("chainChanged")?.forEach((fn) => fn(chain));
             return null;
+          }
+          if (transactions) {
+            const response = await fetch("https://mainnet.base.org", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+            });
+            const value = await response.json();
+            if (value.error)
+              throw Object.assign(new Error(value.error.message), {
+                code: value.error.code,
+              });
+            return value.result;
           }
           throw new Error(`Unsupported test method ${method}`);
         },
@@ -265,6 +286,7 @@ async function injectWallets(page: Page) {
         },
         chain: (next: string) => {
           chain = next;
+          sessionStorage.setItem(rdns + ".chain", next);
           events.get("chainChanged")?.forEach((fn) => fn(next));
         },
       };
@@ -282,7 +304,7 @@ async function injectWallets(page: Page) {
       "00000000-0000-4000-8000-000000000002",
     );
     Object.assign(window, { testWallet: metamask });
-  });
+  }, transactions);
 }
 test.beforeAll(async ({ request }) => {
   if (process.env.PLAYWRIGHT_SERVER !== "development") return;
@@ -862,14 +884,14 @@ test("multiple injected providers, wallet selection, account and network switchi
   await expect(
     page
       .getByLabel("Provide liquidity", { exact: true })
-      .getByRole("button", { name: "Switch wallet network" }),
+      .getByRole("button", { name: "Switch network" }),
   ).toBeVisible();
   await page
     .getByLabel("Provide liquidity", { exact: true })
-    .getByRole("button", { name: "Switch wallet network" })
+    .getByRole("button", { name: "Switch network" })
     .click();
   await expect(
-    page.getByRole("button", { name: "Switch wallet network" }),
+    page.getByRole("button", { name: "Switch network" }),
   ).toHaveCount(0);
 });
 test("network selector switches the connected wallet and preserves market filters", async ({
@@ -1245,7 +1267,7 @@ test("invalid URL base ticks fall back safely and SDK bounds disable invalid nei
   }
 });
 
-test("Yield Book shows five rows per side with both sides starting at the bottom", async ({
+test("Yield Book shows five rows and scrolls best Ask and Bid next to the reference price", async ({
   page,
 }) => {
   await page.goto(`/market/base/${key}`);
@@ -1254,39 +1276,91 @@ test("Yield Book shows five rows per side with both sides starting at the bottom
   const count = DISCOVERY_DEFAULTS.radius * 2 + 1;
   await expect(ask.getByRole("button")).toHaveCount(count);
   await expect(bid.getByRole("button")).toHaveCount(count);
-  const expectViewport = async () => {
-    for (const side of [ask, bid]) {
-      const viewport = await side.evaluate((element) => ({
-        height: element.clientHeight,
-        rowHeight: element.firstElementChild!.getBoundingClientRect().height,
-        scrollTop: element.scrollTop,
-        maxScroll: element.scrollHeight - element.clientHeight,
-      }));
+  const expectViewport = async (askId: bigint, bidId: bigint) => {
+    for (const [index, side] of [ask, bid].entries()) {
+      const viewport = await side.evaluate(
+        (element, id) => {
+          const row = element.querySelector(`[data-tick-id="${id}"]`)!;
+          const bounds = element.getBoundingClientRect(),
+            rowBounds = row.getBoundingClientRect();
+          return {
+            height: element.clientHeight,
+            rowHeight: rowBounds.height,
+            top: rowBounds.top - bounds.top,
+            bottom: rowBounds.bottom - bounds.top,
+            available: row.getAttribute("data-available"),
+          };
+        },
+        (index === 0 ? askId : bidId).toString(),
+      );
       expect(viewport.height / viewport.rowHeight).toBe(
         YIELD_BOOK_LAYOUT.visibleRows,
       );
-      expect(viewport.maxScroll).toBeGreaterThan(0);
-      expect(viewport.scrollTop).toBe(viewport.maxScroll);
+      expect(viewport.available).toBe("true");
+      expect(index === 0 ? viewport.bottom : viewport.top).toBeCloseTo(
+        index === 0 ? viewport.height : 0,
+      );
     }
   };
-  await expectViewport();
+  await expectViewport(id7, bid7);
   const refresh = page.getByRole("button", { name: "Refresh discovery" });
   await expect(refresh.locator("svg")).toBeVisible();
   await expect(refresh).toHaveText("");
-  await ask.evaluate((element) => {
-    element.scrollTop = 0;
-  });
-  await bid.evaluate((element) => {
-    element.scrollTop = 0;
-  });
+  for (const side of [ask, bid])
+    await side.evaluate((element) => {
+      element.scrollTop = 0;
+    });
   await page
     .getByRole("group", { name: "Book term" })
     .getByRole("button", { name: "30D", exact: true })
     .click();
-  await expectViewport();
+  await expectViewport(id30, bid30);
   await page.getByRole("button", { name: "Invert", exact: true }).click();
-  await expectViewport();
+  await expectViewport(bid30, id30);
 });
+
+for (const empty of ["ask", "bid", "both", "missing"] as const) {
+  test(`Yield Book scrolls ${empty} to the end when no executable liquidity is available`, async ({
+    page,
+  }) => {
+    const overrides: TickOverrides = new Map();
+    if (empty !== "bid")
+      overrides.set(id7, { availableSupply: 0n, activeWorking: 10n ** 18n });
+    if (empty !== "ask")
+      overrides.set(bid7, { availableSupply: 0n, activeWorking: 10n ** 6n });
+    await rpc(page, empty !== "missing", overrides);
+    await page.goto(`/market/base/${key}`);
+    await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveCount(1);
+    for (const [side, id] of [
+      ["ask", id7],
+      ["bid", bid7],
+    ] as const) {
+      const group = page.getByRole("group", {
+        name: `${side === "ask" ? "Ask" : "Bid"} price levels`,
+      });
+      const position = await group.evaluate((element, id) => {
+        const row = element.querySelector(`[data-tick-id="${id}"]`)!;
+        return {
+          scroll: element.scrollTop,
+          end: element.scrollHeight - element.clientHeight,
+          top:
+            row.getBoundingClientRect().top -
+            element.getBoundingClientRect().top,
+          bottom:
+            row.getBoundingClientRect().bottom -
+            element.getBoundingClientRect().top,
+          height: element.clientHeight,
+        };
+      }, id.toString());
+      if (empty === "both" || empty === "missing" || empty === side)
+        expect(position.scroll).toBe(position.end);
+      else
+        expect(side === "ask" ? position.bottom : position.top).toBeCloseTo(
+          side === "ask" ? position.height : 0,
+        );
+    }
+  });
+}
 
 test("full configured grid, duration, pair inversion and read-only price selection", async ({
   page,
@@ -1407,9 +1481,9 @@ test("Orders connection and invalid pair validation", async ({ page }) => {
     .click();
   await page.getByRole("option", { name: "WETH", exact: true }).click();
   await expect(page.getByText("Select two different tokens")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Create Market" })).toHaveCount(
-    0,
-  );
+  await expect(
+    page.getByRole("button", { name: "Preview Create Market" }),
+  ).toHaveCount(0);
 });
 
 test("empty edge levels select exact Ask and Bid identities, while off-grid access stays outside the app", async ({
@@ -1431,7 +1505,7 @@ test("empty edge levels select exact Ask and Bid identities, while off-grid acce
   );
   await expect(supply).toContainText(humanPrice(priceAtTick(edgeTick), 18, 6));
   await expect(
-    supply.getByRole("button", { name: "Create Tick", exact: true }),
+    supply.getByRole("button", { name: "Preview Provide", exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("You receive")).toHaveCount(0);
   await page
@@ -1747,7 +1821,7 @@ test("selected missing levels become available for Supply after discovery refres
   await expect(row).toContainText("0 WETH");
   await page.getByLabel("Amount", { exact: true }).fill("3");
   await expect(
-    page.getByRole("button", { name: "Create Tick", exact: true }),
+    page.getByRole("button", { name: "Preview Provide", exact: true }),
   ).toBeVisible();
   overrides.set(newId, {
     priceX128: priceAtTick(newTick),
@@ -1891,7 +1965,7 @@ test("failed market reads remain incomplete rather than empty liquidity", async 
   );
 });
 
-test("new markets retain the prototype overview and require Pair creation before Supply", async ({
+test("new markets allow Provide directly and retain standalone Create Market", async ({
   page,
 }) => {
   await rpc(page, false);
@@ -1943,7 +2017,7 @@ test("new markets retain the prototype overview and require Pair creation before
     page.getByRole("button", { name: "Create Tick", exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "Create Market", exact: true }),
+    page.getByRole("button", { name: "Preview Create Market", exact: true }),
   ).toBeVisible();
 });
 
@@ -2059,4 +2133,846 @@ test("development HMR connects under the development CSP", async ({ page }) => {
       () => (window as unknown as { testCspEvents: string[] }).testCspEvents,
     ),
   ).toEqual([]);
+});
+
+// Runtime fixture includes the deployed FEE_TO immutable. Verification stays enabled.
+const protocolRuntime = readFileSync(
+  new URL("../fixtures/protocol-runtime.hex", import.meta.url),
+  "utf8",
+).trim() as Hex;
+async function transactionRpc(
+  page: Page,
+  options: {
+    pair: boolean;
+    tick: boolean;
+    direction?: 0 | 1;
+    allowance?: bigint;
+    reject?: boolean;
+    fail?: boolean;
+    positions?: {
+      provider?: Partial<ProviderPosition>;
+      use?: Partial<UsePosition>;
+    };
+    balance?: bigint;
+  },
+) {
+  expect(keccak256(protocolRuntime)).toBe(
+    deploymentFor("eip155:8453").runtimeCodeHash,
+  );
+  const state = {
+    pair: options.pair,
+    allowance: options.allowance ?? 10n ** 30n,
+    reject: !!options.reject,
+    fail: !!options.fail,
+    writes: [] as string[][],
+    withdrawals: [] as (readonly bigint[])[],
+    simulations: [] as string[],
+    timestamp: 0x68e00000n,
+    settlement: false,
+  };
+  const selectedId = options.direction === 1 ? bid7 : id7;
+  const overrides: TickOverrides = new Map([
+    [
+      selectedId,
+      options.tick
+        ? options.positions
+          ? { workingSupply: 60n * 10n ** 18n, activeWorking: 60n * 10n ** 18n }
+          : {}
+        : null,
+    ],
+  ]);
+  const txHash = `0x${"12".repeat(32)}`;
+  const providerAbi = protocolAbi.find(
+    (entry) => entry.type === "function" && entry.name === "getEarnPosition",
+  )!;
+  const provider = Object.assign(
+    Object.fromEntries(
+      providerAbi.outputs[0].components.map((c) => [c.name, 0n]),
+    ) as ProviderPosition,
+    {
+      activePrincipal: 100n * 10n ** 18n,
+      activeAvailable: 40n * 10n ** 18n,
+      activeWorking: 60n * 10n ** 18n,
+    },
+    options.positions?.provider,
+  );
+  provider.activePrincipalX36 =
+    options.positions?.provider?.activePrincipalX36 ??
+    provider.activePrincipal * 10n ** 36n;
+  const use: UsePosition = {
+    tickId: selectedId,
+    tickSeq: 0n,
+    user: "0x0000000000000000000000000000000000000001",
+    assetAmount: 100n * 10n ** 18n,
+    quotePrincipal: 200n * 10n ** 6n,
+    fullTermYieldAsset: 10n * 10n ** 18n,
+    closeFee: 2n * 10n ** 6n,
+    openedAt: state.timestamp - 50n,
+    maturity: state.timestamp + 50n,
+    status: 1,
+    ...options.positions?.use,
+  };
+  function tupleResult(
+    name: "withdraw" | "collect" | "repay" | "close",
+    values: Record<string, bigint>,
+  ) {
+    const abi = protocolAbi.find(
+      (f): f is Extract<(typeof protocolAbi)[number], { name: typeof name }> =>
+        f.type === "function" && f.name === name,
+    )!;
+    return encodeFunctionResult({
+      abi: protocolAbi,
+      functionName: name,
+      result: Object.fromEntries(
+        abi.outputs[0].components.map((c) => [c.name, values[c.name] ?? 0n]),
+      ) as never,
+    });
+  }
+  function call(
+    data: Hex,
+    pair = state.pair,
+    ticks = overrides,
+  ): { success: boolean; returnData: Hex } {
+    try {
+      const token = decodeFunctionData({ abi: erc20Abi, data });
+      if (
+        token.functionName === "balanceOf" ||
+        token.functionName === "allowance"
+      )
+        return {
+          success: true,
+          returnData: encodeFunctionResult({
+            abi: erc20Abi,
+            functionName: token.functionName,
+            result:
+              token.functionName === "allowance"
+                ? state.allowance
+                : (options.balance ?? 10n ** 30n),
+          }),
+        };
+      if (token.functionName === "approve")
+        return {
+          success: true,
+          returnData: encodeFunctionResult({
+            abi: erc20Abi,
+            functionName: "approve",
+            result: true,
+          }),
+        };
+    } catch {}
+    try {
+      const decoded = decodeFunctionData({ abi: protocolAbi, data });
+      if (options.positions) {
+        if (
+          decoded.functionName === "getEarnPositions" ||
+          decoded.functionName === "getUsePositions"
+        )
+          return {
+            success: true,
+            returnData: encodeFunctionResult({
+              abi: protocolAbi,
+              functionName: decoded.functionName,
+              result:
+                decoded.functionName === "getEarnPositions"
+                  ? [selectedId]
+                  : options.positions.use
+                    ? [1n]
+                    : [],
+            }),
+          };
+        if (decoded.functionName === "getEarnPosition")
+          return {
+            success: true,
+            returnData: encodeFunctionResult({
+              abi: protocolAbi,
+              functionName: "getEarnPosition",
+              result: provider,
+            }),
+          };
+        if (decoded.functionName === "getPosition")
+          return {
+            success: true,
+            returnData: encodeFunctionResult({
+              abi: protocolAbi,
+              functionName: "getPosition",
+              result: use,
+            }),
+          };
+      }
+      if (decoded.functionName === "multicall") {
+        let virtualPair = pair;
+        const virtualTicks = new Map(ticks),
+          results: Hex[] = [];
+        for (const sub of decoded.args[0]) {
+          const action = decodeFunctionData({ abi: protocolAbi, data: sub });
+          if (action.functionName === "createPair") {
+            virtualPair = true;
+            results.push(
+              encodeFunctionResult({
+                abi: protocolAbi,
+                functionName: "createPair",
+                result: pairId,
+              }),
+            );
+          } else if (action.functionName === "createTick") {
+            const [pid, direction, priceTick, days] = action.args;
+            const id = tickIdFor(pid, direction as 0 | 1, priceTick, days);
+            virtualTicks.set(id, {
+              asset: direction === 0 ? a : b,
+              quote: direction === 0 ? b : a,
+              durationDays: days,
+              priceX128: priceAtTick(priceTick),
+              availableSupply: 10n ** 18n,
+            });
+            results.push(
+              encodeFunctionResult({
+                abi: protocolAbi,
+                functionName: "createTick",
+                result: id,
+              }),
+            );
+          } else if (options.positions && action.functionName === "withdraw") {
+            state.simulations.push("withdraw");
+            const amount = action.args[1],
+              available = (amount * 4n) / 10n;
+            results.push(
+              tupleResult("withdraw", {
+                providerPrincipal: provider.activePrincipal,
+                principalAmount: amount,
+                availableAssetOut: available,
+                workingToExit: amount - available,
+                remainingActivePrincipal: provider.activePrincipal - amount,
+                resolvingPrincipal: amount - available,
+              }),
+            );
+          } else if (options.positions && action.functionName === "collect") {
+            state.simulations.push("collect");
+            if (state.settlement)
+              virtualTicks.set(selectedId, {
+                ...virtualTicks.get(selectedId),
+                settleCursor: 1n,
+              });
+            results.push(
+              tupleResult("collect", {
+                totalAssetOut:
+                  provider.claimableExitAsset +
+                  provider.claimableActiveYieldAsset +
+                  provider.claimableExitYieldAsset,
+                totalQuoteOut:
+                  provider.claimableActiveQuote + provider.claimableExitQuote,
+                resolvingPrincipal: provider.resolvingPrincipal,
+              }),
+            );
+          } else if (options.positions && action.functionName === "repay") {
+            state.simulations.push("repay");
+            const term = use.maturity - use.openedAt,
+              elapsed =
+                state.timestamp > use.openedAt
+                  ? state.timestamp - use.openedAt
+                  : 1n;
+            const accrued =
+              (use.fullTermYieldAsset * elapsed + term - 1n) / term;
+            results.push(
+              tupleResult("repay", {
+                positionId: 1n,
+                tickId: selectedId,
+                assetPrincipal: use.assetAmount,
+                grossYieldAsset: accrued,
+                totalAssetIn: use.assetAmount + accrued,
+                quotePrincipalUnlocked: use.quotePrincipal,
+              }),
+            );
+          } else if (options.positions && action.functionName === "close") {
+            state.simulations.push("close");
+            results.push(
+              tupleResult("close", {
+                positionId: 1n,
+                tickId: selectedId,
+                closeFee: use.closeFee,
+                providerSwapProceeds: use.quotePrincipal - use.closeFee,
+              }),
+            );
+          } else if (action.functionName === "supply") results.push("0x");
+          else if (action.functionName === "getEarnPosition")
+            results.push(
+              encodeFunctionResult({
+                abi: protocolAbi,
+                functionName: "getEarnPosition",
+                result: options.positions
+                  ? provider
+                  : (Object.fromEntries(
+                      providerAbi.outputs[0].components.map((c) => [
+                        c.name,
+                        c.name === "activePrincipal" ? 10n ** 18n : 0n,
+                      ]),
+                    ) as never),
+              }),
+            );
+          else {
+            const result = call(sub, virtualPair, virtualTicks);
+            if (!result.success) return result;
+            results.push(result.returnData);
+          }
+        }
+        return state.fail
+          ? {
+              success: false,
+              returnData: encodeErrorResult({
+                abi: protocolAbi,
+                errorName: "Slippage",
+              }),
+            }
+          : {
+              success: true,
+              returnData: encodeFunctionResult({
+                abi: protocolAbi,
+                functionName: "multicall",
+                result: results,
+              }),
+            };
+      }
+    } catch {}
+    return contractCall(data, pair, ticks);
+  }
+  await page.route("https://mainnet.base.org", async (route) => {
+    const respond = (item: {
+      id: number;
+      method: string;
+      params: unknown[];
+    }) => {
+      let result: unknown;
+      const error = (message: string, code = 4001, data?: Hex) => ({
+        id: item.id,
+        jsonrpc: "2.0",
+        error: { code, message, data },
+      });
+      if (item.method === "eth_getCode") result = protocolRuntime;
+      else if (item.method === "eth_chainId") result = "0x2105";
+      else if (item.method === "eth_blockNumber") result = "0x989680";
+      else if (item.method === "eth_getBlockByNumber")
+        result = {
+          number: "0x989680",
+          timestamp: `0x${state.timestamp.toString(16)}`,
+          hash: `0x${"34".repeat(32)}`,
+          transactions: [],
+          baseFeePerGas: "0x1",
+          gasLimit: "0x1c9c380",
+          gasUsed: "0x0",
+          size: "0x1",
+          difficulty: "0x0",
+          totalDifficulty: "0x0",
+          extraData: "0x",
+        };
+      else if (item.method === "eth_call") {
+        const data = (item.params[0] as { data: Hex }).data;
+        let response;
+        try {
+          const decoded = decodeFunctionData({ abi: multicall3Abi, data });
+          if (decoded.functionName === "aggregate3")
+            response = {
+              success: true,
+              returnData: encodeFunctionResult({
+                abi: multicall3Abi,
+                functionName: "aggregate3",
+                result: decoded.args[0].map((c) => call(c.callData)),
+              }),
+            };
+        } catch {}
+        response ??= call(data);
+        if (!response.success)
+          return error("execution reverted", 3, response.returnData);
+        result = response.returnData;
+      } else if (item.method === "eth_estimateGas") result = "0x493e0";
+      else if (item.method === "eth_sendTransaction") {
+        const data = (item.params[0] as { data: Hex }).data;
+        const approval = (() => {
+          try {
+            return decodeFunctionData({ abi: erc20Abi, data });
+          } catch {
+            return undefined;
+          }
+        })();
+        if (approval?.functionName === "approve") {
+          if (state.reject) {
+            state.reject = false;
+            return error("User rejected approval");
+          }
+          state.allowance = approval.args[1];
+          state.writes.push(["approve"]);
+        } else {
+          const decoded = decodeFunctionData({ abi: protocolAbi, data });
+          if (decoded.functionName !== "multicall")
+            throw new Error("Expected atomic batch");
+          for (const data of decoded.args[0]) {
+            const action = decodeFunctionData({ abi: protocolAbi, data });
+            if (action.functionName === "withdraw")
+              state.withdrawals.push(action.args);
+          }
+          state.writes.push(
+            decoded.args[0].map(
+              (data) =>
+                decodeFunctionData({ abi: protocolAbi, data }).functionName,
+            ),
+          );
+        }
+        result = txHash;
+      } else if (item.method === "eth_getTransactionReceipt")
+        result = {
+          transactionHash: txHash,
+          blockNumber: "0x989680",
+          blockHash: `0x${"34".repeat(32)}`,
+          transactionIndex: "0x0",
+          from: "0x0000000000000000000000000000000000000001",
+          to: deploymentFor("eip155:8453").address,
+          status: "0x1",
+          gasUsed: "0x493e0",
+          cumulativeGasUsed: "0x493e0",
+          effectiveGasPrice: "0x1",
+          logs: [],
+          logsBloom: `0x${"00".repeat(256)}`,
+          type: "0x2",
+        };
+      else return error(`Unsupported test RPC ${item.method}`, -32601);
+      return { id: item.id, jsonrpc: "2.0", result };
+    };
+    const body = route.request().postDataJSON();
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(
+        Array.isArray(body) ? body.map(respond) : respond(body),
+      ),
+    });
+  });
+  await injectWallets(page, true);
+  await page.goto(`/market/base/${key}`);
+  await page
+    .getByRole("button", { name: "Connect wallet", exact: true })
+    .click();
+  await page.getByRole("button", { name: "MetaMask", exact: true }).click();
+  await page.evaluate(() => {
+    (
+      window as unknown as { testWallet: { chain: (chain: string) => void } }
+    ).testWallet.chain("0x2105");
+  });
+  if (options.positions)
+    return Object.assign(state, { ticks: overrides, provider, use });
+  await page.locator(`[data-tick-id="${selectedId}"]`).click();
+  await page.getByLabel("Amount", { exact: true }).fill("1");
+  await page
+    .getByRole("button", { name: "Preview Provide", exact: true })
+    .click();
+  return Object.assign(state, { ticks: overrides, provider, use });
+}
+for (const direction of [0, 1] as const) {
+  for (const [pair, tick] of [
+    [true, true],
+    [true, false],
+    [false, false],
+  ]) {
+    test(`Provide uses one preview and one wallet transaction (Pair ${pair}, Tick ${tick}, direction ${direction})`, async ({
+      page,
+    }) => {
+      const state = await transactionRpc(page, { pair, tick, direction });
+      const dialog = page.getByRole("dialog");
+      await expect(
+        dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
+      ).toBeVisible();
+      expect(state.writes).toHaveLength(0);
+      await dialog
+        .getByRole("button", { name: "Confirm Provide", exact: true })
+        .click();
+      await expect(
+        dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+      ).toBeVisible();
+      expect(state.writes).toEqual([
+        [
+          ...(!pair ? ["createPair"] : []),
+          ...(!tick ? ["createTick"] : []),
+          "supply",
+        ],
+      ]);
+      await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1");
+    });
+  }
+}
+test("approval rejection and zero-first approval recover inside the same preview", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: false,
+    tick: false,
+    allowance: 1n,
+    reject: true,
+  });
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByText("The action has not been simulated yet.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "Approve WETH", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Approve WETH", exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(state.writes).toHaveLength(0);
+  await dialog
+    .getByRole("button", { name: "Approve WETH", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["approve"], ["approve"]]);
+  await dialog
+    .getByRole("button", { name: "Confirm Provide", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([
+    ["approve"],
+    ["approve"],
+    ["createPair", "createTick", "supply"],
+  ]);
+});
+test("failed simulation preserves the input and recovers without another Preview click", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    fail: true,
+  });
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(state.writes).toHaveLength(0);
+  state.fail = false;
+  await dialog
+    .getByRole("button", { name: "Retry Provide", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1");
+});
+
+test("concurrent initialization refreshes the same preview and requires confirmation of the updated batch", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, { pair: false, tick: false });
+  const dialog = page.getByRole("dialog"),
+    confirm = dialog.getByRole("button", {
+      name: "Confirm Provide",
+      exact: true,
+    });
+  await expect(confirm).toBeVisible();
+  state.pair = true;
+  state.ticks.set(id7, {});
+  await confirm.click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "preview has been refreshed",
+  );
+  expect(state.writes).toHaveLength(0);
+  await confirm.click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["supply"]]);
+});
+test("final simulation failure keeps the reviewed preview and retries only after confirmation", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, { pair: true, tick: true });
+  const dialog = page.getByRole("dialog"),
+    confirm = dialog.getByRole("button", {
+      name: "Confirm Provide",
+      exact: true,
+    });
+  await expect(confirm).toBeVisible();
+  state.fail = true;
+  await confirm.click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  await expect(dialog.getByText("Your Active liquidity after")).toBeVisible();
+  expect(state.writes).toHaveLength(0);
+  state.fail = false;
+  await confirm.click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["supply"]]);
+});
+for (const change of ["account", "network"]) {
+  test(`wallet ${change} change invalidates the current preview without submission`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, { pair: true, tick: true });
+    await expect(
+      page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Confirm Provide", exact: true }),
+    ).toBeVisible();
+    await page.evaluate((change) => {
+      const wallet = (
+        window as unknown as {
+          testWallet: {
+            account: (address: string) => void;
+            chain: (chain: string) => void;
+          };
+        }
+      ).testWallet;
+      if (change === "account")
+        wallet.account("0x0000000000000000000000000000000000000003");
+      else wallet.chain("0x1");
+    }, change);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(state.writes).toHaveLength(0);
+    await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1");
+  });
+}
+
+test("position cards share a compact responsive layout on Market and Orders", async ({
+  page,
+  isMobile,
+}) => {
+  await transactionRpc(page, { pair: true, tick: true, positions: {} });
+  for (const path of [`/market/base/${key}`, "/orders"]) {
+    await page.goto(path);
+    const card = page.locator('[data-slot="position-card"]').first();
+    await expect(card.getByText("Available", { exact: true })).toBeVisible();
+    await expect(
+      card.getByRole("button", { name: "Preview Withdraw" }),
+    ).toBeEnabled();
+    await expect(card.getByRole("checkbox")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: /Settle/ })).toHaveCount(0);
+    await expect(card.getByText("Total Active principal")).toBeHidden();
+    expect(
+      await card.evaluate((node) => node.getBoundingClientRect().height),
+    ).toBeLessThan(isMobile ? 400 : 260);
+    expect(
+      await card.evaluate(
+        (node) =>
+          node.parentElement!.getBoundingClientRect().width -
+          node.getBoundingClientRect().width,
+      ),
+    ).toBeLessThan(2);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    const details = card.locator("summary");
+    await details.focus();
+    await page.keyboard.press("Enter");
+    await expect(card.getByText("Total Active principal")).toBeVisible();
+    await expect(card.getByText(a, { exact: true })).toBeVisible();
+    await details.press("Enter");
+    await expect(card.getByText("Total Active principal")).toBeHidden();
+  }
+});
+
+test("all withdrawal percentages use fresh principal and submit zero minimum immediate Asset", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: {},
+  });
+  await page.goto("/orders");
+  const card = page.locator('[data-slot="position-card"]').first();
+  await expect(card).toBeVisible();
+  // Change the onchain value after the portfolio snapshot has rendered.
+  state.provider.activePrincipal = 101n;
+  for (const percentage of [25, 50, 75, 100]) {
+    await card
+      .getByRole("button", {
+        name: percentage === 100 ? "Max" : `${percentage}%`,
+        exact: true,
+      })
+      .click();
+    await expect(
+      card.getByRole("button", {
+        name: percentage === 100 ? "Max" : `${percentage}%`,
+        exact: true,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+    const simulations = state.simulations.length;
+    await card.getByRole("button", { name: "Preview Withdraw" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByRole("button", { name: "Confirm Withdraw", exact: true }),
+    ).toBeVisible();
+    for (const label of [
+      "Withdraw principal",
+      "Receive principal now",
+      "Move to Resolving",
+      "Unvested Yield forfeited",
+    ])
+      await expect(dialog.getByText(label, { exact: true })).toBeVisible();
+    expect(state.simulations.length - simulations).toBe(1);
+    await dialog
+      .getByRole("button", { name: "Confirm Withdraw", exact: true })
+      .click();
+    await expect(
+      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+    ).toBeVisible();
+    expect(state.withdrawals.at(-1)?.slice(0, 3)).toEqual([
+      id7,
+      (101n * BigInt(percentage)) / 100n,
+      0n,
+    ]);
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  }
+});
+
+test("rounding disables zero withdrawals but leaves a one-unit Max accessible", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: {
+      provider: { activePrincipal: 1n, activeAvailable: 1n, activeWorking: 0n },
+    },
+  });
+  await page.goto("/orders");
+  const card = page.locator('[data-slot="position-card"]').first();
+  for (const percentage of [25, 50, 75]) {
+    await card
+      .getByRole("button", { name: `${percentage}%`, exact: true })
+      .click();
+    await expect(
+      card.getByRole("button", { name: "Preview Withdraw" }),
+    ).toBeDisabled();
+  }
+  await card.getByRole("button", { name: "Max", exact: true }).click();
+  await expect(
+    card.getByRole("button", { name: "Preview Withdraw" }),
+  ).toBeEnabled();
+  state.provider.activePrincipal = 0n;
+  await card.getByRole("button", { name: "Preview Withdraw" }).click();
+  await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+    "No transferable principal",
+  );
+  expect(state.simulations).toEqual([]);
+  expect(state.writes).toEqual([]);
+});
+
+test("claim-only and Resolving positions remain accessible and empty Collect is blocked", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: {
+      provider: {
+        activePrincipal: 0n,
+        activeAvailable: 0n,
+        activeWorking: 0n,
+        resolvingPrincipal: 10n,
+        exitPrincipalX36: 10n ** 37n,
+      },
+    },
+  });
+  await page.goto("/orders");
+  const card = page.locator('[data-slot="position-card"]').first();
+  await expect(
+    card.getByRole("button", { name: "Preview Withdraw" }),
+  ).toBeDisabled();
+  await card.getByRole("button", { name: "Preview Collect" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Nothing to collect yet",
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Collect" }),
+  ).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+  // A zero-output Collect can still progress automatic settlement past a cursor gap.
+  state.settlement = true;
+  await dialog.getByRole("button", { name: "Retry Collect" }).click();
+  await dialog.getByRole("button", { name: "Confirm Collect" }).click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["collect"]]);
+  state.settlement = false;
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  state.provider.resolvingPrincipal = 0n;
+  state.provider.exitPrincipalX36 = 0n;
+  state.provider.claimableExitAsset = 1n;
+  await page.reload();
+  await card.getByRole("button", { name: "Preview Collect" }).click();
+  await dialog.getByRole("button", { name: "Confirm Collect" }).click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["collect"], ["collect"]]);
+});
+
+test("Use shows accrued Yield without balance or approval, then keeps approval and Repay in one flow", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: { use: {} },
+    allowance: 0n,
+  });
+  await page.goto("/orders");
+  await page.getByRole("tab", { name: /^Use \(/ }).click();
+  const card = page.locator('[data-slot="position-card"]').first();
+  await expect(card.getByText("Accrued Yield (estimated)")).toBeVisible();
+  await expect(card.getByText("5 WETH", { exact: true })).toBeVisible();
+  expect(state.simulations).toEqual([]);
+  expect(state.writes).toEqual([]);
+  await card.getByRole("button", { name: "Preview Repay" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("button", { name: "Approve WETH", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Repay" }),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["approve"]]);
+  await dialog.getByRole("button", { name: "Confirm Repay" }).click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["approve"], ["repay"]]);
+});
+
+test("Use retains its estimate with insufficient Asset and changes to Close at maturity", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: { use: {} },
+    allowance: 0n,
+    balance: 0n,
+  });
+  await page.goto("/orders");
+  await page.getByRole("tab", { name: /^Use \(/ }).click();
+  const card = page.locator('[data-slot="position-card"]').first();
+  await expect(card.getByText("5 WETH", { exact: true })).toBeVisible();
+  await card.getByRole("button", { name: "Preview Repay" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText("Insufficient balance");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  state.timestamp = state.use.maturity;
+  await page.reload();
+  await page.getByRole("tab", { name: /^Use \(/ }).click();
+  await expect(card.getByText("Matured", { exact: true })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Preview Repay" })).toHaveCount(
+    0,
+  );
+  await card.getByRole("button", { name: "Preview Close" }).click();
+  await dialog.getByRole("button", { name: "Confirm Close" }).click();
+  await expect(
+    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+  ).toBeVisible();
+  expect(state.writes).toEqual([["close"]]);
 });

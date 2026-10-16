@@ -34,7 +34,6 @@ export function SupplyForm({
   assetAddress,
   onAssetChange,
   onDurationChange,
-  pairExists,
 }: {
   market: Market;
   display: readonly [Token, Token];
@@ -43,7 +42,6 @@ export function SupplyForm({
   assetAddress: string;
   onAssetChange: (address: string) => void;
   onDurationChange: (duration: Duration) => void;
-  pairExists: boolean;
 }) {
   const [amount, setAmount] = useState("");
   const side = assetAddress === display[0].address ? "ask" : "bid";
@@ -139,49 +137,30 @@ export function SupplyForm({
                 {selected.error}
               </Message>
             )}
-            {pairExists &&
-            selected &&
-            selected.status !== "failed" &&
-            !validation ? (
-              selected.status === "exists" ? (
-                <TransactionFlow
-                  key={`supply/${selected.id}/${rawAmount}`}
-                  network={network}
-                  label="Preview Provide"
-                  asset={asset}
-                  quote={quote}
-                  disabled={rawAmount === 0n}
-                  prepare={async () => ({
-                    kind: "supply",
-                    tickId: selected.id,
-                    amount: rawAmount,
-                  })}
-                />
-              ) : (
-                <>
-                  <Message>
-                    This price level is empty. Create its Tick, then provide
-                    liquidity.
-                  </Message>
-                  <TransactionFlow
-                    key={`create/${selected.id}`}
-                    network={network}
-                    label="Create Tick"
-                    asset={asset}
-                    quote={quote}
-                    prepare={async () => ({
-                      kind: "createTick",
-                      pairId: selected.pairId,
-                      direction: selected.direction,
-                      priceTick: selected.priceTick,
-                      durationDays: selected.durationDays,
-                    })}
-                  />
-                </>
-              )
+            {selected && !validation ? (
+              <TransactionFlow
+                key={`supply/${selected.id}/${rawAmount}`}
+                network={network}
+                label="Preview Provide"
+                asset={asset}
+                quote={quote}
+                disabled={rawAmount === 0n || selected.status === "failed"}
+                prepare={async () => ({
+                  kind: "supply",
+                  tickId: selected.id,
+                  amount: rawAmount,
+                  initialize: {
+                    tokenA: market.token0.address as `0x${string}`,
+                    tokenB: market.token1.address as `0x${string}`,
+                    direction: selected.direction,
+                    priceTick: selected.priceTick,
+                    durationDays: selected.durationDays,
+                  },
+                })}
+              />
             ) : (
-              <Button className="w-full" disabled>
-                Preview Provide
+              <Button className="w-full" aria-label="Preview Provide" disabled>
+                <span aria-hidden="true">👀</span> Provide
               </Button>
             )}
           </TabsContent>

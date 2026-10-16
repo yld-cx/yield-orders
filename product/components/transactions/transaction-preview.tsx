@@ -1,4 +1,8 @@
-import type { Preview } from "@yld-cx/sdk/ethereum";
+import {
+  humanPrice,
+  marginalYieldPercent,
+  type Preview,
+} from "@yld-cx/sdk/ethereum";
 import type { Token } from "@yld-cx/sdk";
 import { Metric } from "@/components/forms/financial-fields";
 import { amountText, timestampText, shortAddress } from "@/lib/utils";
@@ -24,6 +28,23 @@ export function TransactionPreview({
     <div className="space-y-3 border-t pt-3 [&_p]:text-sm [&_p]:text-muted-foreground">
       <Metric label="Network">{preview.chainId}</Metric>
       <Metric label="Account">{shortAddress(preview.account)}</Metric>
+      {preview.tick && ["supply", "use", "swap"].includes(action.kind) && (
+        <>
+          <Metric label="Price">
+            {humanPrice(
+              preview.tick.priceX128,
+              asset?.decimals ?? 0,
+              quote?.decimals ?? 0,
+            )}{" "}
+            {quote?.symbol ?? "Quote"} / {asset?.symbol ?? "Asset"}
+          </Metric>
+          {action.kind !== "swap" && (
+            <Metric label="Duration">
+              {preview.tick.durationDays.toString()}D
+            </Metric>
+          )}
+        </>
+      )}
       {action.kind === "createPair" && (
         <>
           <Metric label="Token A">{shortAddress(action.tokenA)}</Metric>
@@ -41,6 +62,11 @@ export function TransactionPreview({
       {action.kind === "supply" && (
         <>
           <Metric label="You supply">{a(action.amount)}</Metric>
+          <Metric label="Current Yield">
+            {preview.tick
+              ? `${marginalYieldPercent(preview.tick) ?? "—"}% / term`
+              : "—"}
+          </Metric>
           <Metric label="Your Active liquidity after">
             {a(preview.provider!.activePrincipal)}
           </Metric>
@@ -187,8 +213,7 @@ export function TransactionPreview({
       )}
       {action.kind === "settle" && (
         <p>
-          Advance at most one expiry cursor step. This may close one mature Use
-          or skip one resolved Use.
+          Process expired market activity. This may settle one matured rental.
         </p>
       )}
       {"deadline" in action && (
@@ -196,12 +221,11 @@ export function TransactionPreview({
           {timestampText(action.deadline)}
         </Metric>
       )}
-      <Metric label="Estimated gas units">{preview.gas.toString()}</Metric>
-      <Metric label="Preview block">{preview.blockNumber.toString()}</Metric>
-      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-        Simulation is a preview of current state. Your execution limits apply at
-        inclusion.
-      </p>
+      <details className="text-xs text-muted-foreground">
+        <summary>Transaction details</summary>
+        <Metric label="Estimated gas units">{preview.gas.toString()}</Metric>
+        <Metric label="Preview block">{preview.blockNumber.toString()}</Metric>
+      </details>
     </div>
   );
 }

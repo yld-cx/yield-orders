@@ -260,16 +260,17 @@ export function NetworkGuard({ chainId }: { chainId: number }) {
     return <Message>Connect a wallet to transact.</Message>;
   if (connection.chainId === chainId) return null;
   return (
-    <div className="message">
+    <div className="message flex items-center gap-2 my-2">
       <p>
         Your wallet is on {connection.chain?.name ?? "an unsupported network"}.
       </p>
       <Button
+        size="xs"
         variant="outline"
         onClick={() => switchChain.mutate({ chainId })}
         disabled={switchChain.isPending}
       >
-        Switch wallet network
+        Switch network
       </Button>
       {switchChain.error && (
         <Message error>{explainError(switchChain.error)}</Message>
