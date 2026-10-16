@@ -17,6 +17,7 @@ const a = "0x4200000000000000000000000000000000000006",
 describe("product identity and security", () => {
   it("discloses the frozen Close fee and maturity settlement before opening a Use", () => {
     const preview: Preview = {
+      plan: { calls: [] },
       action: {
         kind: "use",
         tickId: 1n,
@@ -172,6 +173,7 @@ describe("product identity and security", () => {
   });
   it("renders creation semantics and gas without inventing an economic creation fee", () => {
     const preview: Preview = {
+      plan: { calls: [] },
       action: { kind: "createPair", tokenA: a, tokenB: b },
       account: a,
       chainId: 8453,

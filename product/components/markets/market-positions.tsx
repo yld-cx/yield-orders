@@ -36,7 +36,7 @@ export function MarketPositions({ market }: { market: Market }) {
       {portfolio.isError && (
         <Message error>{explainError(portfolio.error)}</Message>
       )}
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
+      <div className="mt-4 grid grid-cols-1 gap-4">
         {positions.map((position) => (
           <ProviderCard
             key={position.tickId.toString()}

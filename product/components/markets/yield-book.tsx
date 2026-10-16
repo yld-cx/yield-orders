@@ -55,6 +55,7 @@ function BookRow({
       aria-pressed={selected}
       data-tick-id={level.id.toString()}
       data-status={level.status}
+      data-available={level.status === "exists" && available > 0n}
     >
       <span className={side === "ask" ? "text-ask" : "text-bid"}>
         {priceText(tickPrice(level, display))}
@@ -129,14 +130,28 @@ export function YieldBook({
   }));
   const askScroll = useRef<HTMLDivElement>(null);
   const bidScroll = useRef<HTMLDivElement>(null);
-  const hasLevels = levels.length > 0;
+  const firstLevelId = levels[0]?.id;
   const baseAddress = display[0].address;
   useLayoutEffect(() => {
-    if (askScroll.current)
-      askScroll.current.scrollTop = askScroll.current.scrollHeight;
-    if (bidScroll.current)
-      bidScroll.current.scrollTop = bidScroll.current.scrollHeight;
-  }, [duration, baseAddress, hasLevels]);
+    for (const [index, ref] of [askScroll, bidScroll].entries()) {
+      const viewport = ref.current;
+      if (!viewport) continue;
+      const available = viewport.querySelectorAll<HTMLElement>(
+        '[data-available="true"]',
+      );
+      const best = available.item(index === 0 ? available.length - 1 : 0);
+      if (!best) {
+        viewport.scrollTop = viewport.scrollHeight;
+        continue;
+      }
+      const top =
+        best.getBoundingClientRect().top -
+        viewport.getBoundingClientRect().top +
+        viewport.scrollTop;
+      viewport.scrollTop =
+        index === 0 ? top + best.offsetHeight - viewport.clientHeight : top;
+    }
+  }, [duration, baseAddress, firstLevelId]);
   return (
     <Card className="min-w-0 yield-book">
       <CardContent className="space-y-4">

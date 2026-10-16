@@ -120,7 +120,6 @@ function supply(
       assetAddress={assetAddress}
       onAssetChange={vi.fn()}
       onDurationChange={vi.fn()}
-      pairExists
     />,
   );
 }
@@ -248,7 +247,7 @@ describe("configured Yield Book", () => {
 
 describe("selected price Supply", () => {
   it.each([0, 1] as const)(
-    "creates a missing direction %s Tick from its exact identity without onchain state",
+    "previews Provide for missing direction %s with its exact initialization identity",
     async (direction) => {
       const level = readBook().levels.find(
         (level) =>
@@ -261,13 +260,18 @@ describe("selected price Supply", () => {
       expect(html).not.toContain("Posted price");
       expect(mocks.flow).toHaveBeenCalledTimes(1);
       const props = mocks.flow.mock.calls[0][0];
-      expect(props.label).toBe("Create Tick");
+      expect(props.label).toBe("Preview Provide");
       expect(await props.prepare()).toEqual({
-        kind: "createTick",
-        pairId: level.pairId,
-        direction: level.direction,
-        priceTick: level.priceTick,
-        durationDays: level.durationDays,
+        kind: "supply",
+        tickId: level.id,
+        amount: 0n,
+        initialize: {
+          tokenA: a,
+          tokenB: b,
+          direction: level.direction,
+          priceTick: level.priceTick,
+          durationDays: level.durationDays,
+        },
       });
     },
   );
@@ -279,6 +283,13 @@ describe("selected price Supply", () => {
       kind: "supply",
       tickId: identity.id,
       amount: 0n,
+      initialize: {
+        tokenA: a,
+        tokenB: b,
+        direction: identity.direction,
+        priceTick: identity.priceTick,
+        durationDays: identity.durationDays,
+      },
     } satisfies EconomicAction);
     expect(props.disabled).toBe(true);
   });
@@ -286,6 +297,9 @@ describe("selected price Supply", () => {
     const book = readBook();
     expect(supply()).toContain("Not selected");
     supply(book.levels[1]);
+    expect(mocks.flow).toHaveBeenCalledTimes(1);
+    expect(mocks.flow.mock.calls[0][0].disabled).toBe(true);
+    mocks.flow.mockClear();
     supply(book.levels[0], Duration.Monthly);
     supply(book.levels[0], Duration.Weekly, b);
     expect(mocks.flow).not.toHaveBeenCalled();

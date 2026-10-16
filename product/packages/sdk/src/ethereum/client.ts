@@ -34,9 +34,10 @@ import {
   RECEIPT_TIMEOUT_MS,
   TRANSACTION_CONFIRMATIONS,
 } from "../constants.ts";
+import { canonicalPair } from "../registry/addresses.ts";
 import { protocolAbi } from "./abi.ts";
 import { deploymentFor, getNetwork } from "./networks.ts";
-import { tickCandidates, tickIdFor } from "./math.ts";
+import { pairIdFor, tickCandidates, tickIdFor } from "./math.ts";
 import { protocolErrorName } from "./errors.ts";
 type Return<N extends "withdraw" | "collect" | "repay" | "swap" | "close"> =
   ContractFunctionReturnType<typeof protocolAbi, "nonpayable", N>;
@@ -45,8 +46,32 @@ export interface InputRequirement {
   amount: bigint;
   allowanceAmount: bigint;
 }
+/** Economic calls only. Preview getters are appended separately. */
+export interface TransactionPlan {
+  readonly calls: readonly Hex[];
+}
+export class PreviewChangedError extends Error {
+  constructor(readonly preview: Preview) {
+    super(
+      "Market initialization changed. The preview has been refreshed. Confirm to submit the updated operation.",
+    );
+  }
+}
+export class TransactionPendingError extends Error {
+  constructor(
+    readonly hash: Hex,
+    options?: ErrorOptions,
+  ) {
+    super(
+      "Confirmation is still unknown. Check the submitted transaction before continuing.",
+      options,
+    );
+  }
+}
+class TransactionTerminalError extends Error {}
 export interface Preview {
   action: EconomicAction;
+  plan: TransactionPlan;
   account: Address;
   chainId: number;
   blockNumber: bigint;
@@ -175,10 +200,31 @@ export function actionData(action: EconomicAction): Hex {
       });
   }
 }
+function supplyIdentity(
+  action: Extract<EconomicAction, { kind: "supply" }>,
+  network: EvmNetwork,
+) {
+  if (!action.initialize) return undefined;
+  const identity = action.initialize;
+  const tokens = canonicalPair(network, identity.tokenA, identity.tokenB);
+  const pairId = pairIdFor(identity.tokenA, identity.tokenB);
+  if (
+    tickIdFor(
+      pairId,
+      identity.direction,
+      identity.priceTick,
+      identity.durationDays,
+    ) !== action.tickId
+  )
+    throw new Error("Supply identity does not match the selected price level");
+  return { pairId, asset: tokens[identity.direction] as Address };
+}
 export class EthereumClient {
   readonly address: Address;
   readonly chainId: number;
   readonly runtimeCodeHash: Hex;
+  private readonly activeWallets = new Set<string>();
+  private readonly pendingWrites = new Map<string, Hex>();
   // Only verified identities are cached. Liquidity is always freshly read.
   readonly knownTicks = new Map<bigint, TickIdentity>();
   constructor(
@@ -436,13 +482,75 @@ export class EthereumClient {
       hasMore: earnIds.length > limit || useIds.length > limit,
     };
   }
+  /** Only an explicit protocol NotFound proves absence; transport errors propagate. */
+  async transactionPlan(
+    action: EconomicAction,
+    blockNumber?: bigint,
+  ): Promise<TransactionPlan> {
+    const calls: Hex[] = [];
+    if (action.kind === "supply" && action.initialize) {
+      const identity = action.initialize;
+      const { pairId } = supplyIdentity(action, this.network)!;
+      const pair = await this.getPair(
+        identity.tokenA,
+        identity.tokenB,
+        blockNumber,
+      );
+      if (!pair[3]) {
+        calls.push(
+          actionData({
+            kind: "createPair",
+            tokenA: identity.tokenA,
+            tokenB: identity.tokenB,
+          }),
+        );
+      }
+      let exists = false;
+      if (pair[3]) {
+        try {
+          await this.getTick(action.tickId, blockNumber);
+          exists = true;
+        } catch (error) {
+          if (protocolErrorName(error) !== "NotFound") throw error;
+        }
+      }
+      if (!exists)
+        calls.push(
+          actionData({
+            kind: "createTick",
+            pairId,
+            direction: identity.direction,
+            priceTick: identity.priceTick,
+            durationDays: identity.durationDays,
+          }),
+        );
+    }
+    calls.push(actionData(action));
+    return { calls };
+  }
+  private async exclusive<T>(
+    account: Address,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const key = account.toLowerCase();
+    if (this.activeWallets.has(key))
+      throw new Error("A transaction is already in progress");
+    this.activeWallets.add(key);
+    try {
+      return await run();
+    } finally {
+      this.activeWallets.delete(key);
+    }
+  }
   async requiredInput(
     action: EconomicAction,
     atBlock?: { number: bigint; timestamp: bigint },
   ): Promise<InputRequirement | undefined> {
     if (action.kind === "supply")
       return {
-        token: (await this.getTick(action.tickId, atBlock?.number)).asset,
+        token:
+          supplyIdentity(action, this.network)?.asset ??
+          (await this.getTick(action.tickId, atBlock?.number)).asset,
         amount: action.amount,
         allowanceAmount: action.amount,
       };
@@ -477,10 +585,28 @@ export class EthereumClient {
     return undefined;
   }
   async preview(action: EconomicAction, account: Address): Promise<Preview> {
+    try {
+      return await this.simulatePreview(action, account);
+    } catch (error) {
+      // Gas estimation can observe a creator after the pinned simulation block.
+      if (
+        action.kind === "supply" &&
+        action.initialize &&
+        protocolErrorName(error) === "AlreadyExists"
+      )
+        return this.simulatePreview(action, account);
+      throw error;
+    }
+  }
+  private async simulatePreview(
+    action: EconomicAction,
+    account: Address,
+  ): Promise<Preview> {
     await this.verifyDeployment();
     const block = await this.publicClient.getBlock();
     const blockNumber = block.number;
-    const calls: Hex[] = [actionData(action)];
+    const plan = await this.transactionPlan(action, blockNumber);
+    const calls: Hex[] = [...plan.calls];
     let tickId: bigint | undefined;
     let includeProvider = false,
       includePosition = false;
@@ -545,11 +671,12 @@ export class EthereumClient {
       address: this.address,
       abi: protocolAbi,
       functionName: "multicall",
-      args: [[actionData(action)]],
+      args: [plan.calls],
       account,
     });
     const preview: Preview = {
       action,
+      plan,
       account,
       chainId: this.chainId,
       blockNumber,
@@ -557,7 +684,7 @@ export class EthereumClient {
       gas,
       input: await this.requiredInput(action, block),
     };
-    let cursor = 1;
+    let cursor = plan.calls.length;
     if (includeProvider)
       preview.provider = decodeFunctionResult({
         abi: protocolAbi,
@@ -581,35 +708,35 @@ export class EthereumClient {
         preview.withdraw = decodeFunctionResult({
           abi: protocolAbi,
           functionName: "withdraw",
-          data: result[0],
+          data: result[plan.calls.length - 1],
         });
         break;
       case "collect":
         preview.collect = decodeFunctionResult({
           abi: protocolAbi,
           functionName: "collect",
-          data: result[0],
+          data: result[plan.calls.length - 1],
         });
         break;
       case "repay":
         preview.repay = decodeFunctionResult({
           abi: protocolAbi,
           functionName: "repay",
-          data: result[0],
+          data: result[plan.calls.length - 1],
         });
         break;
       case "swap":
         preview.swap = decodeFunctionResult({
           abi: protocolAbi,
           functionName: "swap",
-          data: result[0],
+          data: result[plan.calls.length - 1],
         });
         break;
       case "close":
         preview.close = decodeFunctionResult({
           abi: protocolAbi,
           functionName: "close",
-          data: result[0],
+          data: result[plan.calls.length - 1],
         });
         break;
     }
@@ -639,19 +766,42 @@ export class EthereumClient {
       confirmations: TRANSACTION_CONFIRMATIONS,
       onReplaced: (replacement) => {
         if (replacement.reason === "cancelled")
-          throw new Error("Transaction cancelled");
+          throw new TransactionTerminalError("Transaction cancelled");
         if (replacement.reason === "replaced")
-          throw new Error(
+          throw new TransactionTerminalError(
             "Transaction replaced with different data. Refresh the current state before retrying.",
           );
         onStatus?.("pending", replacement.transaction.hash);
       },
     });
     if (receipt.status !== "success")
-      throw new Error(
+      throw new TransactionTerminalError(
         "Transaction reverted. Refresh and review the current state.",
       );
     return receipt;
+  }
+  private async waitSubmitted(
+    key: string,
+    wallet: WalletClient,
+    onStatus?: StatusCallback,
+  ) {
+    const hash = this.pendingWrites.get(key)!;
+    try {
+      const receipt = await this.receipt(wallet, hash, (stage, nextHash) => {
+        if (nextHash) this.pendingWrites.set(key, nextHash);
+        onStatus?.(stage, nextHash);
+      });
+      this.pendingWrites.delete(key);
+      return receipt;
+    } catch (error) {
+      if (error instanceof TransactionTerminalError) {
+        this.pendingWrites.delete(key);
+        throw error;
+      }
+      throw new TransactionPendingError(this.pendingWrites.get(key)!, {
+        cause: error,
+      });
+    }
   }
   async approve(
     action: EconomicAction,
@@ -659,99 +809,144 @@ export class EthereumClient {
     account: Address,
     onStatus?: StatusCallback,
   ): Promise<void> {
-    onStatus?.("verifying");
-    await this.verifyDeployment();
-    await this.assertWallet(wallet, account);
-    const input = await this.requiredInput(action);
-    if (!input) return;
-    const [balance, allowance] = await Promise.all([
-      this.balance(input.token, account),
-      this.allowance(input.token, account),
-    ]);
-    if (balance < input.amount)
-      throw new Error("Insufficient token balance for this action");
-    if (allowance >= input.allowanceAmount) return;
-    const approve = async (
-      amount: bigint,
-      stage: "approving" | "approving-reset",
-    ) => {
+    return this.exclusive(account, async () => {
+      onStatus?.("verifying");
+      await this.verifyDeployment();
       await this.assertWallet(wallet, account);
-      onStatus?.(stage);
-      const { request } = await this.publicClient.simulateContract({
-        address: input.token,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [this.address, amount],
-        account,
-      });
-      await this.receipt(wallet, await wallet.writeContract(request), onStatus);
-    };
-    // Exact allowance, with explicit reset for zero-first tokens.
-    if (allowance > 0n) await approve(0n, "approving-reset");
-    await approve(input.allowanceAmount, "approving");
+      const key = `approval/${account.toLowerCase()}/${actionData(action)}`;
+      if (this.pendingWrites.has(key))
+        await this.waitSubmitted(key, wallet, onStatus);
+      const input = await this.requiredInput(action);
+      if (!input) return;
+      const [balance, allowance] = await Promise.all([
+        this.balance(input.token, account),
+        this.allowance(input.token, account),
+      ]);
+      if (balance < input.amount)
+        throw new Error("Insufficient token balance for this action");
+      if (allowance >= input.allowanceAmount) return;
+      const approve = async (
+        amount: bigint,
+        stage: "approving" | "approving-reset",
+      ) => {
+        await this.assertWallet(wallet, account);
+        onStatus?.(stage);
+        const { request } = await this.publicClient.simulateContract({
+          address: input.token,
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [this.address, amount],
+          account,
+        });
+        await this.assertWallet(wallet, account);
+        this.pendingWrites.set(key, await wallet.writeContract(request));
+        await this.waitSubmitted(key, wallet, onStatus);
+      };
+      // Exact allowance, with explicit reset for zero-first tokens.
+      if (allowance > 0n) await approve(0n, "approving-reset");
+      await approve(input.allowanceAmount, "approving");
+    });
   }
   async execute(
     preview: Preview,
     wallet: WalletClient,
     onStatus?: StatusCallback,
   ): Promise<TransactionResult> {
-    if (preview.chainId !== this.chainId)
-      throw new Error("Preview belongs to another network");
-    onStatus?.("verifying");
-    await this.verifyDeployment();
-    await this.assertWallet(wallet, preview.account);
-    onStatus?.("simulating");
-    const { request } = await this.publicClient.simulateContract({
-      address: this.address,
-      abi: protocolAbi,
-      functionName: "multicall",
-      args: [[actionData(preview.action)]],
-      account: preview.account,
-      blockTag: "pending",
-    });
-    await this.assertWallet(wallet, preview.account);
-    onStatus?.("signing");
-    const receipt = await this.receipt(
-      wallet,
-      await wallet.writeContract(request),
-      onStatus,
-    );
-    const result: TransactionResult = {
-      hash: receipt.transactionHash,
-      blockNumber: receipt.blockNumber,
-    };
-    const logs = receipt.logs.filter(
-      (l) => l.address.toLowerCase() === this.address.toLowerCase(),
-    );
-    const opened = parseEventLogs({
-      abi: protocolAbi,
-      logs,
-      eventName: "UseOpened",
-    })[0];
-    if (opened) result.positionId = opened.args.positionId;
-    const created = parseEventLogs({
-      abi: protocolAbi,
-      logs,
-      eventName: "TickCreated",
-    })[0];
-    if (created) {
-      result.tickId = created.args.tickId;
-      const identity = {
-        id: created.args.tickId,
-        pairId: created.args.pairId,
-        direction: created.args.direction as 0 | 1,
-        priceTick: created.args.priceTick,
-        durationDays: Number(created.args.durationDays) as Duration,
+    return this.exclusive(preview.account, async () => {
+      if (preview.chainId !== this.chainId)
+        throw new Error("Preview belongs to another network");
+      onStatus?.("verifying");
+      await this.verifyDeployment();
+      await this.assertWallet(wallet, preview.account);
+      const key = `execute/${preview.account.toLowerCase()}/${actionData(preview.action)}`;
+      let receipt: TransactionReceipt;
+      if (this.pendingWrites.has(key)) {
+        receipt = await this.waitSubmitted(key, wallet, onStatus);
+      } else {
+        onStatus?.("simulating");
+        const block = await this.publicClient.getBlock();
+        const plan = await this.transactionPlan(preview.action, block.number);
+        const changed = (next: TransactionPlan) =>
+          next.calls.length !== preview.plan.calls.length ||
+          next.calls.some((call, i) => call !== preview.plan.calls[i]);
+        if (changed(plan))
+          throw new PreviewChangedError(
+            await this.preview(preview.action, preview.account),
+          );
+        const input = await this.requiredInput(preview.action, block);
+        if (input) {
+          const [balance, allowance] = await Promise.all([
+            this.balance(input.token, preview.account),
+            this.allowance(input.token, preview.account),
+          ]);
+          if (balance < input.amount)
+            throw new Error("Insufficient token balance for this action");
+          if (allowance < input.allowanceAmount)
+            throw new Error("Token approval required");
+        }
+        let request;
+        try {
+          ({ request } = await this.publicClient.simulateContract({
+            address: this.address,
+            abi: protocolAbi,
+            functionName: "multicall",
+            args: [plan.calls],
+            account: preview.account,
+            blockTag: "pending",
+          }));
+        } catch (error) {
+          // A creator can race even the initialization reads above. Rebuild for review only.
+          if (preview.action.kind === "supply" && preview.action.initialize) {
+            const fresh = await this.transactionPlan(preview.action);
+            if (changed(fresh))
+              throw new PreviewChangedError(
+                await this.preview(preview.action, preview.account),
+              );
+          }
+          throw error;
+        }
+        await this.assertWallet(wallet, preview.account);
+        onStatus?.("signing");
+        this.pendingWrites.set(key, await wallet.writeContract(request));
+        receipt = await this.waitSubmitted(key, wallet, onStatus);
+      }
+      const result: TransactionResult = {
+        hash: receipt.transactionHash,
+        blockNumber: receipt.blockNumber,
       };
-      this.knownTicks.set(identity.id, identity);
-    }
-    const pair = parseEventLogs({
-      abi: protocolAbi,
-      logs,
-      eventName: "PairCreated",
-    })[0];
-    if (pair) result.pairId = pair.args.pairId;
-    onStatus?.("confirmed", receipt.transactionHash);
-    return result;
+      const logs = receipt.logs.filter(
+        (l) => l.address.toLowerCase() === this.address.toLowerCase(),
+      );
+      const opened = parseEventLogs({
+        abi: protocolAbi,
+        logs,
+        eventName: "UseOpened",
+      })[0];
+      if (opened) result.positionId = opened.args.positionId;
+      const created = parseEventLogs({
+        abi: protocolAbi,
+        logs,
+        eventName: "TickCreated",
+      })[0];
+      if (created) {
+        result.tickId = created.args.tickId;
+        const identity = {
+          id: created.args.tickId,
+          pairId: created.args.pairId,
+          direction: created.args.direction as 0 | 1,
+          priceTick: created.args.priceTick,
+          durationDays: Number(created.args.durationDays) as Duration,
+        };
+        this.knownTicks.set(identity.id, identity);
+      }
+      const pair = parseEventLogs({
+        abi: protocolAbi,
+        logs,
+        eventName: "PairCreated",
+      })[0];
+      if (pair) result.pairId = pair.args.pairId;
+      onStatus?.("confirmed", receipt.transactionHash);
+      return result;
+    });
   }
 }

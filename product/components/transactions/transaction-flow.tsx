@@ -1,10 +1,15 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useConnection, useWalletClient } from "wagmi";
 import { useQueryClient } from "@tanstack/react-query";
 import type { EconomicAction, Token, TransactionResult } from "@yld-cx/sdk";
 import {
   explainError,
+  protocolErrorName,
+  PreviewChangedError,
+  TransactionPendingError,
+  humanPrice,
+  priceAtTick,
   type NetworkSlug,
   type Preview,
   type TransactionStage,
@@ -14,7 +19,7 @@ import {
 import { getSdk } from "@/lib/rpc";
 import { shortAddress, amountText } from "@/lib/utils";
 import { Button } from "@yld-cx/ui/components/ui/button";
-import { Message } from "@/components/forms/financial-fields";
+import { Message, Metric } from "@/components/forms/financial-fields";
 import {
   Dialog,
   DialogContent,
@@ -32,6 +37,7 @@ export function TransactionFlow({
   quote,
   disabled,
   onSuccess,
+  validatePreview,
 }: {
   network: NetworkSlug;
   label: string;
@@ -40,6 +46,7 @@ export function TransactionFlow({
   quote?: Token;
   disabled?: boolean;
   onSuccess?: (result: TransactionResult) => void;
+  validatePreview?: (preview: Preview) => void | Promise<void>;
 }) {
   const account = useConnection();
   return (
@@ -52,6 +59,7 @@ export function TransactionFlow({
       quote={quote}
       disabled={disabled}
       onSuccess={onSuccess}
+      validatePreview={validatePreview}
     />
   );
 }
@@ -63,6 +71,7 @@ function TransactionSession({
   quote,
   disabled,
   onSuccess,
+  validatePreview,
 }: Parameters<typeof TransactionFlow>[0]) {
   const [stage, setStage] = useState<
     TransactionStage | "idle" | "preparing" | "approval" | "review"
@@ -72,6 +81,8 @@ function TransactionSession({
     [action, setAction] = useState<EconomicAction>(),
     [hash, setHash] = useState<string>(),
     [open, setOpen] = useState(false);
+  const locked = useRef(false);
+  const [waiting, setWaiting] = useState<"approval" | "execute">();
   const [required, setRequired] = useState<InputRequirement>();
   const account = useConnection(),
     wallet = useWalletClient(),
@@ -90,62 +101,88 @@ function TransactionSession({
     setStage(next);
     if (txHash) setHash(txHash);
   };
-  async function simulate(next: EconomicAction) {
+  async function refresh(next: EconomicAction) {
+    setStage("preparing");
+    const input = await sdk.requiredInput(next);
+    setRequired(input);
+    if (input) {
+      const [balance, allowance] = await Promise.all([
+        sdk.balance(input.token, account.address!),
+        sdk.allowance(input.token, account.address!),
+      ]);
+      if (balance < input.amount)
+        throw new Error("Insufficient balance for this action");
+      if (allowance < input.allowanceAmount) {
+        setStage("approval");
+        return;
+      }
+    }
     setStage("simulating");
-    setPreview(await sdk.preview(next, account.address!));
+    const simulated = await sdk.preview(next, account.address!);
+    await validatePreview?.(simulated);
+    setPreview(simulated);
     setStage("review");
   }
   async function review() {
+    if (locked.current) return;
+    setOpen(true);
+    if (waiting) return;
+    locked.current = true;
+    setAction(undefined);
+    setPreview(undefined);
+    setRequired(undefined);
     setError("");
     setHash(undefined);
-    setPreview(undefined);
-    setOpen(true);
     setStage("preparing");
     try {
       if (!account.address) throw new Error("Connect your wallet first");
-      await sdk.verifyDeployment();
       const next = await prepare();
       setAction(next);
-      const input = await sdk.requiredInput(next);
-      setRequired(input);
-      if (input) {
-        const [balance, allowance] = await Promise.all([
-          sdk.balance(input.token, account.address),
-          sdk.allowance(input.token, account.address),
-        ]);
-        if (balance < input.amount)
-          throw new Error("Insufficient balance for this action");
-        if (allowance < input.allowanceAmount) {
-          setStage("approval");
-          return;
-        }
-      }
-      await simulate(next);
+      await refresh(next);
     } catch (e) {
       setError(explainError(e));
       setStage("idle");
+    } finally {
+      locked.current = false;
     }
   }
   async function approve() {
+    if (locked.current) return;
+    locked.current = true;
     setError("");
     setHash(undefined);
+    setStage("verifying");
+    let approved = false;
     try {
       if (!wallet.data || !account.address || !action)
         throw new Error("Wallet unavailable");
       await sdk.approve(action, wallet.data, account.address, status);
-      await simulate(action);
+      setWaiting(undefined);
+      approved = true;
+      // Approval never submits the main action. Refresh the confirmed allowance and simulation.
+      await refresh(action);
     } catch (e) {
       setError(explainError(e));
-      setStage("idle");
+      setWaiting(e instanceof TransactionPendingError ? "approval" : undefined);
+      if (e instanceof TransactionPendingError) setHash(e.hash);
+      setStage(approved ? "idle" : "approval");
+    } finally {
+      locked.current = false;
     }
   }
   async function execute() {
+    if (locked.current) return;
+    locked.current = true;
     setError("");
     setHash(undefined);
+    setStage("verifying");
+    let confirmed = false;
     try {
       if (!wallet.data || !preview || preview.account !== account.address)
         throw new Error("Wallet changed. Review a new preview.");
       const result = await sdk.execute(preview, wallet.data, status);
+      confirmed = true;
+      setWaiting(undefined);
       await queries.invalidateQueries({
         predicate: (q) =>
           [
@@ -159,10 +196,47 @@ function TransactionSession({
       });
       onSuccess?.(result);
     } catch (e) {
+      if (confirmed) {
+        setStage("confirmed");
+        setError(
+          `Transaction confirmed, but refreshing the view failed. ${explainError(e)}`,
+        );
+        return;
+      }
+      if (e instanceof PreviewChangedError) setPreview(e.preview);
+      if (protocolErrorName(e) === "Expired") {
+        try {
+          const next = await prepare();
+          setAction(next);
+          await refresh(next);
+        } catch {
+          /* Preserve the current action if refreshing is unavailable. */
+        }
+      }
+      setWaiting(e instanceof TransactionPendingError ? "execute" : undefined);
+      if (e instanceof TransactionPendingError) setHash(e.hash);
       setError(explainError(e));
-      setStage("idle");
+      setStage(preview ? "review" : "idle");
+      if (
+        !(e instanceof TransactionPendingError) &&
+        required &&
+        account.address
+      ) {
+        try {
+          if (
+            (await sdk.allowance(required.token, account.address)) <
+            required.allowanceAmount
+          )
+            setStage("approval");
+        } catch {
+          /* Keep the preview available for another validated attempt. */
+        }
+      }
+    } finally {
+      locked.current = false;
     }
   }
+  const actionName = label.replace(/^(?:Preview|Review)\s+/i, "");
   const token = required
     ? [asset, quote].find(
         (t) => t?.address.toLowerCase() === required.token.toLowerCase(),
@@ -173,6 +247,7 @@ function TransactionSession({
       <NetworkGuard chainId={sdk.chainId} />
       <Button
         className="w-full"
+        aria-label={label}
         disabled={
           disabled ||
           busy ||
@@ -182,7 +257,7 @@ function TransactionSession({
         }
         onClick={() => void review()}
       >
-        {label}
+        <span aria-hidden="true">👀</span> {actionName}
       </Button>
       <Dialog
         open={open}
@@ -192,6 +267,11 @@ function TransactionSession({
             return;
           }
           setOpen(next);
+          if (!next && stage === "confirmed") {
+            setAction(undefined);
+            setPreview(undefined);
+            setStage("idle");
+          }
         }}
         disablePointerDismissal={busy}
       >
@@ -209,11 +289,37 @@ function TransactionSession({
               {getNetwork(network).name} · Verify all amounts before signing.
             </DialogDescription>
           </DialogHeader>
+          {!preview && action?.kind === "supply" && action.initialize && (
+            <>
+              <Metric label="You provide">
+                {asset
+                  ? `${amountText(action.amount, asset.decimals)} ${asset.symbol}`
+                  : action.amount.toString()}
+              </Metric>
+              <Metric label="Price">
+                {humanPrice(
+                  priceAtTick(action.initialize.priceTick),
+                  asset?.decimals ?? 0,
+                  quote?.decimals ?? 0,
+                )}{" "}
+                {quote?.symbol ?? "Quote"} / {asset?.symbol ?? "Asset"}
+              </Metric>
+              <Metric label="Duration">
+                {action.initialize.durationDays}D
+              </Metric>
+            </>
+          )}
           {stage === "approval" && required && (
             <>
               <Message>
-                Approval required before the economic simulation.
+                Approve the token to calculate your full preview. The action has
+                not been simulated yet.
               </Message>
+              <Metric label="Estimated payment">
+                {token
+                  ? `${amountText(required.amount, token.decimals)} ${token.symbol}`
+                  : required.amount.toString()}
+              </Metric>
               <p>
                 Approve{" "}
                 {token
@@ -221,13 +327,15 @@ function TransactionSession({
                   : `${required.allowanceAmount} raw units of ${shortAddress(required.token)}`}
                 .
               </p>
-              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                Spender: <code>{sdk.address}</code>. If needed, the current
-                allowance is reset to zero first. Approval alone does not
-                execute the action.
-              </p>
+              <details className="my-3 text-xs text-muted-foreground">
+                <summary>Approval details</summary>
+                Spender: <code>{sdk.address}</code>. If needed, allowance is
+                reset to zero first. Approval alone does not execute the action.
+              </details>
               <Button className="w-full" onClick={() => void approve()}>
-                Approve exact amount &amp; simulate
+                {waiting === "approval"
+                  ? "Check approval confirmation"
+                  : `Approve ${token?.symbol ?? "token"}`}
               </Button>
             </>
           )}
@@ -236,21 +344,25 @@ function TransactionSession({
           )}{" "}
           {stage === "review" && (
             <Button className="w-full" onClick={() => void execute()}>
-              Confirm in wallet
+              {waiting === "execute"
+                ? "Check transaction confirmation"
+                : `Confirm ${actionName}`}
             </Button>
           )}
           {busy && (
-            <Message>
-              {stage === "pending"
-                ? "Waiting for onchain confirmation…"
-                : stage === "approving-reset"
-                  ? "Reset allowance in your wallet…"
-                  : stage === "approving"
-                    ? "Approve token allowance in your wallet…"
-                    : stage === "signing"
-                      ? "Confirm the transaction in your wallet…"
-                      : "Reading and simulating current state…"}
-            </Message>
+            <div role="status" aria-live="polite">
+              <Message>
+                {stage === "pending"
+                  ? "Waiting for onchain confirmation…"
+                  : stage === "approving-reset"
+                    ? "Reset allowance in your wallet…"
+                    : stage === "approving"
+                      ? "Approve token allowance in your wallet…"
+                      : stage === "signing"
+                        ? "Confirm the transaction in your wallet…"
+                        : "Reading and simulating current state…"}
+              </Message>
+            </div>
           )}
           {hash && (
             <a
@@ -268,7 +380,7 @@ function TransactionSession({
           {error && <Message error>{error}</Message>}
           {stage === "idle" && (
             <Button variant="outline" onClick={() => void review()}>
-              Refresh and review again
+              Retry {actionName}
             </Button>
           )}
         </DialogContent>
