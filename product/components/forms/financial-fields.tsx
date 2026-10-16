@@ -35,10 +35,18 @@ export function AmountInput({
         <InputGroupInput
           id={id}
           aria-label={label}
+          type="text"
           inputMode="decimal"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
           placeholder="0.00"
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value;
+            if (/^\d*(?:\.\d*)?$/.test(next)) onChange(next);
+          }}
           className="tabular-nums"
         />
         <InputGroupAddon align="inline-end">

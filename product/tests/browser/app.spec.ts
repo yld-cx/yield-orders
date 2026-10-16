@@ -3162,3 +3162,98 @@ for (const submitted of ["approval", "transaction"] as const) {
     expect(state.writes).toEqual(writes);
   });
 }
+
+for (const mode of ["Provide", "Rent", "Swap"] as const) {
+  test(`${mode} amount accepts decimal editing and blocks text without autocomplete`, async ({
+    page,
+  }) => {
+    await page.goto(`/market/base/${key}`);
+    if (mode !== "Provide")
+      await page.locator(`[data-tick-id="${id7}"]`).click();
+    if (mode === "Swap")
+      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
+    const input = page.getByLabel(
+      mode === "Provide" ? "Amount" : "You receive",
+      { exact: true },
+    );
+    await expect(input).toHaveAttribute("inputmode", "decimal");
+    await expect(input).toHaveAttribute("autocomplete", "off");
+    await expect(input).toHaveAttribute("autocorrect", "off");
+    await expect(input).toHaveAttribute("autocapitalize", "none");
+    await expect(input).toHaveAttribute("spellcheck", "false");
+    await input.pressSequentially("ds vdsveE+-");
+    await expect(input).toHaveValue("");
+    for (const value of [
+      "0",
+      "0.",
+      ".5",
+      "1.",
+      "0.000000000000000001",
+      "9007199254740993.123456789123456789",
+      "",
+    ]) {
+      await input.fill(value);
+      await expect(input).toHaveValue(value);
+    }
+    await input.pressSequentially("12.34");
+    await expect(input).toHaveValue("12.34");
+    // Replacing the value also exercises input from paste, without silently stripping text.
+    for (const invalid of [
+      "abc",
+      "1 WETH",
+      "1e3",
+      "1E3",
+      "-1",
+      "+1",
+      "1.2.3",
+      "1,000",
+      " 42 ",
+      "NaN",
+      "Infinity",
+    ]) {
+      await input.fill(invalid);
+      await expect(input).toHaveValue("12.34");
+    }
+    await input.pressSequentially("abcE+-.");
+    await expect(input).toHaveValue("12.34");
+    await input.evaluate((node: HTMLInputElement) =>
+      node.setSelectionRange(0, 2),
+    );
+    await page.keyboard.insertText("5");
+    await expect(input).toHaveValue("5.34");
+    await input.fill("1.");
+    await input.press("End");
+    await input.press("Backspace");
+    await expect(input).toHaveValue("1");
+    await input.press("Backspace");
+    await expect(input).toHaveValue("");
+  });
+}
+
+test("execution tolerance accepts only digits and disables autocomplete", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  await page.locator(`[data-tick-id="${id7}"]`).click();
+  await page.getByText("Execution settings", { exact: true }).click();
+  const input = page.getByLabel("Execution tolerance", { exact: true });
+  await expect(input).toHaveAttribute("inputmode", "numeric");
+  await expect(input).toHaveAttribute("autocomplete", "off");
+  await expect(input).toHaveAttribute("autocorrect", "off");
+  await expect(input).toHaveAttribute("autocapitalize", "none");
+  await expect(input).toHaveAttribute("spellcheck", "false");
+  for (const invalid of ["abc", "1.5", "1e2", "-1", "+1", "50%", "1,000"]) {
+    await input.fill(invalid);
+    await expect(input).toHaveValue("50");
+  }
+  await input.fill("");
+  await expect(input).toHaveValue("");
+  await input.pressSequentially("25abcE+-.");
+  await expect(input).toHaveValue("25");
+  await input.fill("0");
+  await expect(input).toHaveValue("0");
+  await input.fill("1001");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Tolerance must be" }),
+  ).toBeVisible();
+});

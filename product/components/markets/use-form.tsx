@@ -162,9 +162,17 @@ export function UseForm({
                     <Input
                       id="execution-tolerance"
                       aria-label="Execution tolerance"
+                      type="text"
                       inputMode="numeric"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      autoCapitalize="none"
+                      spellCheck={false}
                       value={tolerance}
-                      onChange={(event) => setTolerance(event.target.value)}
+                      onChange={(event) => {
+                        const next = event.target.value;
+                        if (/^\d*$/.test(next)) setTolerance(next);
+                      }}
                     />
                     <FieldDescription className="text-xs">
                       {TRANSACTION_DEFAULTS.toleranceBps} ={" "}
