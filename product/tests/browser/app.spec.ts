@@ -393,12 +393,9 @@ test("market lookup reserves space while loading", async ({ page }) => {
     .getByRole("status")
     .filter({ hasText: "Checking market…" });
   await expect(loading).toBeVisible();
-  const description = page.getByText(
-    "Creating a pair does not supply liquidity",
-    {
-      exact: false,
-    },
-  );
+  const description = page.getByText("Creating a market unlocks liquidity", {
+    exact: false,
+  });
   const before = await description.boundingBox();
   release();
   await expect(
@@ -985,7 +982,7 @@ for (const [reason, code] of [
 
 async function chooseBaseTick(page: Page, tick: number) {
   await page.getByRole("combobox", { name: "Base tick", exact: true }).click();
-  await expect(page.getByRole("option")).toHaveCount(3);
+  await expect(page.getByRole("option")).toHaveCount(7);
   await page.getByRole("option", { name: String(tick), exact: true }).click();
   await expect(
     page.getByRole("combobox", { name: "Base tick", exact: true }),
@@ -1012,11 +1009,11 @@ async function expectDiscoveryGrid(
     )
     .toEqual(visible);
   await expect(
-    page.getByText(`${identities.length} identities checked`, { exact: false }),
+    page.getByText(`${identities.length} ticks checked`, { exact: false }),
   ).toBeVisible();
 }
 
-test("Base tick uses three relative options, preserves selection and refresh scroll, and keeps inversion canonical", async ({
+test("Base tick drives the compact reference price, preserves selection and refresh scroll, and keeps inversion canonical", async ({
   page,
 }, testInfo) => {
   const overrides: TickOverrides = new Map();
@@ -1026,6 +1023,20 @@ test("Base tick uses three relative options, preserves selection and refresh scr
   const center = -196000,
     next = center + DISCOVERY_DEFAULTS.stepTicks;
   await expectDiscoveryGrid(page, center);
+  const referenceRow = page.getByRole("group", {
+    name: "Reference price and base tick",
+    exact: true,
+  });
+  const overview = page.getByRole("region", { name: "Market overview" });
+  await expect(referenceRow).toContainText("3.08K USDC");
+  await expect(overview).toContainText("3.08K USDC");
+  const otherLevel = page
+    .getByRole("group", { name: "Ask price levels" })
+    .getByRole("button")
+    .first();
+  await otherLevel.click();
+  await expect(referenceRow).toContainText("3.08K USDC");
+  await expect(overview).toContainText("3.08K USDC");
   await page.evaluate(() =>
     Object.assign(window, { baseTickNavigationMarker: true }),
   );
@@ -1035,15 +1046,21 @@ test("Base tick uses three relative options, preserves selection and refresh scr
   });
   await selector.click();
   await expect(page.getByRole("option")).toHaveText([
+    String(center - DISCOVERY_DEFAULTS.stepTicks * 100),
+    String(center - DISCOVERY_DEFAULTS.stepTicks * 10),
     String(center - DISCOVERY_DEFAULTS.stepTicks),
     String(center),
     String(next),
+    String(center + DISCOVERY_DEFAULTS.stepTicks * 10),
+    String(center + DISCOVERY_DEFAULTS.stepTicks * 100),
   ]);
   await page.getByRole("option", { name: String(center), exact: true }).click();
   await page.locator(`[data-tick-id="${id7}"]`).click();
   await page.getByLabel("Amount", { exact: true }).fill("2");
   await chooseBaseTick(page, next);
   await expectDiscoveryGrid(page, next);
+  await expect(referenceRow).toContainText("3.4K USDC");
+  await expect(overview).toContainText("3.4K USDC");
   const url = new URL(page.url());
   expect(url.searchParams.get("baseTick")).toBe(String(next));
   expect(url.searchParams.get("ref")).toBe("keep");
@@ -1084,6 +1101,8 @@ test("Base tick uses three relative options, preserves selection and refresh scr
   await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("2");
   await page.getByRole("button", { name: "Invert", exact: true }).click();
   await expect(selector).toContainText(String(next));
+  await expect(referenceRow).toContainText("0.000293981 WETH");
+  await expect(overview).toContainText("0.000293981 WETH");
   expect(new URL(page.url()).searchParams.get("baseTick")).toBe(String(next));
   await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
     "aria-pressed",
@@ -1101,6 +1120,8 @@ test("Base tick uses three relative options, preserves selection and refresh scr
     .getByRole("button", { name: "30D", exact: true })
     .click();
   await expectDiscoveryGrid(page, next, pairId, DURATIONS[1]);
+  await expect(referenceRow).toContainText("3.4K USDC");
+  await expect(overview).toContainText("3.4K USDC");
 });
 
 test("Base tick shifts by one step, removes the default override and follows Back/Forward, reload and shared URLs", async ({
@@ -1150,9 +1171,7 @@ for (const direction of [0, 1] as const) {
     await page.locator(`[data-tick-id="${id}"]`).click();
     await chooseBaseTick(page, center + step);
     await expectDiscoveryGrid(page, center + step);
-    await expect(
-      page.getByText("Select a price level in the Yield Book", { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
     await page.goBack();
     await expectDiscoveryGrid(page, center);
     await expect(page.locator(`[data-tick-id="${id}"]`)).toHaveAttribute(
@@ -1215,7 +1234,7 @@ test("invalid URL base ticks fall back safely and SDK bounds disable invalid nei
     await page
       .getByRole("combobox", { name: "Base tick", exact: true })
       .click();
-    await expect(page.getByRole("option")).toHaveCount(3);
+    await expect(page.getByRole("option")).toHaveCount(7);
     await expect(
       page.getByRole("option", {
         name: String(center + (center > 0 ? step : -step)),
@@ -1292,7 +1311,7 @@ test("full configured grid, duration, pair inversion and read-only price selecti
   };
   await expectPriceOrder();
   await expect(
-    page.getByText(`${count * 2 * DURATIONS.length} identities checked`, {
+    page.getByText(`${count * 2 * DURATIONS.length} ticks checked`, {
       exact: false,
     }),
   ).toBeVisible();
@@ -1315,9 +1334,7 @@ test("full configured grid, duration, pair inversion and read-only price selecti
     .getByRole("group", { name: "Book term" })
     .getByRole("button", { name: "30D", exact: true })
     .click();
-  await expect(
-    page.getByText("Select a price level in the Yield Book", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("combobox", { name: "Term", exact: true }),
   ).toContainText("30D");
@@ -1341,9 +1358,7 @@ test("full configured grid, duration, pair inversion and read-only price selecti
   );
   await expectPriceOrder();
   await page.getByRole("tab", { name: "Ask · USDC", exact: true }).click();
-  await expect(
-    page.getByText("Select a price level in the Yield Book", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
   await page.getByLabel("Amount", { exact: true }).fill("0.0000001");
   await expect(
     page.getByRole("alert").filter({ hasText: "6 decimal places" }),
@@ -1574,22 +1589,118 @@ test("direction and term changes clear incompatible selections and amounts", asy
     "aria-pressed",
     "false",
   );
-  await expect(
-    page.getByText("Select a price level in the Yield Book", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
   await page.locator(`[data-tick-id="${bid7}"]`).click();
   await amount.fill("100");
   await page.getByRole("combobox", { name: "Term", exact: true }).click();
   await page.getByRole("option", { name: "30D", exact: true }).click();
   await expect(amount).toHaveValue("");
-  await expect(
-    page.getByText("Select a price level in the Yield Book", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
   await expect(
     page
       .getByRole("group", { name: "Book term" })
       .getByRole("button", { name: "30D", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+});
+
+test("row utilization, gold borders and overview Yield follow the selected side and tabs", async ({
+  page,
+  isMobile,
+}, testInfo) => {
+  await rpc(
+    page,
+    true,
+    new Map([
+      [
+        id7,
+        {
+          availableSupply: 750n * 10n ** 18n,
+          activeWorking: 250n * 10n ** 18n,
+        },
+      ],
+      [
+        bid7,
+        { availableSupply: 250n * 10n ** 6n, activeWorking: 750n * 10n ** 6n },
+      ],
+    ]),
+  );
+  await page.goto(`/market/base/${key}`);
+  const overview = page.getByRole("region", { name: "Market overview" });
+  const ask = page.locator(`[data-tick-id="${id7}"]`);
+  const bid = page.locator(`[data-tick-id="${bid7}"]`);
+  for (const [row, percentage, side] of [
+    [ask, 25, "ask"],
+    [bid, 75, "bid"],
+  ] as const) {
+    const fill = row.locator('span[aria-hidden="true"]');
+    await expect(fill).toHaveCSS("right", "0px");
+    await expect
+      .poll(() =>
+        fill.evaluate((element) => {
+          const parent = element.parentElement!;
+          return (
+            (element.getBoundingClientRect().width / parent.clientWidth) * 100
+          );
+        }),
+      )
+      .toBeCloseTo(percentage, 1);
+    await expect(fill).toHaveAttribute(
+      "style",
+      new RegExp(`var\\(--${side}-surface\\)`),
+    );
+    if (!isMobile) {
+      await row.hover();
+      await expect(row).toHaveCSS("border-color", "rgb(231, 185, 77)");
+      await expect(row).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    }
+    await row.click();
+    await expect(row).toHaveAttribute("aria-pressed", "true");
+    await expect(row).toHaveCSS("border-color", "rgb(231, 185, 77)");
+    await expect(row).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(
+      overview.getByText(`${side === "ask" ? "Ask" : "Bid"} Yield · 7D`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      overview.getByText(side === "ask" ? "0.1782%" : "2.9935%", {
+        exact: true,
+      }),
+    ).toBeVisible();
+  }
+  const empty = page
+    .getByRole("group", { name: "Bid price levels" })
+    .getByRole("button")
+    .last();
+  await empty.click();
+  await expect(empty.locator('span[aria-hidden="true"]')).toHaveCount(0);
+  await expect(overview.getByText("—", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Ask · WETH", exact: true }).click();
+  await expect(empty).toHaveAttribute("aria-pressed", "false");
+  await expect(
+    overview.getByText("Ask Yield · 7D", { exact: true }),
+  ).toBeVisible();
+  await expect(overview.getByText("0.1782%", { exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Bid · USDC", exact: true }).click();
+  await expect(
+    overview.getByText("Bid Yield · 7D", { exact: true }),
+  ).toBeVisible();
+  await expect(overview.getByText("2.9935%", { exact: true })).toBeVisible();
+  await bid.click();
+  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await expect(
+    overview.getByText("Ask Yield · 7D", { exact: true }),
+  ).toBeVisible();
+  await expect(overview.getByText("2.9935%", { exact: true })).toBeVisible();
+  await expect(bid.locator('span[aria-hidden="true"]')).toHaveAttribute(
+    "style",
+    /var\(--ask-surface\)/,
+  );
+  await ask.scrollIntoViewIfNeeded();
+  await bid.scrollIntoViewIfNeeded();
+  await page
+    .locator(".yield-book")
+    .screenshot({ path: testInfo.outputPath("yield-book-utilization.png") });
 });
 
 test("selected ticks refresh availability and Yield without losing entered amounts", async ({
@@ -1789,7 +1900,13 @@ test("new markets retain the prototype overview and require Pair creation before
   await expect(
     overview.getByText("An open market, ready for its first provider."),
   ).toBeVisible();
-  await expect(overview.getByText("Not set", { exact: true })).toBeVisible();
+  await expect(overview.getByText("3.08K USDC", { exact: true })).toBeVisible();
+  await expect(
+    overview.getByText("Preview market", { exact: true }),
+  ).toBeVisible();
+  await expect(overview.getByText("Open market", { exact: true })).toHaveCount(
+    0,
+  );
   await expect(
     overview.getByText("New · No liquidity", { exact: true }),
   ).toBeVisible();
@@ -1808,7 +1925,7 @@ test("new markets retain the prototype overview and require Pair creation before
     count * 2,
   );
   await expect(
-    page.getByText(`${count * 2 * DURATIONS.length} identities checked`, {
+    page.getByText(`${count * 2 * DURATIONS.length} ticks checked`, {
       exact: false,
     }),
   ).toBeVisible();
@@ -1817,7 +1934,7 @@ test("new markets retain the prototype overview and require Pair creation before
   await expect(empty).toHaveAttribute("aria-pressed", "true");
   await expect(
     page.getByLabel("Provide liquidity", { exact: true }),
-  ).not.toContainText("Select a price level in the Yield Book");
+  ).not.toContainText("Not selected");
   await page.getByLabel("Amount", { exact: true }).fill("1");
   await expect(
     page.getByRole("button", { name: "Preview Provide", exact: true }),

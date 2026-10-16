@@ -43,6 +43,15 @@ export function priceText(value: string) {
   );
 }
 
+export function compactPriceText(value: string) {
+  if (BigInt(value.split(".")[0]) < LARGE_PRICE_THRESHOLD)
+    return priceText(value);
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 2,
+  }).format(Number(value));
+}
+
 export function discoveryBaseTick(
   value: string | null,
   market: Pick<Market, "baseTick" | "stepTicks">,

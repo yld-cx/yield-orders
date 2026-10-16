@@ -106,7 +106,7 @@ export function SupplyForm({
             <Metric label="Selected price">
               {selected
                 ? `${tickPrice(selected, display)} ${display[1].symbol} / ${display[0].symbol}`
-                : "Select a price level in the Yield Book"}
+                : "Not selected"}
             </Metric>
             <DurationSelect
               label="Term"
@@ -184,10 +184,6 @@ export function SupplyForm({
                 Preview Provide
               </Button>
             )}
-            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-              No guaranteed Yield. Top-ups restart vesting of uncollected Yield
-              for this position.
-            </p>
           </TabsContent>
         </Tabs>
       </CardContent>

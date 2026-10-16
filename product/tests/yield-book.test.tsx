@@ -215,6 +215,7 @@ describe("configured Yield Book", () => {
     const book = readBook();
     const html = renderToStaticMarkup(
       <YieldBook
+        referencePrice="3.08K"
         stepTicks={market.stepTicks}
         onBaseTickChange={vi.fn()}
         display={[market.token0, market.token1]}
@@ -283,7 +284,7 @@ describe("selected price Supply", () => {
   });
   it("requires selection and blocks failed or incompatible identities", () => {
     const book = readBook();
-    expect(supply()).toContain("Select a price level in the Yield Book");
+    expect(supply()).toContain("Not selected");
     supply(book.levels[1]);
     supply(book.levels[0], Duration.Monthly);
     supply(book.levels[0], Duration.Weekly, b);

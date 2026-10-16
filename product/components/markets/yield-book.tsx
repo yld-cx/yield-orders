@@ -42,10 +42,14 @@ function BookRow({
 }) {
   const estimatedYield =
     level.status === "exists" ? marginalYieldPercent(level.state) : undefined;
+  const available = level.state?.availableSupply ?? 0n;
+  const inUse = level.state?.activeWorking ?? 0n;
+  const total = available + inUse;
+  const utilization = total > 0n ? Number((inUse * 10000n) / total) / 100 : 0;
   return (
     <Button
-      variant={selected ? "secondary" : "ghost"}
-      className="grid w-full grid-cols-[1.05fr_1.2fr_1fr_1fr] gap-2 px-2 text-right text-xs [&>span:first-child]:text-left"
+      variant="ghost"
+      className="relative isolate grid w-full grid-cols-[1.05fr_1.2fr_1fr_1fr] gap-2 overflow-hidden px-2 text-right text-xs hover:border-primary hover:bg-transparent aria-pressed:border-primary dark:hover:bg-transparent [&>span:first-child]:text-left"
       style={{ height: `${YIELD_BOOK_LAYOUT.rowHeightRem}rem` }}
       onClick={onSelect}
       aria-pressed={selected}
@@ -73,11 +77,22 @@ function BookRow({
       <span className={side === "ask" ? "text-ask" : "text-bid"}>
         {estimatedYield !== undefined ? `${estimatedYield}%` : "—"}
       </span>
+      {utilization > 0 && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 right-0 -z-10 rounded-[inherit]"
+          style={{
+            width: `${utilization}%`,
+            backgroundColor: `color-mix(in srgb, var(--${side}-surface) 10%, var(--card))`,
+          }}
+        />
+      )}
     </Button>
   );
 }
 
 export function YieldBook({
+  referencePrice,
   stepTicks,
   onBaseTickChange,
   display,
@@ -87,6 +102,7 @@ export function YieldBook({
   onDurationChange,
   book,
 }: {
+  referencePrice: string;
   stepTicks: number;
   onBaseTickChange: (baseTick: number) => void;
   display: readonly [Token, Token];
@@ -96,21 +112,16 @@ export function YieldBook({
   onDurationChange: (duration: Duration) => void;
   book: ReturnType<typeof useYieldBook>;
 }) {
-  const {
-    baseTick,
-    discovery,
-    levels,
-    ticks,
-    checked,
-    missing,
-    failed,
-    radius,
-  } = book;
+  const { baseTick, discovery, levels, checked, failed } = book;
   const baseTickId = useId();
   const baseTickItems = [
+    baseTick - stepTicks * 100,
+    baseTick - stepTicks * 10,
     baseTick - stepTicks,
     baseTick,
     baseTick + stepTicks,
+    baseTick + stepTicks * 10,
+    baseTick + stepTicks * 100,
   ].map((tick) => ({
     value: String(tick),
     label: String(tick),
@@ -126,11 +137,6 @@ export function YieldBook({
     if (bidScroll.current)
       bidScroll.current.scrollTop = bidScroll.current.scrollHeight;
   }, [duration, baseAddress, hasLevels]);
-  const reference =
-    selected ??
-    ticks.find(
-      (t) => t.durationDays === duration && t.state.availableSupply > 0n,
-    );
   return (
     <Card className="min-w-0 yield-book">
       <CardContent className="space-y-4">
@@ -248,9 +254,7 @@ export function YieldBook({
                 <p>
                   Reference price{" "}
                   <strong>
-                    {reference
-                      ? `${priceText(tickPrice(reference, display))} ${display[1].symbol}`
-                      : "Not set"}
+                    {referencePrice} {display[1].symbol}
                   </strong>
                 </p>
                 <div className="flex items-center gap-2">
@@ -295,13 +299,8 @@ export function YieldBook({
             Some reads failed. They are not zero liquidity.
           </Message>
         )}
-        <p className="text-xs text-muted-foreground">
-          {checked} identities checked · {missing} do not exist · {failed}{" "}
-          failed.
-        </p>
         <p className="mt-3 border-t pt-3 text-xs leading-relaxed text-muted-foreground">
-          Available is executable liquidity. In Use excludes liquidity already
-          moved to Resolving. A concrete transaction preview is authoritative.
+          {checked} ticks checked. Step: {stepTicks} ticks.
         </p>
       </CardContent>
     </Card>

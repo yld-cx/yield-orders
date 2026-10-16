@@ -11,13 +11,15 @@ import {
   candidateLevels,
   explainError,
   marginalYieldPercent,
+  priceAtTick,
+  humanPrice,
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
 import type { Duration, Market, TickIdentity } from "@yld-cx/sdk";
 import { useMarket } from "@/hooks/use-market";
 import { useYieldBook, type BookTick } from "@/hooks/use-yield-book";
 import { amountText } from "@/lib/utils";
-import { tickPrice, priceText, discoveryBaseTick } from "@/lib/market-values";
+import { compactPriceText, discoveryBaseTick } from "@/lib/market-values";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
@@ -108,14 +110,23 @@ function MarketContent({
   const bid = ticks.filter(
     (t) => t.state.asset.toLowerCase() === display[1].address.toLowerCase(),
   );
-  const reference =
+  const referencePrice = compactPriceText(
+    humanPrice(
+      priceAtTick(baseTick),
+      market.token0.decimals,
+      market.token1.decimals,
+      display[0].address.toLowerCase() !== market.token0.address.toLowerCase(),
+    ),
+  );
+  const bidSelected =
+    supplyAsset.toLowerCase() === display[1].address.toLowerCase();
+  const yieldTick =
     selected ??
-    ask.find((t) => t.state.availableSupply > 0n) ??
-    bid.find((t) => t.state.availableSupply > 0n);
-  const yieldTick = ask.find((t) => t.state.availableSupply > 0n);
-  const estimatedYield = yieldTick
-    ? marginalYieldPercent(yieldTick.state)
-    : undefined;
+    (bidSelected ? bid : ask).find((t) => t.state.availableSupply > 0n);
+  const estimatedYield =
+    yieldTick?.status === "exists"
+      ? marginalYieldPercent(yieldTick.state)
+      : undefined;
   const incomplete = book.failed > 0 || book.discovery.isError;
   const available = (side: BookTick[], index: 0 | 1) =>
     incomplete
@@ -168,7 +179,7 @@ function MarketContent({
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline" data-intent="bid">
-              Open market
+              {exists ? "Open market" : "Preview market"}
             </Badge>
             <Badge variant="secondary" data-intent="term">
               {duration}D
@@ -212,13 +223,7 @@ function MarketContent({
               Reference price · {display[1].symbol} / {display[0].symbol}
             </dt>
             <dd>
-              {reference
-                ? `${priceText(tickPrice(reference, display))} ${display[1].symbol}`
-                : book.discovery.isPending
-                  ? "…"
-                  : incomplete
-                    ? "Incomplete"
-                    : "Not set"}
+              {referencePrice} {display[1].symbol}
             </dd>
           </div>
           <div>
@@ -226,8 +231,10 @@ function MarketContent({
             <dd>{available(ask, 0)}</dd>
           </div>
           <div>
-            <dt>Ask Yield · {duration}D</dt>
-            <dd className="text-ask">
+            <dt>
+              {bidSelected ? "Bid" : "Ask"} Yield · {duration}D
+            </dt>
+            <dd className={bidSelected ? "text-bid" : "text-ask"}>
               {incomplete
                 ? "Incomplete"
                 : estimatedYield !== undefined
@@ -264,6 +271,7 @@ function MarketContent({
           pairExists={exists}
         />
         <YieldBook
+          referencePrice={referencePrice}
           stepTicks={market.stepTicks}
           onBaseTickChange={changeBaseTick}
           display={display}
@@ -292,9 +300,8 @@ function MarketContent({
           <CardContent className="space-y-4">
             <h2>Create Market</h2>
             <p>
-              Creating a pair does not supply liquidity or create a price Tick.
-              The first provider chooses a side, price, amount and term on the
-              market page.
+              Creating a market unlocks liquidity for everyone to provide and
+              use.
             </p>
             <TransactionFlow
               network={network}

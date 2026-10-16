@@ -134,7 +134,7 @@ export function UseForm({
                         ? "Checking price levels…"
                         : hasLiquidity
                           ? "Choose a price level · current market depth"
-                          : "This market is ready. Be the first to provide tokens at your price."}
+                          : "Be the first to provide tokens at your price."}
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>

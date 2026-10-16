@@ -164,9 +164,7 @@ function OpenMarketForm({
         </CardContent>
       </Card>
       <p className="mx-auto mt-6 max-w-xl text-center text-xs leading-relaxed text-muted-foreground">
-        Creating a pair does not supply liquidity or create a price Tick. The
-        first provider chooses a side, price, amount and term on the market
-        page.
+        Creating a market unlocks liquidity for everyone to provide and use.
       </p>
     </div>
   );
