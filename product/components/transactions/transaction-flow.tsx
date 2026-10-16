@@ -153,7 +153,7 @@ function TransactionSession({
   async function refresh(
     next: EconomicAction,
     minBlock?: bigint,
-    sequential = false,
+    sequential = !!atomicUnavailable,
   ) {
     setStage("preparing");
     const input = await sdk.requiredInput(next);
@@ -168,11 +168,7 @@ function TransactionSession({
       if (allowance < input.allowanceAmount) {
         setMultipleSteps(true);
         const detected = await capabilities.refetch();
-        if (
-          !sequential &&
-          !atomicUnavailable &&
-          supportsAtomic(detected.data)
-        ) {
+        if (!sequential && supportsAtomic(detected.data)) {
           setStage("simulating");
           try {
             const simulated = await sdk.preview(next, account.address!, {
@@ -228,6 +224,7 @@ function TransactionSession({
     setPreview(undefined);
     setRequired(undefined);
     setMultipleSteps(false);
+    setAtomicUnavailable("");
     setError("");
     setHash(undefined);
     setStage("preparing");
@@ -235,7 +232,7 @@ function TransactionSession({
       if (!account.address) throw new Error("Connect your wallet first");
       const next = await prepare();
       setAction(next);
-      await refresh(next);
+      await refresh(next, undefined, false);
     } catch (e) {
       setError(explainError(e));
       setStage("idle");
@@ -451,6 +448,18 @@ function TransactionSession({
       locked.current = false;
     }
   }
+  function clearPending() {
+    if (locked.current || !account.address) return;
+    const pending = sdk.pending(account.address);
+    if (!pending || pending.id) return;
+    sdk.operations.remove(account.address);
+    setOperation(undefined);
+    setWaiting(undefined);
+    setPreview(undefined);
+    setHash(undefined);
+    setError("");
+    setStage("idle");
+  }
   useEffect(() => {
     if (
       open &&
@@ -573,20 +582,26 @@ function TransactionSession({
           )}
           {operation && waiting && (
             <Message>
-              {operation.identifier === "calls"
-                ? `Wallet batch ${operation.id ?? "(awaiting identifier)"}. Awaiting verified onchain execution.`
-                : "A submitted operation is being tracked. Checking confirmation never submits another transaction."}
+              {!operation.id
+                ? "The transaction may have been submitted. Check your wallet before clearing pending state, since it might still execute. Clearing does not cancel the transaction."
+                : operation.identifier === "calls"
+                  ? `Wallet batch ${operation.id}. Awaiting verified onchain execution.`
+                  : "A submitted operation is being tracked. Checking confirmation never submits another transaction."}
             </Message>
           )}
           {waiting ? (
             <Button
               className="w-full"
               disabled={busy}
-              onClick={() => void check()}
+              onClick={() =>
+                operation && !operation.id ? clearPending() : void check()
+              }
             >
-              {waiting === "approval"
-                ? "Check approval confirmation"
-                : "Check transaction confirmation"}
+              {operation && !operation.id
+                ? "Clear pending state"
+                : waiting === "approval"
+                  ? "Check approval confirmation"
+                  : "Check transaction confirmation"}
             </Button>
           ) : (
             stage === "approval" &&

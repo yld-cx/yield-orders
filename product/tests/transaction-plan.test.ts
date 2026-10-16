@@ -741,7 +741,53 @@ describe("wallet batching and persisted operations", () => {
       "resolved first",
     );
     expect(f.writeContract).toHaveBeenCalledTimes(1);
+    expect(f.sdk.pending(owner)?.status).toBe("unknown");
+    f.sdk.operations.remove(owner);
+    await f.sdk.execute(preview, f.wallet);
+    expect(f.writeContract).toHaveBeenCalledTimes(2);
   });
+  it("marks a pre-response operation unknown after reload without submitting", async () => {
+    const storage = memoryStorage();
+    const f = fixture(true, true, storage);
+    f.sdk.operations.put({
+      account: owner,
+      chainId: 8453,
+      action: supply(),
+      phase: "action",
+      identifier: "transaction",
+      status: "submitted",
+    });
+    const reloaded = new EthereumClient(
+      f.sdk.publicClient,
+      "eip155:8453",
+      { address: a, runtimeCodeHash: keccak256("0x1234") },
+      storage,
+    );
+    await expect(reloaded.recover(f.wallet, owner)).rejects.toThrow(
+      "may have been submitted",
+    );
+    expect(reloaded.pending(owner)).toMatchObject({
+      status: "unknown",
+    });
+    expect(reloaded.pending(owner)?.id).toBeUndefined();
+    expect(f.writeContract).not.toHaveBeenCalled();
+  });
+  it.each([4001, 4200])(
+    "allows retry after a known wallet failure (%s)",
+    async (code) => {
+      const f = fixture();
+      const preview = await f.sdk.preview(supply(), owner);
+      f.writeContract.mockRejectedValueOnce(
+        Object.assign(new Error("Wallet request failed"), { code }),
+      );
+      await expect(f.sdk.execute(preview, f.wallet)).rejects.toThrow(
+        "Wallet request failed",
+      );
+      expect(f.sdk.pending(owner)).toBeUndefined();
+      await f.sdk.execute(preview, f.wallet);
+      expect(f.writeContract).toHaveBeenCalledTimes(2);
+    },
+  );
   it("keeps batches unresolved when receipt verification is unavailable", async () => {
     const f = fixture();
     f.state.allowance = 0n;

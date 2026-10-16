@@ -2175,6 +2175,7 @@ async function transactionRpc(
     timestamp: 0x68e00000n,
     settlement: false,
     receiptUnknown: false,
+    submissionUnknown: false,
     batchPending: false,
     batchReverted: false,
     receiptReverted: false,
@@ -2717,6 +2718,11 @@ async function transactionRpc(
           type: "0x2",
         };
       else return error(`Unsupported test RPC ${item.method}`, -32601);
+      if (
+        state.submissionUnknown &&
+        ["eth_sendTransaction", "wallet_sendCalls"].includes(item.method)
+      )
+        return error("Wallet response lost after submission", -32603);
       return { id: item.id, jsonrpc: "2.0", result };
     };
     const body = route.request().postDataJSON();
@@ -3717,3 +3723,110 @@ for (const approval of [false, true]) {
     expect(state.writes).toEqual([[approval ? "approve" : "supply"]]);
   });
 }
+
+for (const phase of ["approval", "action", "batch"] as const) {
+  test(`unknown ${phase} submission can be manually cleared after reload without automatic retry`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: phase === "action" ? 10n ** 30n : 0n,
+      atomic: phase === "batch" ? "supported" : undefined,
+    });
+    const dialog = page.getByRole("dialog");
+    state.submissionUnknown = true;
+    await dialog
+      .getByRole("button", {
+        name:
+          phase === "approval"
+            ? "Approve WETH"
+            : phase === "batch"
+              ? "Approve & Provide"
+              : "Confirm Provide",
+        exact: true,
+      })
+      .click();
+    await expect(
+      dialog.getByText(/The transaction may have been submitted/),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: "Clear pending state", exact: true }),
+    ).toBeVisible();
+    expect(state.writes).toHaveLength(1);
+    await page.reload();
+    await page.locator(`[data-tick-id="${id7}"]`).click();
+    await page.getByLabel("Amount", { exact: true }).fill("1");
+    await page
+      .getByRole("button", { name: "Preview Provide", exact: true })
+      .click();
+    await expect(
+      dialog.getByText(
+        /Check your wallet before clearing pending state, since it might still execute/,
+      ),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: /Check .*confirmation/ }),
+    ).toHaveCount(0);
+    expect(state.writes).toHaveLength(1);
+    await dialog
+      .getByRole("button", { name: "Clear pending state", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "Retry Provide", exact: true }),
+    ).toBeVisible();
+    expect(
+      await page.evaluate(() =>
+        Object.keys(localStorage).filter((key) =>
+          key.startsWith("yld/operation/v1/"),
+        ),
+      ),
+    ).toEqual([]);
+    expect(state.writes).toHaveLength(1);
+    state.submissionUnknown = false;
+    await dialog
+      .getByRole("button", { name: "Retry Provide", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", {
+        name:
+          phase === "approval"
+            ? "Confirm Provide"
+            : phase === "batch"
+              ? "Approve & Provide"
+              : "Confirm Provide",
+        exact: true,
+      }),
+    ).toBeVisible();
+    expect(state.writes).toHaveLength(1);
+  });
+}
+
+test("fresh review resets atomic fallback and attempts batching again", async ({
+  page,
+}) => {
+  const options = {
+    pair: true,
+    tick: true,
+    allowance: 0n,
+    atomic: "supported" as const,
+    simulationUnsupported: true,
+  };
+  const state = await transactionRpc(page, options);
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByRole("button", { name: "Approve WETH", exact: true }),
+  ).toBeVisible();
+  options.simulationUnsupported = false;
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Preview Provide", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Approve & Provide", exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText(/Atomic simulation is unavailable/),
+  ).toHaveCount(0);
+  expect(state.writes).toEqual([]);
+});

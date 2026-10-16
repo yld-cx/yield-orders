@@ -988,7 +988,8 @@ export class EthereumClient {
           ("message" in e &&
             /user rejected|user denied/i.test(String(e.message))) ||
           ("cause" in e && rejected(e.cause)));
-      if (rejected(error)) this.operations.remove(op.account);
+      if (!op.id && (rejected(error) || unsupported(error)))
+        this.operations.remove(op.account);
       else {
         op.status = "unknown";
         this.operations.put(op);
@@ -1002,10 +1003,13 @@ export class EthereumClient {
     onStatus?: StatusCallback,
     batchStatus?: GetCallsStatusReturnType,
   ): Promise<TransactionReceipt> {
-    if (!op.id)
+    if (!op.id) {
+      op.status = "unknown";
+      this.operations.put(op);
       throw new Error(
-        "Wallet submission outcome is unknown. Check your wallet before continuing; automatic resubmission is disabled.",
+        "Wallet submission outcome is unknown. The transaction may have been submitted. Check your wallet before clearing pending state; it might still execute. Automatic resubmission is disabled.",
       );
+    }
     if (op.status === "reverted")
       throw new TransactionTerminalError(
         "Transaction reverted or replaced. Review current state before retrying.",
