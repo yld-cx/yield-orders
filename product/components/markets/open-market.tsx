@@ -50,7 +50,7 @@ function OpenMarketForm({
     <div className="mx-auto max-w-2xl py-6">
       <div className="flex flex-wrap items-center gap-3 py-6 text-xs text-muted-foreground">
         <Link href="/">Yield</Link>
-        <span>/</span>
+        <span>|</span>
         <span>Open Market</span>
       </div>
       <div className="my-8 space-y-3 text-center [&>h1]:text-4xl [&>h1]:font-semibold [&>p]:text-muted-foreground">
