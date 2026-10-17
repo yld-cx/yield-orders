@@ -190,9 +190,6 @@ function MarketContent({
                 <Badge variant="outline">New · No liquidity</Badge>
               )}
           </div>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Same onchain pair in either orientation
-          </p>
         </div>
         <div
           className="crowned-token relative flex h-32 items-center justify-center"
@@ -205,16 +202,7 @@ function MarketContent({
             👑
           </span>
           <div className={`token-orb ${display[0].symbol.toLowerCase()}`}>
-            {display[0].symbol === "WETH" ? (
-              <svg viewBox="0 0 60 90" aria-label="Ethereum" role="img">
-                <path fill="#d4ddf2" d="M30 0 2 44l28 15 28-15L30 0Z" />
-                <path fill="#93a7c8" d="M30 0v59l28-15L30 0Z" />
-                <path fill="#b8c9e4" d="m2 50 28 40V65L2 50Z" />
-                <path fill="#7f95ba" d="m58 50-28 40V65l28-15Z" />
-              </svg>
-            ) : (
-              <TokenIcon token={display[0]} size={72} />
-            )}
+            <TokenIcon token={display[0]} size={50} />
           </div>
         </div>
         <dl className="grid grid-cols-2 gap-4 [&_dt]:text-xs [&_dt]:text-muted-foreground [&_dd]:mt-1 [&_dd]:break-words [&_dd]:font-semibold [&_dd]:tabular-nums">
