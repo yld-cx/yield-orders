@@ -141,14 +141,13 @@ function MarketContent({
     setDuration(next);
     setSelectedIdentity(undefined);
   };
-  // Reveal the market once its initial book is ready; refetches keep it visible.
   if (book.discovery.isPending)
     return <LoadingScreen label="Loading market…" />;
   return (
     <>
       <div className="flex flex-wrap items-center gap-3 py-6 text-xs text-muted-foreground">
         <Link href="/">Yield</Link>
-        <span>/</span>
+        <span>|</span>
         <span>
           {display[0].symbol} / {display[1].symbol}
         </span>
