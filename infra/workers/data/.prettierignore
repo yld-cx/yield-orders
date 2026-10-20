@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+dist/
+package-lock.json
+.dev.vars*
+.env*
+.deploy.*.json
