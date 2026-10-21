@@ -3,21 +3,59 @@ import type { Token } from "@yld-cx/sdk";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
+import { tokenImageUrl } from "@/lib/token-metadata";
 export async function tokenLogoData(
-  token: Pick<Token, "logoURI">,
+  token: Pick<Token, "imageUrl">,
 ): Promise<string> {
-  const uri =
-    token.logoURI?.replace("https://yld.cx", "") ?? "/tokens/fallback.svg";
-  if (!/^\/tokens\/[a-z0-9-]+\.(svg|png|webp)$/.test(uri))
-    throw new Error("Invalid local token logo");
-  const bytes = await readFile(path.join(process.cwd(), "public", uri));
-  // ImageResponse's SVG rasterizer cannot render embedded WebP images.
-  if (uri.endsWith(".webp")) {
-    const png = await sharp(bytes).png().toBuffer();
+  const fallback = async () =>
+    `data:image/svg+xml;base64,${(await readFile(path.join(process.cwd(), "public/token.svg"))).toString("base64")}`;
+  const url = tokenImageUrl(token.imageUrl);
+  if (!url) return fallback();
+  try {
+    const response = await fetch(url, {
+      redirect: "error",
+      signal: AbortSignal.timeout(3000),
+      cache: "no-store",
+    });
+    if (
+      !response.ok ||
+      !/^image\/(png|jpeg|webp|gif|avif|svg\+xml)(;|$)/i.test(
+        response.headers.get("content-type") ?? "",
+      )
+    ) {
+      await response.body?.cancel();
+      throw new Error("Invalid image");
+    }
+    const limit = 2 * 1024 * 1024;
+    if (Number(response.headers.get("content-length")) > limit) {
+      await response.body?.cancel();
+      throw new Error("Image too large");
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Missing image");
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) throw new Error("Image too large");
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel();
+    }
+    const bytes = Buffer.concat(chunks);
+    // Rasterize all remote formats and bound decoded pixels before embedding.
+    const png = await sharp(bytes, { limitInputPixels: 16_000_000 })
+      .resize(140, 140, { fit: "inside", withoutEnlargement: true })
+      .png()
+      .toBuffer();
     return `data:image/png;base64,${png.toString("base64")}`;
+  } catch {
+    return fallback();
   }
-  const mime = uri.endsWith(".svg") ? "image/svg+xml" : "image/png";
-  return `data:${mime};base64,${bytes.toString("base64")}`;
 }
 export function SocialImage({
   label,

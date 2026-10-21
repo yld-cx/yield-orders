@@ -31,6 +31,7 @@ describe("protocol price and Tick identity", () => {
             quoteDecimals,
             inverted,
           );
+          expect(value).not.toBe("0");
           expect(() => priceText(value)).not.toThrow();
         }
     expect(() => tokenAmount("1".repeat(513), 0)).toThrow();
@@ -67,9 +68,6 @@ describe("protocol price and Tick identity", () => {
         durationDays: 7n,
       }),
     ).toBeUndefined();
-  });
-  it("never formats a positive extreme-decimal price as zero", () => {
-    expect(humanPrice(1n, 0, 255)).not.toBe("0");
   });
   it("matches exact TickMath endpoints and identity", () => {
     expect(sqrtRatioAtTick(-887272)).toBe(4295128739n);

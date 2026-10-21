@@ -1,7 +1,7 @@
 "use client";
 import { useId } from "react";
-import { registry } from "@/lib/registry";
-import { getNetwork, type NetworkSlug } from "@yld-cx/sdk/ethereum";
+import { useDiscoveryTokens } from "@/hooks/use-token-metadata";
+import { type NetworkSlug } from "@yld-cx/sdk/ethereum";
 import type { Token } from "@yld-cx/sdk";
 import { TokenIcon } from "./token-icon";
 import { Input } from "@yld-cx/ui/components/ui/input";
@@ -28,11 +28,11 @@ export function TokenSelector({
   network: NetworkSlug;
   value: string;
   onChange: (address: string) => void;
-  token?: Token;
+  token?: Pick<Token, "symbol" | "imageUrl">;
 }) {
   const id = useId(),
-    tokens = registry.getTokens(getNetwork(network).id),
-    listed = tokens.some((t) => t.address === value.toLowerCase());
+    { tokens } = useDiscoveryTokens(network),
+    inOptions = tokens.some((t) => t.address === value.toLowerCase());
   const items = [
     { value: "custom", label: "Custom token address…" },
     ...tokens.map((t) => ({
@@ -45,7 +45,7 @@ export function TokenSelector({
       <FieldLabel htmlFor={id}>{label}</FieldLabel>
       <Select
         items={items}
-        value={listed ? value.toLowerCase() : "custom"}
+        value={inOptions ? value.toLowerCase() : "custom"}
         onValueChange={(next) => {
           if (next) onChange(next === "custom" ? "" : next);
         }}
@@ -66,7 +66,7 @@ export function TokenSelector({
           ))}
         </SelectContent>
       </Select>
-      {!listed && (
+      {!inOptions && (
         <Input
           aria-label={`${label} address`}
           placeholder="0x… token contract address"
@@ -76,11 +76,8 @@ export function TokenSelector({
           autoComplete="off"
         />
       )}
-      {token && !listed && (
-        <FieldDescription>
-          {token.symbol}{" "}
-          {!token.listed && <span className="text-primary">· Unlisted</span>}
-        </FieldDescription>
+      {token && !inOptions && (
+        <FieldDescription>{token.symbol}</FieldDescription>
       )}
     </Field>
   );

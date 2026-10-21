@@ -68,7 +68,13 @@ function MarketContent({
   const [duration, setDuration] = useState<Duration>(market.defaultDuration);
   const [selectedIdentity, setSelectedIdentity] = useState<TickIdentity>();
   const params = useSearchParams();
-  const baseTick = discoveryBaseTick(params.get("baseTick"), market);
+  // Capture the initial reference. Background metadata refreshes must not move
+  // a user's discovery center or clear their selected price level.
+  const [initialBaseTick] = useState(market.baseTick);
+  const baseTick = discoveryBaseTick(params.get("baseTick"), {
+    ...market,
+    baseTick: initialBaseTick,
+  });
   const book = useYieldBook(market, pairId, baseTick);
   const network = getNetwork(market.network).slug;
   const [supplyAsset, setSupplyAsset] = useState(
@@ -90,7 +96,7 @@ function MarketContent({
     : undefined;
   const changeBaseTick = (next: number) => {
     const query = new URLSearchParams(window.location.search);
-    if (next === market.baseTick) query.delete("baseTick");
+    if (next === initialBaseTick) query.delete("baseTick");
     else query.set("baseTick", String(next));
     const search = query.toString();
     window.history.pushState(
@@ -235,7 +241,7 @@ function MarketContent({
           </div>
         </dl>
       </section>
-      {display.some((t) => !t.listed) && (
+      {baseTick === 0 && (
         <Message>
           ⚠️ Unlisted token · Review token compatibility before interacting
         </Message>
@@ -274,8 +280,7 @@ function MarketContent({
           key={`use/${selected?.id ?? "empty"}`}
           market={market}
           display={display}
-          tick={selected?.status === "exists" ? selected : undefined}
-          hasLiquidity={ticks.some((t) => t.state.availableSupply > 0n)}
+          tick={selected}
           isPending={book.discovery.isPending}
           isIncomplete={incomplete}
         />

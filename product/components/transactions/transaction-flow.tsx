@@ -27,6 +27,7 @@ import {
   getNetwork,
 } from "@yld-cx/sdk/ethereum";
 import { getSdk } from "@/lib/rpc";
+import { QUERY_NAMES } from "@/lib/query-keys";
 import { shortAddress, amountText } from "@/lib/utils";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message, Metric } from "@/components/forms/financial-fields";
@@ -94,7 +95,6 @@ function TransactionSession({
   const locked = useRef(false);
   const [waiting, setWaiting] = useState<"approval" | "execute">();
   const [operation, setOperation] = useState<PendingOperation>();
-  const [multipleSteps, setMultipleSteps] = useState(false);
   const mounted = useRef(true);
   const [atomicUnavailable, setAtomicUnavailable] = useState("");
   const [required, setRequired] = useState<InputRequirement>();
@@ -166,7 +166,6 @@ function TransactionSession({
       if (balance < input.amount)
         throw new Error("Insufficient balance for this action");
       if (allowance < input.allowanceAmount) {
-        setMultipleSteps(true);
         const detected = await capabilities.refetch();
         if (!sequential && supportsAtomic(detected.data)) {
           setStage("simulating");
@@ -176,7 +175,6 @@ function TransactionSession({
             });
             await validatePreview?.(simulated);
             setPreview(simulated);
-            setMultipleSteps(false);
             setStage("review");
             return;
           } catch (e) {
@@ -223,7 +221,6 @@ function TransactionSession({
     setAction(undefined);
     setPreview(undefined);
     setRequired(undefined);
-    setMultipleSteps(false);
     setAtomicUnavailable("");
     setError("");
     setHash(undefined);
@@ -382,12 +379,16 @@ function TransactionSession({
     setWaiting(undefined);
     setOperation(undefined);
     setHash(result.hash);
-    await queries.invalidateQueries({
-      predicate: (q) =>
-        ["ticks", "pair", "portfolio", "quote", "deployment", "tick"].includes(
-          String(q.queryKey[0]),
-        ) && q.queryKey[1] === network,
-    });
+    await Promise.all(
+      [
+        QUERY_NAMES.portfolio,
+        QUERY_NAMES.quote,
+        QUERY_NAMES.pair,
+        QUERY_NAMES.ticks,
+      ].map((name) =>
+        queries.invalidateQueries({ queryKey: [name, getNetwork(network).id] }),
+      ),
+    );
     if (!mounted.current) return;
     if (account.address) sdk.clearTerminal(account.address);
     if (!recovered) onSuccess?.(result);
@@ -570,13 +571,6 @@ function TransactionSession({
               </Metric>
             </>
           )}
-          {multipleSteps && (
-            <p className="text-xs text-muted-foreground" role="status">
-              {preview
-                ? `Approval confirmed → Confirm ${actionName}`
-                : `Approve → Confirm ${actionName}`}
-            </p>
-          )}
           {atomicUnavailable && stage === "approval" && (
             <Message>{atomicUnavailable}</Message>
           )}
@@ -646,21 +640,19 @@ function TransactionSession({
             </Button>
           )}
           {busy && (
-            <div role="status" aria-live="polite">
-              <Message>
-                {stage === "pending" || stage === "submitted"
-                  ? "Waiting for onchain confirmation…"
-                  : stage === "synchronizing"
-                    ? "Approval confirmed. Synchronizing allowance and refreshing simulation…"
-                    : stage === "approving-reset"
-                      ? "Reset allowance in your wallet…"
-                      : stage === "approving"
-                        ? "Approve token allowance in your wallet…"
-                        : stage === "signing"
-                          ? "Confirm the transaction in your wallet…"
-                          : "Reading and simulating current state…"}
-              </Message>
-            </div>
+            <Message busy>
+              {stage === "pending" || stage === "submitted"
+                ? "Waiting for onchain confirmation…"
+                : stage === "synchronizing"
+                  ? "Approval confirmed. Synchronizing allowance and refreshing simulation…"
+                  : stage === "approving-reset"
+                    ? "Reset allowance in your wallet…"
+                    : stage === "approving"
+                      ? "Approve token allowance in your wallet…"
+                      : stage === "signing"
+                        ? "Confirm the transaction in your wallet…"
+                        : "Reading and simulating current state…"}
+            </Message>
           )}
           {hash && (
             <a
@@ -672,9 +664,7 @@ function TransactionSession({
               View transaction ↗
             </a>
           )}
-          {stage === "confirmed" && (
-            <Message>Confirmed. Market and Orders have been refreshed.</Message>
-          )}
+          {stage === "confirmed" && <Message>Confirmed ✅</Message>}
           {error && <Message error>{error}</Message>}
           {stage === "idle" && (
             <Button variant="outline" onClick={() => void review()}>

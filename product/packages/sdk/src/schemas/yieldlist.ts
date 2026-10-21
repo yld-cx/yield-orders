@@ -5,15 +5,10 @@ import {
   DISCOVERY_DEFAULTS,
   MIN_TICK,
   MAX_TICK,
-  TOKEN_METADATA_LIMITS,
 } from "../constants.ts";
 // Avoid even the caught eval-capability probe in nonce-only browser CSPs.
 z.config({ jitless: true });
-import {
-  canonicalPair,
-  decodeBase58,
-  normalizeAddress,
-} from "../registry/addresses.ts";
+import { canonicalPair, decodeBase58 } from "../registry/addresses.ts";
 import type { NetworkId } from "../types/index.ts";
 export const categorySchema = z.enum([
   "blue-chip",
@@ -35,26 +30,13 @@ export const networkSchema = z.string().refine((value) => {
     return false;
   }
 }, "Expected a CAIP-2 EVM or Solana network identifier");
-const logoSchema = z
-  .string()
-  .refine(
-    (v) =>
-      /^(?:https:\/\/yld\.cx)?\/tokens\/[a-z0-9-]+\.(?:svg|png|webp)$/.test(v),
-    "Use a hosted token logo under /tokens",
-  );
-export const tokenMetadataSchema = z.strictObject({
-  symbol: z.string().trim().min(1).max(TOKEN_METADATA_LIMITS.symbol),
-  name: z.string().trim().min(1).max(TOKEN_METADATA_LIMITS.name),
-  decimals: z.number().int().min(0).max(TOKEN_METADATA_LIMITS.decimals),
-  logoURI: logoSchema.optional(),
-  tags: z
-    .array(categorySchema)
-    .max(TOKEN_METADATA_LIMITS.tags)
-    .refine((v) => new Set(v).size === v.length, "Duplicate tags")
-    .optional(),
-});
 export const marketMetadataSchema = z
   .strictObject({
+    tags: z
+      .array(categorySchema)
+      .max(categorySchema.options.length)
+      .refine((v) => new Set(v).size === v.length, "Duplicate tags")
+      .default([]),
     defaultDuration: z.literal(DURATIONS).default(DEFAULT_DURATION),
     stepTicks: z
       .number()
@@ -62,12 +44,7 @@ export const marketMetadataSchema = z
       .positive()
       .max(Number.MAX_SAFE_INTEGER)
       .default(DISCOVERY_DEFAULTS.stepTicks),
-    baseTick: z
-      .number()
-      .int()
-      .min(MIN_TICK)
-      .max(MAX_TICK)
-      .default(DISCOVERY_DEFAULTS.baseTick),
+    baseTick: z.number().int().min(MIN_TICK).max(MAX_TICK).optional(),
     telegramPost: z
       .url()
       .refine((v) => {
@@ -85,32 +62,18 @@ export const marketMetadataSchema = z
       .optional(),
   })
   .refine(
-    (v) => v.baseTick % v.stepTicks === 0,
+    (v) => v.baseTick === undefined || v.baseTick % v.stepTicks === 0,
     "baseTick must align to stepTicks",
   );
 export const yieldListSchema = z
   .strictObject({
     version: z.literal(1),
-    tokens: z.record(networkSchema, z.record(z.string(), tokenMetadataSchema)),
     markets: z.record(
       networkSchema,
       z.record(z.string(), marketMetadataSchema),
     ),
   })
   .superRefine((list, ctx) => {
-    for (const [network, tokens] of Object.entries(list.tokens))
-      for (const address of Object.keys(tokens)) {
-        try {
-          if (normalizeAddress(network as NetworkId, address) !== address)
-            throw new Error("EVM keys must be lowercase");
-        } catch (error) {
-          ctx.addIssue({
-            code: "custom",
-            message: String(error),
-            path: ["tokens", network, address],
-          });
-        }
-      }
     for (const [network, markets] of Object.entries(list.markets))
       for (const key of Object.keys(markets)) {
         try {
@@ -122,11 +85,6 @@ export const yieldListSchema = z
             ) !== key
           )
             throw new Error("Pair must be normalized and canonically ordered");
-          if (
-            !list.tokens[network]?.[parts[0]] ||
-            !list.tokens[network]?.[parts[1]]
-          )
-            throw new Error("Market references an unknown token");
         } catch (error) {
           ctx.addIssue({
             code: "custom",

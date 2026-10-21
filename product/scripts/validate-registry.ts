@@ -1,4 +1,4 @@
-import { readFile, access } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { parseTree, type Node, type ParseError } from "jsonc-parser";
 import { Registry } from "../packages/sdk/src/registry/index.js";
 const raw = await readFile(
@@ -25,15 +25,6 @@ function checkDuplicates(node: Node) {
 }
 checkDuplicates(root);
 const registry = new Registry(JSON.parse(raw));
-for (const items of Object.values(registry.data.tokens))
-  for (const token of Object.values(items))
-    if (token.logoURI)
-      await access(
-        new URL(
-          `../public${token.logoURI.replace("https://yld.cx", "")}`,
-          import.meta.url,
-        ),
-      );
 console.log(
-  `YieldList valid: ${Object.values(registry.data.tokens).reduce((n, items) => n + Object.keys(items).length, 0)} tokens, ${Object.values(registry.data.markets).reduce((n, items) => n + Object.keys(items).length, 0)} markets.`,
+  `YieldList valid: ${Object.values(registry.data.markets).reduce((n, items) => n + Object.keys(items).length, 0)} markets.`,
 );

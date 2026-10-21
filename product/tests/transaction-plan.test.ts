@@ -569,8 +569,13 @@ describe("wallet batching and persisted operations", () => {
     {},
     { atomic: { status: "unsupported" } },
     { atomic: { status: "ready" } },
-  ])("requires explicit atomic support: %j", (capabilities) => {
-    expect(supportsAtomic(capabilities)).toBe(false);
+  ])(
+    "rejects capabilities without explicit atomic support: %j",
+    (capabilities) => {
+      expect(supportsAtomic(capabilities)).toBe(false);
+    },
+  );
+  it("accepts explicit atomic support", () => {
     expect(supportsAtomic({ atomic: { status: "supported" } })).toBe(true);
   });
   it.each([false, true])(

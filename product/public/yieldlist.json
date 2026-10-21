@@ -1,53 +1,31 @@
 {
   "version": 1,
-  "tokens": {
-    "eip155:8453": {
-      "0x4200000000000000000000000000000000000006": {
-        "symbol": "WETH",
-        "name": "Wrapped Ether",
-        "decimals": 18,
-        "logoURI": "/tokens/weth.webp",
-        "tags": ["blue-chip"]
-      },
-      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
-        "symbol": "USDC",
-        "name": "USD Coin",
-        "decimals": 6,
-        "logoURI": "/tokens/usdc.webp",
-        "tags": ["stable"]
-      },
-      "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf": {
-        "symbol": "cbBTC",
-        "name": "Coinbase Wrapped Bitcoin",
-        "decimals": 8,
-        "logoURI": "/tokens/cbbtc.webp",
-        "tags": ["blue-chip"]
-      }
-    },
-    "eip155:1": {
-      "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": {
-        "symbol": "USDC",
-        "name": "USD Coin",
-        "decimals": 6,
-        "logoURI": "/tokens/usdc.webp",
-        "tags": ["stable"]
-      },
-      "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": {
-        "symbol": "WETH",
-        "name": "Wrapped Ether",
-        "decimals": 18,
-        "logoURI": "/tokens/weth.webp",
-        "tags": ["blue-chip"]
-      }
-    },
-    "eip155:4663": {},
-    "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": {}
-  },
   "markets": {
     "eip155:8453": {
       "0x4200000000000000000000000000000000000006:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
         "stepTicks": 1000,
-        "baseTick": -196000
+        "baseTick": -196000,
+        "tags": ["blue-chip", "stable"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf": {
+        "stepTicks": 1000,
+        "tags": ["blue-chip", "stable"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0x940181a94a35a4569e4529a3cdfb74e38fd98631": {
+        "stepTicks": 1000,
+        "tags": ["token"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb2000000000000000000004c27f6523082f41d01": {
+        "stepTicks": 1000,
+        "tags": ["meme"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb20000000000000000000078ee7ce2fe4908108c": {
+        "stepTicks": 1000,
+        "tags": ["stock", "rwa"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb2000000000000000000001e800a7f5189430cd0": {
+        "stepTicks": 1000,
+        "tags": ["stock", "rwa"]
       }
     },
     "eip155:1": {},

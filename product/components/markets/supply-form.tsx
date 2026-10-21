@@ -101,7 +101,7 @@ export function SupplyForm({
               value={amount}
               onChange={setAmount}
             />
-            <Metric label="Selected price">
+            <Metric label="Price">
               {selected
                 ? `${tickPrice(selected, display)} ${display[1].symbol} / ${display[0].symbol}`
                 : "Not selected"}

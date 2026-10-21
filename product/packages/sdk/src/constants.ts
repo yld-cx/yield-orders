@@ -38,7 +38,6 @@ export const TOKEN_METADATA_LIMITS = {
   symbol: 32,
   name: 100,
   decimals: 255,
-  tags: 6,
 } as const;
 
 export const MILLISECONDS_PER_SECOND = 1000;

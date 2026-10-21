@@ -3,11 +3,7 @@ import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { useState } from "react";
 import { useConnection } from "wagmi";
 import { usePortfolio } from "@/hooks/use-portfolio";
-import {
-  getNetwork,
-  explainError,
-  type NetworkSlug,
-} from "@yld-cx/sdk/ethereum";
+import { explainError, type NetworkSlug } from "@yld-cx/sdk/ethereum";
 import { useNetwork } from "@/components/layout/providers";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Input } from "@yld-cx/ui/components/ui/input";
@@ -15,7 +11,7 @@ import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
 import { WalletConnect } from "@/components/wallet/wallet-connect";
 import { ProviderCard, UseCard } from "./position-card";
-import { registry } from "@/lib/registry";
+import { useTokens } from "@/hooks/use-market";
 import { displayTokens } from "@yld-cx/sdk/registry";
 import {
   Tabs,
@@ -41,17 +37,20 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
     providers = pages.flatMap((p) => p.providers),
     uses = pages.flatMap((p) => p.uses),
     timestamp = pages[0]?.timestamp ?? 0n;
+  const metadata = useTokens(
+    network,
+    [...providers, ...uses].flatMap((p) => [p.tick.asset, p.tick.quote]),
+  );
   const matches = (tick: { asset: string; quote: string }) => {
-    const networkId = getNetwork(network).id;
-    const asset = registry.getToken(networkId, tick.asset),
-      quote = registry.getToken(networkId, tick.quote);
+    const asset = metadata.find((t) => t.address === tick.asset.toLowerCase()),
+      quote = metadata.find((t) => t.address === tick.quote.toLowerCase());
     const searchable =
       `${tick.asset} ${tick.quote} ${asset?.symbol ?? ""} ${asset?.name ?? ""} ${quote?.symbol ?? ""} ${quote?.name ?? ""}`.toLowerCase();
     if (search && !searchable.includes(search.toLowerCase())) return false;
-    const market = registry.getMarket(networkId, tick.asset, tick.quote);
-    const askAsset = market
-      ? displayTokens(market)[0].address
-      : [tick.asset.toLowerCase(), tick.quote.toLowerCase()].sort()[0];
+    const askAsset =
+      asset && quote
+        ? displayTokens({ token0: asset, token1: quote })[0].address
+        : [tick.asset.toLowerCase(), tick.quote.toLowerCase()].sort()[0];
     return (
       (filter !== "ask" && filter !== "bid") ||
       (tick.asset.toLowerCase() === askAsset) === (filter === "ask")

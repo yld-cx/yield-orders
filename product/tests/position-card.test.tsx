@@ -31,7 +31,10 @@ vi.mock("wagmi", () => ({
     chainId: 8453,
   }),
 }));
-vi.mock("@/hooks/use-market", () => ({ useToken: mocks.token }));
+vi.mock("@/hooks/use-market", () => ({
+  useToken: mocks.token,
+  useTokens: () => [asset, quote],
+}));
 vi.mock("@/hooks/use-portfolio", () => ({ usePortfolio: mocks.portfolio }));
 vi.mock("@/components/layout/providers", () => ({
   useNetwork: () => ({ network: "base" }),
@@ -224,7 +227,12 @@ describe("compact shared position cards", () => {
     },
   );
   it("renders the shared card on both Orders and Market pages", () => {
-    const market = registry.getMarket("eip155:8453", a, b)!;
+    const market = {
+      ...registry.getMarket("eip155:8453", a, b)!,
+      token0: asset,
+      token1: quote,
+      baseTick: -196000,
+    };
     for (const html of [
       renderToStaticMarkup(<OrdersScreen />),
       renderToStaticMarkup(<MarketPositions market={market} />),

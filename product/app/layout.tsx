@@ -9,7 +9,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(ORIGIN),
   title: {
-    default: "yld.cx — liquidity rental markets",
+    default: "yld˙ᶜˣ - liquidity rental markets",
     template: "%s | yld.cx",
   },
   description:
@@ -18,14 +18,14 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     siteName: "yld.cx",
-    title: "yld.cx — liquidity rental markets",
+    title: "yld.cx - liquidity rental markets",
     description: "Provide or rent tokens at your price.",
     url: ORIGIN,
     images: [{ url: `${ORIGIN}/opengraph-image`, width: 1200, height: 630 }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "yld.cx — liquidity rental markets",
+    title: "yld.cx - liquidity rental markets",
     description: "Provide or rent tokens at your price.",
     images: [`${ORIGIN}/opengraph-image`],
   },

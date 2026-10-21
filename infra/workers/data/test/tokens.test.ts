@@ -61,55 +61,48 @@ test("partial names do not cause loss of raw token data", () => {
   );
 });
 
-test("batch missing tokens once and persist each token separately, then serve cache hits", async () => {
+test("batches and persists complete token snapshots, serves seven-day cache hits, then refreshes together", async () => {
   const db = new TestDatabase(),
     env = environment(db);
   let calls = 0;
   const fetcher: typeof fetch = async (input) => {
     calls++;
     assert.ok(String(input).endsWith(`${A},${B}`));
-    return fetchJson(gecko([A, B]))(input);
+    return fetchJson(gecko([A, B], calls === 1 ? {} : { price_usd: "2.5" }))(
+      input,
+    );
   };
   const first = await getTokens(params(`${A},${B}`), env, fetcher, 100);
   assert.equal(first.tokens.length, 2);
   assert.equal(first.upstream, "ok");
   assert.equal(db.rows("SELECT * FROM tokens").length, 2);
-  const second = await getTokens(
+  const cached = await getTokens(
     params(`${B},${A}`),
     env,
     fail,
     100 + TOKEN_TTL - 1,
   );
-  assert.equal(second.upstream, "cache");
-  assert.equal(calls, 1);
-  assert.equal(second.tokens[0]!.stale, false);
-});
-
-test("complete token snapshots including prices stay cached for seven days then refresh together", async () => {
-  const env = environment();
-  await getTokens(params(`${A},${B}`), env, fetchJson(gecko([A, B])), 100);
-  const cached = await getTokens(params(`${A},${B}`), env, fail, 160);
   assert.equal(cached.upstream, "cache");
+  assert.deepEqual(
+    cached.tokens.map((token) => token.address),
+    [B, A],
+  );
+  assert.equal(calls, 1);
+  assert.equal(cached.tokens[0]!.stale, false);
   assert.equal(cached.tokens[0]!.fetchedAt, 100);
   assert.equal(
     (cached.tokens[0]!.geckoTerminal!.attributes as Record<string, unknown>)
       .price_usd,
     "1.234567890123456789",
   );
-  let calls = 0;
-  const refresh: typeof fetch = async (input) => {
-    calls++;
-    assert.ok(String(input).endsWith(`${A},${B}`));
-    return fetchJson(gecko([A, B], { price_usd: "2.5" }))(input);
-  };
   const result = await getTokens(
     params(`${A},${B}`),
     env,
-    refresh,
+    fetcher,
     100 + TOKEN_TTL,
   );
   assert.equal(result.upstream, "ok");
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   for (const token of result.tokens) {
     assert.equal(token.stale, false);
     assert.equal(token.fetchedAt, 100 + TOKEN_TTL);

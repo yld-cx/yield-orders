@@ -1,5 +1,8 @@
 import type { NextConfig } from "next";
 import path from "node:path";
+const metadataProxy =
+  process.env.NODE_ENV === "development" ||
+  process.env.VERCEL_ENV === "preview";
 const config: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
@@ -7,6 +10,13 @@ const config: NextConfig = {
   outputFileTracingRoot: path.resolve(process.cwd()),
   turbopack: { root: path.resolve(process.cwd()) },
   images: { remotePatterns: [] },
+  // Use the same build-time switch for the browser endpoint and its rewrite.
+  env: { NEXT_PUBLIC_METADATA_PROXY: String(metadataProxy) },
+  async rewrites() {
+    return metadataProxy
+      ? [{ source: "/api/md/:path*", destination: "https://md.yld.cx/:path*" }]
+      : [];
+  },
   async headers() {
     return [
       {
@@ -34,10 +44,6 @@ const config: NextConfig = {
             value: "X-Requested-With, content-type, Authorization",
           },
         ],
-      },
-      {
-        source: "/tokens/:path*",
-        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
       },
       {
         source: "/yieldlist.json",

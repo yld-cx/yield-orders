@@ -1,5 +1,5 @@
 import { ImageResponse } from "next/og";
-import { parseMarketRoute, marketTokens, marketLabel } from "@/lib/registry";
+import { parseMarketRoute, marketTokens } from "@/lib/registry";
 import { SocialImage, tokenLogoData } from "@/components/layout/social-image";
 export async function GET(
   _request: Request,
@@ -19,14 +19,14 @@ export async function GET(
   } catch {
     return new Response("Invalid market", { status: 404 });
   }
-  const tokens = marketTokens(route.network.id, route.key);
+  const tokens = await marketTokens(route.network.id, route.key);
   const logos = (await Promise.all(tokens.map(tokenLogoData))) as [
     string,
     string,
   ];
   return new ImageResponse(
     <SocialImage
-      label={marketLabel(route.network.id, route.key)}
+      label={tokens.map((token) => token.symbol).join(" / ")}
       network={route.network.name}
       logos={logos}
     />,
