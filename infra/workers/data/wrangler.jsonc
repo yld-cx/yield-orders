@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "yld-data",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "yld-data",
+      // Deployment provisions or reuses this named database automatically.
+      "migrations_dir": "migrations",
+    },
+  ],
+  "triggers": { "crons": ["0 * * * *"] },
+  "observability": { "enabled": true },
+  "vars": {
+    "CORS_ORIGINS": "https://yld.cx",
+    "RPC_URLS": "{\"1\":\"https://ethereum-rpc.publicnode.com\",\"8453\":\"https://mainnet.base.org\",\"4663\":\"https://rpc.mainnet.chain.robinhood.com\"}",
+    // Optional startBlock enables backfill. Otherwise snapshot the first observed head.
+    "NETWORK_CONFIG": "{}",
+    "MAX_SYNC_DURATION_MS": "120000",
+    "MAX_CHUNKS": "12",
+    "MAX_RPC_REQUESTS": "180",
+    "MAX_D1_QUERIES": "80",
+    "EVENT_RETENTION_MONTHS": "2",
+    "CLEANUP_BATCH_SIZE": "1000",
+    "MAX_CLEANUP_BATCHES": "6",
+    "RPC_TIMEOUT_MS": "8000",
+    "TOKEN_UPSTREAM_PER_MINUTE": "20",
+  },
+}

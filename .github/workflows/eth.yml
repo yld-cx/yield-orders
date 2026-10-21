@@ -1,4 +1,4 @@
-name: Ethereum protocol CI
+name: Ethereum CI
 
 on:
   pull_request:
@@ -15,6 +15,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ethereum:
