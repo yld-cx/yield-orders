@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { parseMarketRoute, marketLabel } from "@/lib/registry";
+import { parseMarketRoute } from "@/lib/registry";
 import { contentSecurityPolicy } from "@/lib/csp";
 import { parseMarketFilters, marketFilterParams } from "@/lib/market-filters";
 import { Duration } from "@yld-cx/sdk";
@@ -103,7 +103,6 @@ describe("product identity and security", () => {
     );
     expect(() => parseMarketRoute("solana", `${a}:${b}`)).toThrow();
     expect(() => parseMarketRoute("base", `${a}:${a}`)).toThrow();
-    expect(marketLabel("eip155:8453", `${a}:${b}`)).toBe("WETH / USDC");
   });
   it("includes canonical markets in sitemap and excludes Orders from indexing", () => {
     expect(

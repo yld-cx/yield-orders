@@ -55,12 +55,12 @@ function OpenMarketForm({
       </div>
       <div className="my-8 space-y-3 text-center [&>h1]:text-4xl [&>h1]:font-semibold [&>p]:text-muted-foreground">
         <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-          Any pair · Permissionless
+          Your pair · Permissionless
         </p>
         <h1>
           Open a market<span className="text-brand">.</span>
         </h1>
-        <p>Select two tokens to view or create their liquidity market.</p>
+        <p>Select two tokens to view or create a liquidity rental market.</p>
       </div>
       <Card className="open-card">
         <CardContent className="space-y-4">

@@ -1,5 +1,9 @@
 "use client";
-import { QUERY_TIMING } from "@yld-cx/sdk";
+import {
+  QUERY_TIMING,
+  type MarketConfiguration,
+  type Token,
+} from "@yld-cx/sdk";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import {
   TableCell,
@@ -28,7 +32,10 @@ import {
   getNetwork,
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
-import { type Market, type Duration, type Tick } from "@yld-cx/sdk";
+import { type Duration, type Tick } from "@yld-cx/sdk";
+import { useMarket, useTokens } from "@/hooks/use-market";
+import { useTokenMetadata } from "@/hooks/use-token-metadata";
+import { fallbackToken } from "@/lib/token-metadata";
 import { registry, marketPath } from "@/lib/registry";
 import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
@@ -47,19 +54,42 @@ import { DurationSelect } from "@/components/forms/financial-fields";
 import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
 import { PairIcons } from "./token-icon";
 function MarketRow({
-  market,
+  market: config,
   duration,
 }: {
-  market: Market;
+  market: MarketConfiguration;
   duration: Duration;
 }) {
-  const network = getNetwork(market.network).slug,
+  const network = getNetwork(config.network).slug,
     sdk = getSdk(network);
-  const tokens = displayTokens(market);
+  const result = useMarket(network, config.key);
+  const market = result.market;
+  const metadata = useTokenMetadata(network, [
+    config.token0.address,
+    config.token1.address,
+  ]);
+  const token = (address: string) =>
+    metadata.find((t) => t.address === address) ??
+    fallbackToken(config.network, address);
+  const tokens = displayTokens<Pick<Token, "address" | "symbol" | "imageUrl">>(
+    market ?? {
+      token0: token(config.token0.address),
+      token1: token(config.token1.address),
+    },
+  );
   const router = useRouter();
   const query = useQuery({
-    queryKey: ["ticks", network, market.key, "summary"],
+    queryKey: [
+      "ticks",
+      network,
+      config.key,
+      "summary",
+      market?.baseTick,
+      config.stepTicks,
+    ],
+    enabled: !!market,
     queryFn: async () => {
+      if (!market) throw new Error("Token metadata unavailable");
       const pair = await sdk.getPair(
         market.token0.address as Address,
         market.token1.address as Address,
@@ -97,11 +127,11 @@ function MarketRow({
   return (
     <TableRow
       className="cursor-pointer"
-      onClick={() => router.push(marketPath(market))}
+      onClick={() => router.push(marketPath(config))}
     >
       <TableCell className="p-4 text-right first:text-left">
         <Link
-          href={marketPath(market)}
+          href={marketPath(config)}
           className="flex items-center gap-3"
           aria-label={`Open ${tokens[0].symbol} / ${tokens[1].symbol}`}
         >
@@ -113,9 +143,7 @@ function MarketRow({
               {tokens[1].symbol}
             </strong>
             <small className="text-muted-foreground">
-              {tokens[0].tags?.[0]?.replace("blue-chip", "Blue chip") ??
-                "Token"}{" "}
-              · {getNetwork(market.network).name}
+              {config.tags?.[0] ?? "Token"} · {getNetwork(config.network).name}
             </small>
           </span>
         </Link>
@@ -124,17 +152,17 @@ function MarketRow({
         <Fragment key={i}>
           <TableCell className="p-4 text-right first:text-left">
             <div className={i === 0 ? "text-ask" : "text-bid"}>
-              {query.isPending ? (
+              {query.isPending && !result.error ? (
                 <Skeleton
                   className="ml-auto h-5 w-20 motion-reduce:animate-none"
                   aria-label="Loading liquidity…"
                 />
-              ) : query.isError ? (
+              ) : query.isError || result.error ? (
                 "Read failed"
               ) : query.data?.failed ? (
                 "Incomplete"
               ) : (
-                `${amountText(s.available, tokens[i].decimals)} ${tokens[i].symbol}`
+                `${amountText(s.available, tokens[i].address === market?.token0.address ? market.token0.decimals : market!.token1.decimals)} ${tokens[i].symbol}`
               )}
             </div>
             <small className={query.isPending ? "invisible" : undefined}>
@@ -198,8 +226,11 @@ export function MarketTable() {
     updateFilters,
   } = useMarketFilters();
   const id = getNetwork(network as NetworkSlug).id;
+  const addresses = registry.getTokens(id).map((t) => t.address);
+  const metadata = useTokenMetadata(network, addresses);
+  const tokens = useTokens(network, addresses);
   const markets = registry
-    .searchMarkets(id, search)
+    .searchMarkets(id, search, [...tokens, ...metadata])
     .filter(
       (m) =>
         category === "all" ||
@@ -279,9 +310,7 @@ export function MarketTable() {
             >
               {tag === "all"
                 ? "All"
-                : tag === "blue-chip"
-                  ? "Blue chip"
-                  : tag.charAt(0).toUpperCase() + tag.slice(1)}
+                : tag.charAt(0).toUpperCase() + tag.slice(1)}
             </Button>
           ))}
         </div>
@@ -354,9 +383,8 @@ export function MarketTable() {
               </Empty>
             )}
             <div className="border-t p-4 text-xs leading-relaxed text-muted-foreground">
-              Yield is earned only when used liquidity is{" "}
-              <strong>repaid</strong>. Swap or Close settles Quote instead.
-              Shown rates are marginal references, not guaranteed returns.
+              Estimated Yield is earned on Repay. Swap or Close settles in
+              Quote.
             </div>
           </CardContent>
         </Card>
@@ -366,20 +394,20 @@ export function MarketTable() {
           {
             icon: MoveUpRight,
             color: "text-primary",
-            title: "01 · Provide",
-            text: "Choose a side, set your price and supply tokens to the market.",
+            title: "01 · Provide liquidity",
+            text: "Open your Yield market and supply tokens.",
           },
           {
             icon: ArrowLeftRight,
             color: "text-rent",
             title: "02 · Rent or swap",
-            text: "Others can rent your tokens against locked Quote or Swap immediately.",
+            text: "Use tokens at your price against locked Quote.",
           },
           {
             icon: RotateCcw,
             color: "text-brand",
-            title: "03 · Earn or settle",
-            text: "Repay funds Asset Yield. Swap or maturity Close funds Quote proceeds.",
+            title: "03 · Earn or trade",
+            text: "Earn Yield on Repay or exchange tokens at your price.",
           },
         ].map(({ icon: Icon, color, title, text }) => (
           <Card key={title}>

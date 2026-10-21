@@ -1,11 +1,17 @@
 import {
+  DISCOVERY_DEFAULTS,
   FORMAT_PRECISION,
   LARGE_PRICE_THRESHOLD,
   MIN_TICK,
   MAX_TICK,
 } from "@yld-cx/sdk";
 import type { Token, TickState, Market } from "@yld-cx/sdk";
-import { decimalFraction, formatRatio, humanPrice } from "@yld-cx/sdk/ethereum";
+import {
+  decimalFraction,
+  formatRatio,
+  humanPrice,
+  snappedPrice,
+} from "@yld-cx/sdk/ethereum";
 
 export function tickPrice(
   tick:
@@ -64,4 +70,34 @@ export function discoveryBaseTick(
     tick <= MAX_TICK
     ? tick
     : market.baseTick;
+}
+
+/** Approximate discovery center only; inputs use canonical token order. */
+export function calculatedBaseTick(
+  token0: Pick<Token, "decimals" | "priceUsd">,
+  token1: Pick<Token, "decimals" | "priceUsd">,
+  stepTicks: number = DISCOVERY_DEFAULTS.stepTicks,
+): number | undefined {
+  try {
+    for (const token of [token0, token1]) {
+      if (
+        !Number.isInteger(token.decimals) ||
+        token.decimals < 0 ||
+        token.decimals > 255 ||
+        !token.priceUsd ||
+        token.priceUsd.length > 128 ||
+        !/^\d+(\.\d+)?$/.test(token.priceUsd) ||
+        !Number.isFinite(Number(token.priceUsd)) ||
+        Number(token.priceUsd) <= 0
+      )
+        return;
+    }
+    const [n0, d0] = decimalFraction(token0.priceUsd!);
+    const [n1, d1] = decimalFraction(token1.priceUsd!);
+    const price = formatRatio(n0 * d1, d0 * n1, 256);
+    return snappedPrice(price, token0.decimals, token1.decimals, stepTicks)
+      .priceTick;
+  } catch {
+    return undefined;
+  }
 }

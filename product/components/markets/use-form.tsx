@@ -128,13 +128,25 @@ export function UseForm({
                           : "No liquidity yet"}
                   </EmptyTitle>
                   <EmptyDescription>
-                    {isIncomplete
-                      ? "Could not read liquidity. Retry the market reads."
-                      : isPending
-                        ? "Checking price levels…"
-                        : hasLiquidity
-                          ? "Choose a price level · current market depth"
-                          : "Be the first to provide tokens at your price."}
+                    {isIncomplete ? (
+                      "Could not read liquidity. Retry the market reads."
+                    ) : isPending ? (
+                      "Checking price levels…"
+                    ) : hasLiquidity ? (
+                      "Choose a price level · current market depth"
+                    ) : (
+                      <>
+                        Be the first to provide tokens at your price or request
+                        liquidity in the{" "}
+                        <a
+                          href="https://t.me/yld_group"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Telegram group
+                        </a>
+                      </>
+                    )}
                   </EmptyDescription>
                 </EmptyHeader>
               </Empty>

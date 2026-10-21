@@ -14,8 +14,8 @@ export interface Token {
   symbol: string;
   name: string;
   decimals: number;
-  logoURI?: string;
-  tags?: Category[];
+  imageUrl?: string;
+  priceUsd?: string;
   listed: boolean;
 }
 export interface Market {
@@ -27,7 +27,18 @@ export interface Market {
   stepTicks: number;
   baseTick: number;
   telegramPost?: string;
+  tags?: Category[];
 }
+/** Configured identity only. Decimals and display metadata must be loaded separately. */
+export type TokenReference = Pick<Token, "network" | "address">;
+export type MarketConfiguration = Omit<
+  Market,
+  "token0" | "token1" | "baseTick"
+> & {
+  token0: TokenReference;
+  token1: TokenReference;
+  baseTick?: number;
+};
 export interface TickIdentity {
   id: bigint;
   pairId: bigint;

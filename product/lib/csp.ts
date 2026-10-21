@@ -1,3 +1,4 @@
+import { METADATA_ORIGIN, TOKEN_IMAGE_ORIGINS } from "./token-metadata";
 const walletConnections = [
   "https://rpc.walletconnect.com",
   "https://relay.walletconnect.com",
@@ -21,6 +22,7 @@ export function contentSecurityPolicy(
     ...new Set([
       "'self'",
       ...rpcOrigins,
+      METADATA_ORIGIN,
       ...walletConnections,
       ...(development ? ["ws:"] : []),
     ]),
@@ -29,7 +31,7 @@ export function contentSecurityPolicy(
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${development ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    `img-src 'self' data: blob: ${TOKEN_IMAGE_ORIGINS.join(" ")}`,
     "font-src 'self'",
     `connect-src ${connections.join(" ")}`,
     "frame-src https://verify.walletconnect.com https://verify.walletconnect.org https://keys.coinbase.com",

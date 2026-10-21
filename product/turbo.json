@@ -14,7 +14,7 @@
         "//#typecheck:app"
       ],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
-      "env": ["NEXT_PUBLIC_*"],
+      "env": ["NEXT_PUBLIC_*", "VERCEL_ENV"],
       "outputs": [".next/**", "!.next/cache/**", "!.next/dev/**"]
     },
     "//#typecheck:app": {

@@ -16,7 +16,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   } catch {
     return { title: "Market not found", robots: { index: false } };
   }
-  const label = marketLabel(route.network.id, route.key),
+  const label = await marketLabel(route.network.id, route.key),
     title = `${label} · ${route.network.name} Liquidity Rental Market`,
     description = `Provide or rent ${label} at your price on ${route.network.name}. Asset moves. Quote locks.`,
     url = `${ORIGIN}${route.canonicalPath}`,

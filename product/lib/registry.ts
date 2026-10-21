@@ -1,3 +1,4 @@
+import { fetchTokenMetadata } from "./token-metadata";
 import list from "../public/yieldlist.json";
 import { Registry, pairKey, displayTokens } from "@yld-cx/sdk/registry";
 import { getNetwork, networks, type NetworkSlug } from "@yld-cx/sdk/ethereum";
@@ -21,23 +22,23 @@ export function parseMarketRoute(
   const key = pairKey(n.id, tokens[0], tokens[1]);
   return { network: n, key, canonicalPath: `/market/${n.slug}/${key}` };
 }
-type DisplayToken = Pick<Token, "address" | "symbol" | "logoURI">;
-export function marketTokens(
+type DisplayToken = Pick<Token, "address" | "symbol" | "imageUrl">;
+export async function marketTokens(
   network: NetworkId,
   key: string,
-): readonly [DisplayToken, DisplayToken] {
+): Promise<readonly [DisplayToken, DisplayToken]> {
   const [a, b] = key.split(":");
-  const token = (address: string): DisplayToken =>
-    registry.getToken(network, address) ?? {
-      address,
-      symbol: `${address.slice(0, 6)}…${address.slice(-4)}`,
-    };
-  return displayTokens({ token0: token(a), token1: token(b) });
+  const metadata = await fetchTokenMetadata(network, [a, b]);
+  return displayTokens({ token0: metadata[0], token1: metadata[1] });
 }
-export function marketLabel(network: NetworkId, key: string): string {
-  return marketTokens(network, key)
+export async function marketLabel(
+  network: NetworkId,
+  key: string,
+): Promise<string> {
+  return (await marketTokens(network, key))
     .map((token) => token.symbol)
     .join(" / ");
 }
+
 export const isNetworkSlug = (value: string): value is NetworkSlug =>
   networks.some((network) => network.slug === value);

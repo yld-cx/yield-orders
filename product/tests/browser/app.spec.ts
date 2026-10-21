@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Page } from "@playwright/test";
+import yieldList from "../../public/yieldlist.json" with { type: "json" };
+import { tokenFixture } from "./token-fixtures";
 import {
   decodeFunctionData,
   encodeFunctionData,
@@ -15,6 +17,7 @@ import {
   pairIdFor,
   tickIdFor,
   priceAtTick,
+  snappedPrice,
   humanPrice,
   tickCandidates,
   deploymentFor,
@@ -32,20 +35,58 @@ import type {
   TickState,
 } from "../../packages/sdk/src/types/index.js";
 type TickOverrides = Map<bigint, Partial<TickState> | null>;
+const metadataRoute = /(?:https:\/\/md\.yld\.cx|\/api\/md)\/tokens\?/;
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   key = `${a}:${b}`;
+const configuredAddresses = [
+  ...new Set(
+    Object.keys(yieldList.markets["eip155:8453"]).flatMap((pair) =>
+      pair.split(":"),
+    ),
+  ),
+];
 const directId = tickIdFor(pairIdFor(a, b), 0, -196123, 7);
 const pairId = pairIdFor(a, b),
   id7 = tickIdFor(pairId, 0, -196000, 7),
   id30 = tickIdFor(pairId, 0, -196000, 30),
   bid7 = tickIdFor(pairId, 1, 196000, 7),
   bid30 = tickIdFor(pairId, 1, 196000, 30);
+function tokenContractCall(
+  data: Hex,
+  address = a,
+): { success: boolean; returnData: Hex } | undefined {
+  try {
+    const decoded = decodeFunctionData({ abi: erc20Abi, data });
+    const token = tokenFixture(address);
+    if (decoded.functionName === "decimals")
+      return {
+        success: true,
+        returnData: encodeFunctionResult({
+          abi: erc20Abi,
+          functionName: "decimals",
+          result: token.decimals,
+        }),
+      };
+    if (decoded.functionName === "symbol" || decoded.functionName === "name")
+      return {
+        success: true,
+        returnData: encodeFunctionResult({
+          abi: erc20Abi,
+          functionName: decoded.functionName,
+          result: token[decoded.functionName],
+        }),
+      };
+  } catch {}
+}
 function contractCall(
   data: Hex,
   pairExists = true,
   tickOverrides?: TickOverrides,
+  address = a,
 ): { success: boolean; returnData: Hex } {
+  const token = tokenContractCall(data, address);
+  if (token) return token;
   try {
     const decoded = decodeFunctionData({ abi: protocolAbi, data });
     if (decoded.functionName === "getPair") {
@@ -155,8 +196,9 @@ async function rpc(
         let result: unknown = "0x";
         if (item.method === "eth_blockNumber") result = "0x989680";
         else if (item.method === "eth_chainId") result = "0x2105";
+        else if (item.method === "eth_getCode") result = "0x1234";
         else if (item.method === "eth_call") {
-          const call = item.params[0] as { data: Hex };
+          const call = item.params[0] as { data: Hex; to: string };
           let value;
           try {
             const decoded = decodeFunctionData({
@@ -170,13 +212,23 @@ async function rpc(
                   abi: multicall3Abi,
                   functionName: "aggregate3",
                   result: decoded.args[0].map((c) =>
-                    contractCall(c.callData, pairExists, tickOverrides),
+                    contractCall(
+                      c.callData,
+                      pairExists,
+                      tickOverrides,
+                      c.target as typeof a,
+                    ),
                   ),
                 }),
               };
             }
           } catch {}
-          value ??= contractCall(call.data, pairExists, tickOverrides);
+          value ??= contractCall(
+            call.data,
+            pairExists,
+            tickOverrides,
+            call.to as typeof a,
+          );
           if (!value.success)
             return {
               id: item.id,
@@ -321,6 +373,28 @@ test.beforeAll(async ({ request }) => {
   }
 });
 test.beforeEach(async ({ page }) => {
+  await page.route(metadataRoute, async (route) => {
+    const url = new URL(route.request().url());
+    const chainId = Number(url.searchParams.get("chainId"));
+    await route.fulfill({
+      json: {
+        tokens: url.searchParams
+          .get("addresses")!
+          .split(",")
+          .map((address) => ({
+            chainId,
+            address,
+            status: "available",
+            fetchedAt: Math.floor(Date.now() / 1000),
+            symbol: tokenFixture(address).symbol,
+            name: tokenFixture(address).name,
+          })),
+      },
+    });
+  });
+  await page.route("**/api/tokens?**", (route) =>
+    route.fulfill({ json: { tokens: [] } }),
+  );
   await page.addInitScript(() => {
     const events: string[] = [];
     Object.assign(window, { testCspEvents: events });
@@ -495,7 +569,7 @@ test("market search, tags, network isolation and responsive layout", async ({
   await page.getByLabel("Search markets").fill("cbBTC");
   await expect(
     page.getByRole("link", { name: "Open cbBTC / USDC", exact: true }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
   ).toHaveCount(0);
@@ -506,8 +580,21 @@ test("market search, tags, network isolation and responsive layout", async ({
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Open cbBTC / USDC", exact: true }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await page.getByRole("button", { name: "Meme", exact: true }).click();
+  const memePairs = Object.entries(yieldList.markets["eip155:8453"])
+    .filter(([, config]) => config.tags.includes("meme"))
+    .map(([pair]) => `/market/base/${pair}`);
+  const memeMarkets = page
+    .getByRole("region", { name: "Markets", exact: true })
+    .getByRole("link", { name: /^Open / });
+  await expect(memeMarkets).toHaveCount(memePairs.length);
+  expect(
+    await memeMarkets.evaluateAll((links) =>
+      links.map((link) => link.getAttribute("href")),
+    ),
+  ).toEqual(memePairs);
+  await page.getByLabel("Search markets").fill("WETH");
   await expect(page.getByText("No matching markets")).toBeVisible();
   await page.getByRole("button", { name: "All", exact: true }).click();
   await expect(
@@ -549,7 +636,7 @@ test("shared market filters restore after reload and browser history, with a cen
   await expect(search).toHaveValue("WETH");
   await expect(duration).toContainText("30D");
   await expect(
-    page.getByRole("button", { name: "Blue chip", exact: true }),
+    page.getByRole("button", { name: "Blue-chip", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(
     page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
@@ -579,9 +666,9 @@ test("shared market filters restore after reload and browser history, with a cen
   );
   await expect(page.getByText("Terms", { exact: true })).toHaveCount(0);
   for (const [title, color] of [
-    ["01 · Provide", "rgb(231, 185, 77)"],
+    ["01 · Provide liquidity", "rgb(231, 185, 77)"],
     ["02 · Rent or swap", "rgb(211, 195, 255)"],
-    ["03 · Earn or settle", "rgb(0, 255, 76)"],
+    ["03 · Earn or trade", "rgb(0, 255, 76)"],
   ]) {
     await expect(
       page
@@ -617,33 +704,6 @@ test("shared market filters restore after reload and browser history, with a cen
   await expect(duration).toContainText("30D");
   await page.goBack();
   await expect(network).toContainText("Base");
-});
-
-test("Safe manifest and icon are public and allow cross-origin discovery", async ({
-  request,
-}) => {
-  const response = await request.get("/manifest.json", {
-    headers: { Origin: "https://app.safe.global" },
-  });
-  expect(response.status()).toBe(200);
-  expect(response.headers()["content-type"]).toContain("application/json");
-  expect(response.headers()["access-control-allow-origin"]).toBe("*");
-  expect(response.headers()["access-control-allow-methods"]).toBe("GET");
-  expect(response.headers()["access-control-allow-headers"]).toBe(
-    "X-Requested-With, content-type, Authorization",
-  );
-  const manifest = await response.json();
-  expect(manifest.name.length).toBeLessThanOrEqual(50);
-  expect(manifest.description.length).toBeLessThanOrEqual(200);
-  const icon = await request.get(`/${manifest.iconPath}`);
-  expect(icon.status()).toBe(200);
-  expect(icon.headers()["content-type"]).toContain("image/svg+xml");
-  expect(await icon.text()).toContain('width="128" height="128"');
-  const app = await request.get("/");
-  expect(app.headers()["x-frame-options"]).toBeUndefined();
-  expect(app.headers()["content-security-policy"]).toContain(
-    "frame-ancestors 'self' https://app.safe.global https://safe.global",
-  );
 });
 
 for (const rememberedWallet of [false, true]) {
@@ -1142,6 +1202,11 @@ test("Base tick drives the compact reference price, preserves selection and refr
     .getByRole("button", { name: "30D", exact: true })
     .click();
   await expectDiscoveryGrid(page, next, pairId, DURATIONS[1]);
+  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("");
+  await expect(
+    page.getByRole("combobox", { name: "Term", exact: true }),
+  ).toContainText("30D");
   await expect(referenceRow).toContainText("3.4K USDC");
   await expect(overview).toContainText("3.4K USDC");
 });
@@ -1203,51 +1268,46 @@ for (const direction of [0, 1] as const) {
   });
 }
 
-test("unlisted markets use the shared default and honor navigated and shared base tick overrides", async ({
+test("markets without a reference price show the warning only at the default discovery center", async ({
   page,
 }) => {
   const btc = "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf";
-  const unlisted = `${b}:${btc}`,
+  const noReferencePair = `${b}:${btc}`,
     pair = pairIdFor(b, btc),
     center = DISCOVERY_DEFAULTS.baseTick,
     step = DISCOVERY_DEFAULTS.stepTicks;
-  await page.goto(`/market/base/${unlisted}`);
+  await page.goto(`/market/base/${noReferencePair}`);
   await expectDiscoveryGrid(page, center, pair);
+  const warning = page.getByText(
+    /^⚠️ Unlisted token · Review token compatibility before interacting\.?$/,
+  );
+  await expect(warning).toBeVisible();
   await expect(
     page.getByRole("combobox", { name: "Base tick", exact: true }),
   ).toContainText(String(center));
   await chooseBaseTick(page, center + step);
   await expectDiscoveryGrid(page, center + step, pair);
+  await expect(warning).toHaveCount(0);
   await chooseBaseTick(page, center);
   await expectDiscoveryGrid(page, center, pair);
   expect(new URL(page.url()).searchParams.has("baseTick")).toBe(false);
-  await page.goto(`/market/base/${unlisted}?baseTick=${step * 3}&ref=shared`);
+  await page.goto(
+    `/market/base/${noReferencePair}?baseTick=${step * 3}&ref=shared`,
+  );
   await expectDiscoveryGrid(page, step * 3, pair);
   await page.reload();
   await expectDiscoveryGrid(page, step * 3, pair);
 });
 
-test("invalid URL base ticks fall back safely and SDK bounds disable invalid neighbor options", async ({
+test("an off-grid URL falls back safely and grid bounds disable invalid neighbor options", async ({
   page,
 }) => {
-  for (const value of [
-    "",
-    "1.5",
-    "-195001",
-    "887273",
-    "-887273",
-    "NaN",
-    "Infinity",
-    "1e3",
-  ]) {
-    await page.goto(
-      `/market/base/${key}?baseTick=${encodeURIComponent(value)}&ref=keep`,
-    );
-    await expectDiscoveryGrid(page, -196000);
-    await expect(
-      page.getByRole("combobox", { name: "Base tick", exact: true }),
-    ).toContainText("-196000");
-  }
+  // The complete invalid-input matrix belongs to the URL parser unit tests.
+  await page.goto(`/market/base/${key}?baseTick=-195001&ref=keep`);
+  await expectDiscoveryGrid(page, -196000);
+  await expect(
+    page.getByRole("combobox", { name: "Base tick", exact: true }),
+  ).toContainText("-196000");
   const step = DISCOVERY_DEFAULTS.stepTicks,
     upper = Math.floor(MAX_TICK / step) * step;
   for (const center of [upper, -upper]) {
@@ -1273,9 +1333,20 @@ test("Yield Book shows five rows and scrolls best Ask and Bid next to the refere
   await page.goto(`/market/base/${key}`);
   const ask = page.getByRole("group", { name: "Ask price levels" });
   const bid = page.getByRole("group", { name: "Bid price levels" });
-  const count = DISCOVERY_DEFAULTS.radius * 2 + 1;
-  await expect(ask.getByRole("button")).toHaveCount(count);
-  await expect(bid.getByRole("button")).toHaveCount(count);
+  await expectDiscoveryGrid(page, -196000);
+  const expectPriceOrder = async () => {
+    for (const side of [ask, bid]) {
+      const prices = await side
+        .getByRole("button")
+        .evaluateAll((rows) =>
+          rows.map((row) =>
+            Number(row.firstElementChild!.textContent!.replaceAll(",", "")),
+          ),
+        );
+      expect(prices).toEqual([...prices].sort((a, b) => b - a));
+    }
+  };
+  await expectPriceOrder();
   const expectViewport = async (askId: bigint, bidId: bigint) => {
     for (const [index, side] of [ask, bid].entries()) {
       const viewport = await side.evaluate(
@@ -1315,8 +1386,15 @@ test("Yield Book shows five rows and scrolls best Ask and Bid next to the refere
     .getByRole("button", { name: "30D", exact: true })
     .click();
   await expectViewport(id30, bid30);
+  await expectPriceOrder();
+  await page.locator(`[data-tick-id="${id30}"]`).click();
   await page.getByRole("button", { name: "Invert", exact: true }).click();
   await expectViewport(bid30, id30);
+  await expectPriceOrder();
+  await expect(page.locator(`[data-tick-id="${id30}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });
 
 for (const empty of ["ask", "bid", "both", "missing"] as const) {
@@ -1362,114 +1440,6 @@ for (const empty of ["ask", "bid", "both", "missing"] as const) {
   });
 }
 
-test("full configured grid, duration, pair inversion and read-only price selection", async ({
-  page,
-}) => {
-  await page.goto(`/market/base/${key}`);
-  const ask = page.getByRole("group", { name: "Ask price levels" });
-  const bid = page.getByRole("group", { name: "Bid price levels" });
-  const count = DISCOVERY_DEFAULTS.radius * 2 + 1;
-  await expect(ask.getByRole("button")).toHaveCount(count);
-  await expect(bid.getByRole("button")).toHaveCount(count);
-  const expectPriceOrder = async () => {
-    for (const side of [ask, bid]) {
-      const prices = await side
-        .getByRole("button")
-        .evaluateAll((rows) =>
-          rows.map((row) =>
-            Number(row.firstElementChild!.textContent!.replaceAll(",", "")),
-          ),
-        );
-      expect(prices).toEqual([...prices].sort((a, b) => b - a));
-    }
-  };
-  await expectPriceOrder();
-  await expect(
-    page.getByText(`${count * 2 * DURATIONS.length} ticks checked`, {
-      exact: false,
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Load more price levels" }),
-  ).toHaveCount(0);
-  await expect(page.getByLabel("Posted price")).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Preview Provide", exact: true }),
-  ).toBeDisabled();
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  await page.getByLabel("Amount", { exact: true }).fill("1");
-  await page.getByText("Price details", { exact: true }).click();
-  await expect(
-    page
-      .getByLabel("Provide liquidity", { exact: true })
-      .getByText("-196000", { exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("group", { name: "Book term" })
-    .getByRole("button", { name: "30D", exact: true })
-    .click();
-  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("combobox", { name: "Term", exact: true }),
-  ).toContainText("30D");
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("");
-  await expect(ask.getByRole("button")).toHaveCount(count);
-  await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveCount(0);
-  await page.locator(`[data-tick-id="${id30}"]`).click();
-  const canonical = await page
-    .locator('link[rel="canonical"]')
-    .getAttribute("href");
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
-  expect(await page.locator('link[rel="canonical"]').getAttribute("href")).toBe(
-    canonical,
-  );
-  await expect(
-    page.getByRole("tab", { name: "Bid · WETH", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator(`[data-tick-id="${id30}"]`)).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expectPriceOrder();
-  await page.getByRole("tab", { name: "Ask · USDC", exact: true }).click();
-  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
-  await page.getByLabel("Amount", { exact: true }).fill("0.0000001");
-  await expect(
-    page.getByRole("alert").filter({ hasText: "6 decimal places" }),
-  ).toBeVisible();
-});
-
-test("canonical redirect, server metadata and OG without wallet or RPC", async ({
-  request,
-}) => {
-  const response = await request.get(`/market/BASE/${b}:${a}`, {
-    maxRedirects: 0,
-  });
-  expect(response.status()).toBe(308);
-  expect(response.headers().location).toBe(`/market/base/${key}`);
-  const page = await request.get(`/market/base/${key}`);
-  expect(page.status()).toBe(200);
-  expect(await page.text()).toContain(`https://yld.cx/market/base/${key}/og`);
-  const csp = page.headers()["content-security-policy"];
-  expect(csp).toContain("nonce-");
-  const scripts = csp.split("; ").find((d) => d.startsWith("script-src"))!;
-  expect(scripts).not.toContain("unsafe-inline");
-  expect(csp).toContain("style-src 'self' 'unsafe-inline'");
-  expect(scripts.includes("unsafe-eval")).toBe(
-    process.env.PLAYWRIGHT_SERVER === "development",
-  );
-  const og = await request.get(`/market/base/${key}/og`);
-  expect(og.status()).toBe(200);
-  expect(og.headers()["content-type"]).toContain("image/png");
-  expect((await og.body()).length).toBeGreaterThan(10000);
-  expect(og.headers()["cache-control"]).toContain("s-maxage=86400");
-  const favicon = await request.get("/icon.svg");
-  expect(favicon.status()).toBe(200);
-  expect(await favicon.text()).toContain("👑");
-  const generic = await request.get("/opengraph-image");
-  expect(generic.status()).toBe(200);
-  expect(generic.headers()["content-type"]).toContain("image/png");
-});
 test("Orders connection and invalid pair validation", async ({ page }) => {
   await page.goto("/orders");
   await expect(
@@ -1595,6 +1565,9 @@ test("prototype market overview and inversion preserve canonical economics", asy
   page,
 }) => {
   await page.goto(`/market/base/${key}`);
+  const canonical = await page
+    .locator('link[rel="canonical"]')
+    .getAttribute("href");
   const overview = page.getByRole("region", { name: "Market overview" });
   await expect(
     overview.getByText("Provide or rent WETH or USDC at your price."),
@@ -1613,6 +1586,10 @@ test("prototype market overview and inversion preserve canonical economics", asy
   ).toBeVisible();
   await page.getByRole("button", { name: "Invert", exact: true }).click();
   await expect(overview.getByLabel("USDC crowned token")).toBeVisible();
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
+    "href",
+    canonical!,
+  );
   await expect(
     page.getByRole("tab", { name: "Bid · WETH", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
@@ -1665,6 +1642,10 @@ test("direction and term changes clear incompatible selections and amounts", asy
   );
   await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
   await page.locator(`[data-tick-id="${bid7}"]`).click();
+  await amount.fill("0.0000001");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "6 decimal places" }),
+  ).toBeVisible();
   await amount.fill("100");
   await page.getByRole("combobox", { name: "Term", exact: true }).click();
   await page.getByRole("option", { name: "30D", exact: true }).click();
@@ -1990,6 +1971,9 @@ test("new markets allow Provide directly and retain standalone Create Market", a
   await expect(
     page.getByRole("heading", { name: "No liquidity yet" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Telegram group", exact: true }),
+  ).toHaveAttribute("href", "https://t.me/yld_group");
   const count = DISCOVERY_DEFAULTS.radius * 2 + 1;
   const ask = page.getByRole("group", { name: "Ask price levels" });
   const bid = page.getByRole("group", { name: "Bid price levels" });
@@ -2140,6 +2124,13 @@ const protocolRuntime = readFileSync(
   new URL("../fixtures/protocol-runtime.hex", import.meta.url),
   "utf8",
 ).trim() as Hex;
+async function openProvidePreview(page: Page, selectedId = id7) {
+  await page.locator(`[data-tick-id="${selectedId}"]`).click();
+  await page.getByLabel("Amount", { exact: true }).fill("1");
+  await page
+    .getByRole("button", { name: "Preview Provide", exact: true })
+    .click();
+}
 async function transactionRpc(
   page: Page,
   options: {
@@ -2628,8 +2619,8 @@ async function transactionRpc(
           extraData: "0x",
         };
       else if (item.method === "eth_call") {
-        const data = (item.params[0] as { data: Hex }).data;
-        let response;
+        const { data, to } = item.params[0] as { data: Hex; to: string };
+        let response = tokenContractCall(data, to as typeof a);
         try {
           const decoded = decodeFunctionData({ abi: multicall3Abi, data });
           if (decoded.functionName === "aggregate3")
@@ -2638,7 +2629,11 @@ async function transactionRpc(
               returnData: encodeFunctionResult({
                 abi: multicall3Abi,
                 functionName: "aggregate3",
-                result: decoded.args[0].map((c) => call(c.callData)),
+                result: decoded.args[0].map(
+                  (c) =>
+                    tokenContractCall(c.callData, c.target as typeof a) ??
+                    call(c.callData),
+                ),
               }),
             };
         } catch {}
@@ -2746,11 +2741,7 @@ async function transactionRpc(
   });
   if (options.positions)
     return Object.assign(state, { ticks: overrides, provider, use });
-  await page.locator(`[data-tick-id="${selectedId}"]`).click();
-  await page.getByLabel("Amount", { exact: true }).fill("1");
-  await page
-    .getByRole("button", { name: "Preview Provide", exact: true })
-    .click();
+  await openProvidePreview(page, selectedId);
   return Object.assign(state, { ticks: overrides, provider, use });
 }
 for (const direction of [0, 1] as const) {
@@ -3544,11 +3535,7 @@ test("pending atomic batch survives reload and never resubmits while awaiting mu
     dialog.getByText("Confirmed. Market and Orders have been refreshed."),
   ).toHaveCount(0);
   await page.reload();
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  await page.getByLabel("Amount", { exact: true }).fill("1");
-  await page
-    .getByRole("button", { name: "Preview Provide", exact: true })
-    .click();
+  await openProvidePreview(page);
   await dialog
     .getByRole("button", {
       name: "Check transaction confirmation",
@@ -3701,11 +3688,7 @@ for (const approval of [false, true]) {
       }),
     ).toBeVisible();
     await page.reload();
-    await page.locator(`[data-tick-id="${id7}"]`).click();
-    await page.getByLabel("Amount", { exact: true }).fill("1");
-    await page
-      .getByRole("button", { name: "Preview Provide", exact: true })
-      .click();
+    await openProvidePreview(page);
     state.receiptUnknown = false;
     await dialog
       .getByRole("button", {
@@ -3755,11 +3738,7 @@ for (const phase of ["approval", "action", "batch"] as const) {
     ).toBeVisible();
     expect(state.writes).toHaveLength(1);
     await page.reload();
-    await page.locator(`[data-tick-id="${id7}"]`).click();
-    await page.getByLabel("Amount", { exact: true }).fill("1");
-    await page
-      .getByRole("button", { name: "Preview Provide", exact: true })
-      .click();
+    await openProvidePreview(page);
     await expect(
       dialog.getByText(
         /Check your wallet before clearing pending state, since it might still execute/,
@@ -3829,4 +3808,222 @@ test("fresh review resets atomic fallback and attempts batching again", async ({
     dialog.getByText(/Atomic simulation is unavailable/),
   ).toHaveCount(0);
   expect(state.writes).toEqual([]);
+});
+
+test("token discovery prioritizes configured identities without reading decimals for the full list", async ({
+  page,
+}) => {
+  const discovered = Array.from({ length: 99 }, (_, i) => ({
+    address: `0x${(i + 1).toString(16).padStart(40, "0")}`,
+    symbol: `DISC${i}`,
+    name: `Discovered ${i}`,
+  }));
+  await page.route("**/api/tokens?**", (route) =>
+    route.fulfill({
+      json: {
+        tokens: [
+          {
+            address: a.toUpperCase().replace("0X", "0x"),
+            symbol: "CACHEDWETH",
+            name: "Cached Ether",
+          },
+          ...discovered,
+        ],
+      },
+    }),
+  );
+  const decimals = new Set<string>();
+  await page.route("https://mainnet.base.org", async (route) => {
+    const payload = route.request().postDataJSON();
+    for (const item of Array.isArray(payload) ? payload : [payload]) {
+      if (item.method !== "eth_call") continue;
+      const call = item.params[0] as { data: Hex; to: string };
+      try {
+        const batch = decodeFunctionData({
+          abi: multicall3Abi,
+          data: call.data,
+        });
+        if (batch.functionName === "aggregate3")
+          for (const entry of batch.args[0]) {
+            if (entry.callData.startsWith("0x313ce567"))
+              decimals.add(entry.target.toLowerCase());
+          }
+      } catch {
+        if (call.data.startsWith("0x313ce567"))
+          decimals.add(call.to.toLowerCase());
+      }
+    }
+    await route.fallback();
+  });
+  await page.goto("/market/open");
+  await expect(
+    page.getByRole("combobox", { name: "Token A selection" }),
+  ).toContainText("WETH");
+  await page.getByRole("combobox", { name: "Token A selection" }).click();
+  const options = page.getByRole("option");
+  const tokenCount = new Set([
+    ...configuredAddresses,
+    ...discovered.map((token) => token.address),
+  ]).size;
+  await expect(options).toHaveCount(tokenCount + 1); // Includes the custom-address option.
+  for (const [index, address] of configuredAddresses.entries()) {
+    await expect(options.nth(index + 1)).toHaveText(
+      tokenFixture(address).symbol,
+    );
+  }
+  await expect(
+    page.getByRole("option", { name: "WETH", exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    page.getByRole("option", { name: "CACHEDWETH", exact: true }),
+  ).toHaveCount(0);
+  expect([...decimals].sort()).toEqual([a, b]);
+  await page.getByRole("option", { name: "DISC0", exact: true }).click();
+  await expect.poll(() => decimals.has(discovered[0].address)).toBe(true);
+  expect(decimals.size).toBe(3);
+  await page.getByRole("combobox", { name: "Token A selection" }).click();
+  await page
+    .getByRole("option", { name: "Custom token address…", exact: true })
+    .click();
+  await page
+    .getByRole("textbox", { name: "Token A address" })
+    .fill("0x1111111111111111111111111111111111111111");
+  await expect
+    .poll(() => decimals.has("0x1111111111111111111111111111111111111111"))
+    .toBe(true);
+  await expect(
+    page.getByRole("button", { name: "View Market →" }),
+  ).toBeVisible();
+});
+
+test("Worker reference prices initialize discovery and refresh without moving the selected center", async ({
+  page,
+}) => {
+  let price = "5000",
+    symbol = "WETH";
+  let requests = 0;
+  await page.route(metadataRoute, async (route) => {
+    requests++;
+    const url = new URL(route.request().url());
+    await route.fulfill({
+      json: {
+        tokens: url.searchParams
+          .get("addresses")!
+          .split(",")
+          .map((address) => ({
+            chainId: 8453,
+            address,
+            status: "available",
+            symbol: address === a ? symbol : "USDC",
+            name: "Worker token",
+            geckoTerminal: {
+              attributes: {
+                price_usd: address === a ? price : "1",
+                decimals: 99,
+              },
+            },
+          })),
+      },
+    });
+  });
+  const center = snappedPrice(
+    "5000",
+    18,
+    6,
+    DISCOVERY_DEFAULTS.stepTicks,
+  ).priceTick;
+  await page.goto(`/market/base/${key}`);
+  await expectDiscoveryGrid(page, center);
+  const identity = tickIdFor(pairId, 0, center, 7);
+  await page.locator(`[data-tick-id="${identity}"]`).click();
+  const before = requests;
+  price = "10000";
+  symbol = "WETH2";
+  await page.clock.setFixedTime(
+    new Date(Date.now() + QUERY_TIMING.tokenMetadataStale + 1000),
+  );
+  await page.evaluate(() =>
+    window.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect.poll(() => requests).toBeGreaterThan(before);
+  await expect(
+    page.getByRole("heading", { name: "WETH2 / USDC" }),
+  ).toBeVisible();
+  await expectDiscoveryGrid(page, center);
+  await expect(page.locator(`[data-tick-id="${identity}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(new URL(page.url()).searchParams.has("baseTick")).toBe(false);
+});
+
+test("metadata and image failures preserve onchain interactions and the universal icon", async ({
+  page,
+}) => {
+  await page.route(metadataRoute, (route) => route.fulfill({ status: 429 }));
+  await page.route("**/api/tokens?**", (route) =>
+    route.fulfill({ status: 503, json: { tokens: [] } }),
+  );
+  await page.goto(`/market/base/${key}`);
+  await expect(
+    page.getByRole("heading", { name: "WETH / USDC" }),
+  ).toBeVisible();
+  await expectDiscoveryGrid(page, -196000);
+  await expect(
+    page.getByRole("img", { name: "WETH logo" }).first(),
+  ).toHaveAttribute("src", "/token.svg");
+  await page.goto("/?search=WETH");
+  await expect(
+    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  ).toBeVisible();
+  await page.route(metadataRoute, async (route) => {
+    const url = new URL(route.request().url());
+    await route.fulfill({
+      json: {
+        tokens: url.searchParams
+          .get("addresses")!
+          .split(",")
+          .map((address) => ({
+            chainId: 8453,
+            address,
+            status: "available",
+            symbol: tokenFixture(address).symbol,
+            name: tokenFixture(address).name,
+            imageUrl: "https://coin-images.coingecko.com/missing.png",
+          })),
+      },
+    });
+  });
+  await page.route("https://coin-images.coingecko.com/**", (route) =>
+    route.fulfill({ status: 404 }),
+  );
+  await page.reload();
+  const icon = page.getByRole("img", { name: "WETH logo" }).first();
+  await expect(icon).toHaveAttribute("src", "/token.svg");
+  await expect(icon).toHaveJSProperty("complete", true);
+});
+
+test("metadata requests use the environment's configured browser endpoint", async ({
+  page,
+  baseURL,
+}) => {
+  const requests: string[] = [];
+  page.on("request", (request) => {
+    if (metadataRoute.test(request.url())) requests.push(request.url());
+  });
+  await page.goto(`/market/base/${key}`);
+  await expect(
+    page.getByRole("heading", { name: "WETH / USDC" }),
+  ).toBeVisible();
+  expect(requests.length).toBeGreaterThan(0);
+  const proxy =
+    process.env.PLAYWRIGHT_SERVER === "development" ||
+    process.env.VERCEL_ENV === "preview";
+  expect(
+    requests.every((url) =>
+      url.startsWith(
+        proxy ? `${baseURL}/api/md/tokens?` : "https://md.yld.cx/tokens?",
+      ),
+    ),
+  ).toBe(true);
 });

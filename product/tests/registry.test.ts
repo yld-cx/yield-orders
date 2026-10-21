@@ -16,10 +16,12 @@ const network = "eip155:8453",
 describe("YieldList", () => {
   it("validates registry entries and defaults", () => {
     const registry = new Registry(list);
-    expect(registry.getMarkets(network)).toHaveLength(1);
+    expect(registry.getMarkets(network)).toHaveLength(
+      Object.keys(list.markets[network]).length,
+    );
     expect(marketMetadataSchema.parse({})).toEqual({
       defaultDuration: 7,
-      baseTick: 0,
+      tags: [],
       stepTicks: 1000,
     });
   });
@@ -60,20 +62,27 @@ describe("YieldList", () => {
     expect(normalizeAddress(n, second.toLowerCase())).not.toBe(second);
   });
   it("indexes token identity, reverse market lookup, tags, pair and address searches", () => {
-    const r = new Registry(list);
-    expect(r.getToken(network, a)?.decimals).toBe(18);
+    const fixture = {
+      version: 1,
+      markets: {
+        [network]: { [`${a}:${b}`]: list.markets[network][`${a}:${b}`] },
+      },
+    };
+    const r = new Registry(fixture);
+    expect(r.getToken(network, a)).toEqual({ network, address: a });
+    expect(r.getTokens(network)).toHaveLength(2);
+    expect(r.data).not.toHaveProperty("tokens");
     expect(r.getMarket(network, b, a)?.key).toBe(`${a}:${b}`);
     expect(r.getMarketsByToken(network, b)).toHaveLength(1);
     expect(r.getMarketsByTag(network, "blue-chip")).toHaveLength(1);
     expect(r.getMarketsByTag(network, "stable")).toHaveLength(1);
     expect(r.getMarketsByTag("eip155:1", "stable")).toHaveLength(0);
-    const sharedTags = structuredClone(list);
-    sharedTags.tokens[network][b].tags.push("blue-chip");
-    expect(
-      new Registry(sharedTags).getMarketsByTag(network, "blue-chip"),
-    ).toHaveLength(1);
-    expect(r.searchMarkets(network, "wrapped ether")).toHaveLength(1);
-    expect(r.searchMarkets(network, "USDC / WETH")).toHaveLength(1);
+    const metadata = [
+      { address: a, symbol: "WETH", name: "Wrapped Ether" },
+      { address: b, symbol: "USDC", name: "USD Coin" },
+    ];
+    expect(r.searchMarkets(network, "wrapped ether", metadata)).toHaveLength(1);
+    expect(r.searchMarkets(network, "USDC / WETH", metadata)).toHaveLength(1);
     expect(r.searchMarkets(network, "0x4200")).toHaveLength(1);
     expect(r.getMarkets("eip155:4663")).toHaveLength(0);
   });
@@ -99,7 +108,7 @@ describe("YieldList", () => {
       }).defaultDuration,
     ).toBe(30);
   });
-  it("rejects noncanonical pairs, unlisted references, unsafe logos and metadata", () => {
+  it("validates pairs independently and rejects static token metadata", () => {
     const clone = () => structuredClone(list);
     const reversed = {
       ...clone(),
@@ -108,14 +117,21 @@ describe("YieldList", () => {
       },
     };
     expect(yieldListSchema.safeParse(reversed).success).toBe(false);
-    const missing = clone();
-    delete (missing.tokens[network] as Record<string, unknown>)[a];
-    expect(yieldListSchema.safeParse(missing).success).toBe(false);
-    const unsafe = clone();
-    unsafe.tokens[network][a].logoURI = "https://evil.example/logo.svg";
-    expect(yieldListSchema.safeParse(unsafe).success).toBe(false);
-    const traversal = clone();
-    traversal.tokens[network][a].logoURI = "/tokens/../secret.svg";
-    expect(yieldListSchema.safeParse(traversal).success).toBe(false);
+    const arbitrary = "0x1111111111111111111111111111111111111111";
+    expect(
+      yieldListSchema.safeParse({
+        version: 1,
+        markets: { [network]: { [`${arbitrary}:${b}`]: {} } },
+      }).success,
+    ).toBe(true);
+    expect(yieldListSchema.safeParse({ ...clone(), tokens: {} }).success).toBe(
+      false,
+    );
+    expect(
+      marketMetadataSchema.safeParse({ tags: ["stable", "stable"] }).success,
+    ).toBe(false);
+    expect(marketMetadataSchema.safeParse({ tags: ["verified"] }).success).toBe(
+      false,
+    );
   });
 });

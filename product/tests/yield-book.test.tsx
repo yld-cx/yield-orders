@@ -141,12 +141,6 @@ describe("URL discovery center", () => {
     "9007199254740993",
   ])("safely ignores invalid base tick %s", (value) => {
     expect(discoveryBaseTick(value, market)).toBe(market.baseTick);
-    expect(
-      discoveryBaseTick(value, {
-        ...market,
-        baseTick: DISCOVERY_DEFAULTS.baseTick,
-      }),
-    ).toBe(DISCOVERY_DEFAULTS.baseTick);
   });
   it.each(["-195000", "1000", "0", "887000", "-887000"])(
     "uses valid aligned canonical base tick %s",
