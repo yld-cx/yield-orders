@@ -1,4 +1,5 @@
 "use client";
+import { queryKeys } from "@/lib/query-keys";
 import { useQueries, useQuery, type QueryClient } from "@tanstack/react-query";
 import { QUERY_TIMING } from "@yld-cx/sdk";
 import { getNetwork, type NetworkSlug } from "@yld-cx/sdk/ethereum";
@@ -13,7 +14,7 @@ import {
 
 export function tokenMetadataOptions(network: NetworkSlug, address: string) {
   const id = getNetwork(network).id;
-  const queryKey = ["token-metadata", id, address.toLowerCase()];
+  const queryKey = queryKeys.tokenMetadata(network, address);
   return {
     queryKey,
     queryFn: async ({ client }: { client: QueryClient }) => {
@@ -60,7 +61,7 @@ export function useDiscoveryTokens(network: NetworkSlug) {
     configured.map((t) => t.address),
   );
   const query = useQuery({
-    queryKey: ["token-discovery", id],
+    queryKey: queryKeys.tokenDiscovery(network),
     queryFn: async (): Promise<TokenMetadata[]> => {
       const response = await fetch(
         `/api/tokens?chainId=${getNetwork(network).chain.id}`,

@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { PublicClient } from "viem";
 import { EthereumClient, snappedPrice } from "@yld-cx/sdk/ethereum";
 import { DISCOVERY_DEFAULTS, type Token } from "@yld-cx/sdk";
+import { queryKeys } from "@/lib/query-keys";
 import { useMarket, useToken } from "@/hooks/use-market";
 import { calculatedBaseTick, discoveryBaseTick } from "@/lib/market-values";
 import { fallbackToken, type TokenMetadata } from "@/lib/token-metadata";
@@ -27,8 +28,11 @@ function setup(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  client.setQueryData(["token", "base", address], token(address, decimals));
-  client.setQueryData(["token-metadata", "eip155:8453", address], {
+  client.setQueryData(
+    queryKeys.token("base", address),
+    token(address, decimals),
+  );
+  client.setQueryData(queryKeys.tokenMetadata("base", address), {
     ...fallbackToken("eip155:8453", address),
     status,
     symbol: "WORKER",
@@ -109,7 +113,7 @@ describe("authoritative ERC-20 metadata", () => {
   );
   it("never provides a financial Token before onchain decimals are known", () => {
     const client = setup(arbitrary);
-    client.removeQueries({ queryKey: ["token", "base", arbitrary] });
+    client.removeQueries({ queryKey: queryKeys.token("base", arbitrary) });
     expect(
       renderHook(client, () => useToken("base", arbitrary)).data,
     ).toBeUndefined();
@@ -159,8 +163,8 @@ describe("canonical reference price discovery", () => {
   });
   it("uses URL > Worker prices > configured tick > default tick", () => {
     const client = setup(a, 18, "available", "5000");
-    client.setQueryData(["token", "base", b], token(b, 6));
-    client.setQueryData(["token-metadata", "eip155:8453", b], {
+    client.setQueryData(queryKeys.token("base", b), token(b, 6));
+    client.setQueryData(queryKeys.tokenMetadata("base", b), {
       ...fallbackToken("eip155:8453", b),
       status: "available",
       priceUsd: "1",
@@ -174,16 +178,16 @@ describe("canonical reference price discovery", () => {
       result.market!.baseTick,
     );
     client.setQueryData(
-      ["token-metadata", "eip155:8453", b],
+      queryKeys.tokenMetadata("base", b),
       fallbackToken("eip155:8453", b),
     );
     expect(
       renderHook(client, () => useMarket("base", `${a}:${b}`)).market!.baseTick,
     ).toBe(-196000);
     const custom = setup(arbitrary, 8, "unknown");
-    custom.setQueryData(["token", "base", b], token(b, 6));
+    custom.setQueryData(queryKeys.token("base", b), token(b, 6));
     custom.setQueryData(
-      ["token-metadata", "eip155:8453", b],
+      queryKeys.tokenMetadata("base", b),
       fallbackToken("eip155:8453", b),
     );
     expect(

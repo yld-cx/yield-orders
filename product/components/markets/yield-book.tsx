@@ -159,7 +159,7 @@ export function YieldBook({
           <div>
             <h2>Yield Book</h2>
             <p className="text-xs text-muted-foreground">
-              Choose a price level · current market depth
+              Choose your price to provide or use liquidity.
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">

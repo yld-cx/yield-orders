@@ -379,6 +379,8 @@ export class EthereumClient {
       baseTick?: number;
       stepTicks?: number;
       radius?: number;
+      /** Omit to discover both supported durations (Yield Book). */
+      duration?: Duration;
     } = {},
   ): Promise<DiscoveryResult> {
     const radius = config.radius ?? DISCOVERY_DEFAULTS.radius;
@@ -387,6 +389,9 @@ export class EthereumClient {
       config.baseTick,
       config.stepTicks,
       radius,
+    ).filter(
+      (tick) =>
+        config.duration === undefined || tick.durationDays === config.duration,
     );
     const blockNumber = await this.publicClient.getBlockNumber();
     const reads: DiscoveryRead[] = [];
@@ -481,12 +486,22 @@ export class EthereumClient {
         blockNumber,
       }),
     ]);
+    // Share tick reads within this block-pinned page; viem batches the RPC calls.
+    const ticks = new Map<bigint, ReturnType<EthereumClient["getTick"]>>();
+    const readTick = (id: bigint) => {
+      let tick = ticks.get(id);
+      if (!tick) {
+        tick = this.getTick(id, blockNumber);
+        ticks.set(id, tick);
+      }
+      return tick;
+    };
     const [providers, uses] = await Promise.all([
       Promise.all(
         earnIds.slice(0, limit).map(async (tickId) => {
           const [position, tick] = await Promise.all([
             this.getEarnPosition(owner, tickId, blockNumber),
-            this.getTick(tickId, blockNumber),
+            readTick(tickId),
           ]);
           return { tickId, position, tick };
         }),
@@ -497,7 +512,7 @@ export class EthereumClient {
           return {
             positionId,
             position,
-            tick: await this.getTick(position.tickId, blockNumber),
+            tick: await readTick(position.tickId),
           };
         }),
       ),

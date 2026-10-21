@@ -1,5 +1,6 @@
 "use client";
 import { useId, type ReactNode } from "react";
+import { LoaderCircle } from "lucide-react";
 import { DURATIONS, type Duration } from "@yld-cx/sdk";
 import { Field, FieldLabel } from "@yld-cx/ui/components/ui/field";
 import {
@@ -126,9 +127,11 @@ export function Metric({
 export function Message({
   children,
   error = false,
+  busy = false,
 }: {
   children: ReactNode;
   error?: boolean;
+  busy?: boolean;
 }) {
   return (
     <Alert
@@ -136,6 +139,12 @@ export function Message({
       variant={error ? "destructive" : "default"}
       role={error ? "alert" : "status"}
     >
+      {busy && (
+        <LoaderCircle
+          aria-hidden="true"
+          className="size-4 animate-spin motion-reduce:animate-none"
+        />
+      )}
       <AlertDescription>{children}</AlertDescription>
     </Alert>
   );

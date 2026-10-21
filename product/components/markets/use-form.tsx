@@ -1,4 +1,5 @@
 "use client";
+import { queryKeys } from "@/lib/query-keys";
 import {
   TRANSACTION_DEFAULTS,
   BASIS_POINTS,
@@ -14,7 +15,7 @@ import { getNetwork, tokenAmount, explainError } from "@yld-cx/sdk/ethereum";
 import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
-import type { BookTick } from "@/hooks/use-yield-book";
+import type { BookLevel } from "@/hooks/use-yield-book";
 import {
   AmountInput,
   Message,
@@ -41,19 +42,19 @@ import {
 } from "@yld-cx/ui/components/ui/empty";
 export function UseForm({
   market,
-  tick,
+  tick: level,
   display,
-  hasLiquidity,
   isPending,
   isIncomplete,
 }: {
   market: Market;
-  tick?: BookTick;
+  tick?: BookLevel;
   display: readonly [Token, Token];
-  hasLiquidity: boolean;
   isPending: boolean;
   isIncomplete: boolean;
 }) {
+  const tick = level?.status === "exists" ? level : undefined;
+  const hasLiquidity = (tick?.state.availableSupply ?? 0n) > 0n;
   const [mode, setMode] = useState<"use" | "swap">("use"),
     [amount, setAmount] = useState(""),
     [tolerance, setTolerance] = useState(
@@ -80,9 +81,9 @@ export function UseForm({
     error = explainError(e);
   }
   const query = useQuery({
-    queryKey: ["quote", network, tick?.id.toString(), raw.toString()],
+    queryKey: queryKeys.quote(network, market.key, tick?.id, raw),
     queryFn: () => getSdk(network).quoteUse(tick!.id, raw),
-    enabled: !!tick && raw > 0n && !error,
+    enabled: hasLiquidity && raw > 0n && !error,
     refetchInterval: QUERY_TIMING.liveRefresh,
   });
   return (
@@ -92,7 +93,7 @@ export function UseForm({
           <div>
             <h2>Rent or swap</h2>
             <p className="text-xs text-muted-foreground">
-              Use liquidity at the posted price.
+              Use liquidity at the provided price.
             </p>
           </div>
           <Badge
@@ -115,7 +116,7 @@ export function UseForm({
             </TabsTrigger>
           </TabsList>
           <TabsContent value={mode}>
-            {!tick ? (
+            {!tick || !hasLiquidity ? (
               <Empty>
                 <EmptyHeader>
                   <EmptyTitle role="heading" aria-level={3}>
@@ -123,7 +124,7 @@ export function UseForm({
                       ? "Liquidity unavailable"
                       : isPending
                         ? "Reading market…"
-                        : hasLiquidity
+                        : !level
                           ? "Choose your price"
                           : "No liquidity yet"}
                   </EmptyTitle>
@@ -131,9 +132,9 @@ export function UseForm({
                     {isIncomplete ? (
                       "Could not read liquidity. Retry the market reads."
                     ) : isPending ? (
-                      "Checking price levels…"
-                    ) : hasLiquidity ? (
-                      "Choose a price level · current market depth"
+                      "Checking price ticks…"
+                    ) : !level ? (
+                      "Select a Yield Book price to rent or swap tokens."
                     ) : (
                       <>
                         Be the first to provide tokens at your price or request
@@ -158,7 +159,7 @@ export function UseForm({
                   value={amount}
                   onChange={setAmount}
                 />
-                <Metric label="Price level">
+                <Metric label="Price">
                   {priceText(tickPrice(tick, display))} {display[1].symbol} /{" "}
                   {display[0].symbol}
                 </Metric>
@@ -269,14 +270,12 @@ export function UseForm({
                 />
                 {mode === "use" ? (
                   <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    Repay {asset.symbol} + elapsed Yield to unlock{" "}
-                    {quote.symbol}. At maturity, locked {quote.symbol} settles
-                    instead.
+                    Repay {asset.symbol} + Yield to unlock {quote.symbol}, or it
+                    will be swapped at term end.
                   </p>
                 ) : (
                   <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    Swap is immediate and final. No Asset Yield is paid on a
-                    Swap.
+                    Swaps are instant and final.
                   </p>
                 )}
               </>

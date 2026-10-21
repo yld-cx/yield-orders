@@ -355,7 +355,28 @@ describe("direct reads and write safety", () => {
     expect(result.radius).toBe(DISCOVERY_DEFAULTS.radius);
     expect(result.reads).toHaveLength(tickCandidates(42n).length);
   });
-  it("pins all portfolio reads and retains a zero-raw supplier position", async () => {
+  it.each([7, 30] as const)(
+    "discovers only the selected %sD duration",
+    async (duration) => {
+      const multicall = vi.fn(
+        async ({ contracts }: { contracts: { args: readonly [bigint] }[] }) =>
+          contracts.map(() => ({ status: "success", result: state })),
+      );
+      const sdk = client({ getBlockNumber: async () => 12n, multicall });
+      const expected = tickCandidates(42n).filter(
+        (tick) => tick.durationDays === duration,
+      );
+      const result = await sdk.discover(42n, { duration });
+      expect(result.reads.map((read) => read.identity)).toEqual(expected);
+      expect(
+        multicall.mock.calls.flatMap(([call]) =>
+          call.contracts.map((contract) => contract.args[0]),
+        ),
+      ).toEqual(expected.map((tick) => tick.id));
+      expect(expected).toHaveLength(tickCandidates(42n).length / 2);
+    },
+  );
+  it("pins portfolio reads, shares repeated ticks and retains a zero-raw supplier position", async () => {
     const blocks: bigint[] = [];
     const readContract = vi.fn(
       async ({
@@ -367,7 +388,8 @@ describe("direct reads and write safety", () => {
       }) => {
         blocks.push(blockNumber);
         if (functionName === "getEarnPositions") return [42n];
-        if (functionName === "getUsePositions") return [];
+        if (functionName === "getUsePositions") return [1n, 2n];
+        if (functionName === "getPosition") return { tickId: 42n };
         if (functionName === "getEarnPosition")
           return { activePrincipal: 0n, activePrincipalX36: 1n };
         return state;
@@ -379,6 +401,12 @@ describe("direct reads and write safety", () => {
     }).portfolio(owner);
     expect(page.providers).toHaveLength(1);
     expect(page.providers[0].position.activePrincipal).toBe(0n);
+    expect(page.uses).toHaveLength(2);
+    expect(
+      readContract.mock.calls.filter(
+        ([call]) => call.functionName === "getTick",
+      ),
+    ).toHaveLength(1);
     expect(blocks.every((b) => b === 99n)).toBe(true);
     expect(page.hasMore).toBe(false);
   });

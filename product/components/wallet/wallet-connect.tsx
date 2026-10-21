@@ -228,7 +228,9 @@ export function WalletConnect() {
                   />
                 ))}
               </div>
-              {connect.isPending && <Message>Waiting for your wallet…</Message>}
+              {connect.isPending && (
+                <Message busy>Waiting for your wallet…</Message>
+              )}
               {uri && (
                 <div className="space-y-3 text-center">
                   <Qr uri={uri} />

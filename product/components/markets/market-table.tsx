@@ -17,7 +17,6 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { Address } from "viem";
 import {
   ArrowRight,
   Search,
@@ -38,6 +37,7 @@ import { useTokenMetadata } from "@/hooks/use-token-metadata";
 import { fallbackToken } from "@/lib/token-metadata";
 import { registry, marketPath } from "@/lib/registry";
 import { getSdk } from "@/lib/rpc";
+import { queryKeys } from "@/lib/query-keys";
 import { amountText } from "@/lib/utils";
 import { useMarketFilters } from "@/hooks/use-market-filters";
 import { MARKET_TAGS } from "@/lib/market-filters";
@@ -79,39 +79,37 @@ function MarketRow({
   );
   const router = useRouter();
   const query = useQuery({
-    queryKey: [
-      "ticks",
+    queryKey: queryKeys.ticks(
       network,
       config.key,
-      "summary",
       market?.baseTick,
       config.stepTicks,
-    ],
-    enabled: !!market,
+      duration,
+    ),
+    enabled: !!market && !!result.pair.data,
     queryFn: async () => {
       if (!market) throw new Error("Token metadata unavailable");
-      const pair = await sdk.getPair(
-        market.token0.address as Address,
-        market.token1.address as Address,
-      );
-      if (!pair[3]) return { exists: false, ticks: [], failed: 0, checked: 0 };
-      const result = await sdk.discover(pair[0], {
+      const pair = result.pair.data!;
+      if (!pair[3])
+        return { reads: [], complete: true, radius: 0, blockNumber: 0n };
+      return sdk.discover(pair[0], {
         baseTick: market.baseTick,
         stepTicks: market.stepTicks,
+        duration,
       });
-      return {
-        exists: true,
-        ticks: result.reads.flatMap((r) =>
-          r.status === "exists" ? [r.tick] : [],
-        ),
-        failed: result.reads.filter((r) => r.status === "failed").length,
-        checked: result.reads.length,
-      };
     },
+    select: (result) => ({
+      ticks: result.reads.flatMap((r) =>
+        r.status === "exists" ? [r.tick] : [],
+      ),
+      failed: result.reads.filter((r) => r.status === "failed").length,
+      checked: result.reads.length,
+    }),
     refetchInterval: QUERY_TIMING.marketRefresh,
   });
   const ticks =
     query.data?.ticks.filter((t) => t.durationDays === duration) ?? [];
+  const pending = query.isPending && !result.error;
   function summary(asset: string) {
     const side = ticks.filter(
       (t) => t.state.asset.toLowerCase() === asset.toLowerCase(),
@@ -152,7 +150,7 @@ function MarketRow({
         <Fragment key={i}>
           <TableCell className="p-4 text-right first:text-left">
             <div className={i === 0 ? "text-ask" : "text-bid"}>
-              {query.isPending && !result.error ? (
+              {pending ? (
                 <Skeleton
                   className="ml-auto h-5 w-20 motion-reduce:animate-none"
                   aria-label="Loading liquidity…"
@@ -165,8 +163,8 @@ function MarketRow({
                 `${amountText(s.available, tokens[i].address === market?.token0.address ? market.token0.decimals : market!.token1.decimals)} ${tokens[i].symbol}`
               )}
             </div>
-            <small className={query.isPending ? "invisible" : undefined}>
-              {query.isPending || (query.isSuccess && !query.data.failed)
+            <small className={pending ? "invisible" : undefined}>
+              {pending || (query.isSuccess && !query.data.failed)
                 ? "Available"
                 : "Refresh to retry"}
             </small>
@@ -174,7 +172,7 @@ function MarketRow({
           <TableCell className="p-4 text-right first:text-left">
             <YieldReference
               duration={duration}
-              pending={query.isPending}
+              pending={pending}
               ticks={query.data?.failed || query.isError ? [] : s.side}
             />
           </TableCell>

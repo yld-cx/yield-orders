@@ -1,4 +1,5 @@
 "use client";
+import { queryKeys } from "@/lib/query-keys";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { getSdk } from "@/lib/rpc";
 import { registry } from "@/lib/registry";
@@ -16,7 +17,7 @@ import { fallbackToken, type TokenMetadata } from "@/lib/token-metadata";
 import { calculatedBaseTick } from "@/lib/market-values";
 function onchainTokenOptions(network: NetworkSlug, address: string) {
   return {
-    queryKey: ["token", network, address.toLowerCase()],
+    queryKey: queryKeys.token(network, address),
     queryFn: () => getSdk(network).tokenMetadata(address as Address),
     staleTime: QUERY_TIMING.tokenMetadataStale,
   };
@@ -83,6 +84,7 @@ export function useTokens(network: NetworkSlug, addresses: readonly string[]) {
 }
 
 export function useMarket(network: NetworkSlug, key: string) {
+  key = queryKeys.pair(network, key)[2];
   const [a, b] = key.split(":");
   const token0 = useToken(network, a),
     token1 = useToken(network, b);
@@ -109,7 +111,7 @@ export function useMarket(network: NetworkSlug, key: string) {
         }
       : undefined;
   const pair = useQuery({
-    queryKey: ["pair", network, key],
+    queryKey: queryKeys.pair(network, key),
     queryFn: () => getSdk(network).getPair(a as Address, b as Address),
     refetchInterval: QUERY_TIMING.marketRefresh,
   });
@@ -124,7 +126,7 @@ export function useMarket(network: NetworkSlug, key: string) {
 }
 export function useDeployment(network: NetworkSlug) {
   return useQuery({
-    queryKey: ["deployment", network],
+    queryKey: queryKeys.deployment(network),
     queryFn: async () => {
       await getSdk(network).verifyDeployment();
       return true;

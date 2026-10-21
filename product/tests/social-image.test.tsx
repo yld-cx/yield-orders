@@ -54,7 +54,9 @@ describe("market social previews and SEO", () => {
     const metadata = await generateMetadata({
       params: Promise.resolve(params),
     });
-    expect(metadata.title).toBe("WETH / USDC · Base Liquidity Rental Market");
+    expect(metadata.title).toBe(
+      "WETH / USDC · Liquidity Rental Market on Base",
+    );
     const response = await GET(new Request("https://yld.cx"), {
       params: Promise.resolve(params),
     });

@@ -1,4 +1,5 @@
 "use client";
+import { queryKeys } from "@/lib/query-keys";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   DISCOVERY_DEFAULTS,
@@ -34,15 +35,7 @@ export function useYieldBook(
 ) {
   const network = getNetwork(market.network).slug;
   const discovery = useQuery({
-    queryKey: [
-      "ticks",
-      network,
-      market.key,
-      "book",
-      baseTick,
-      market.stepTicks,
-      DISCOVERY_DEFAULTS.radius,
-    ],
+    queryKey: queryKeys.ticks(network, market.key, baseTick, market.stepTicks),
     queryFn: () =>
       getSdk(network).discover(pairId, {
         baseTick,

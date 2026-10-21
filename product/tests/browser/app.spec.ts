@@ -504,6 +504,33 @@ test("market lookup reserves space while loading", async ({ page }) => {
 test("market summary cells keep their positions when reads finish", async ({
   page,
 }) => {
+  const pairs: string[] = [],
+    ticks: bigint[] = [];
+  page.on("request", (request) => {
+    if (
+      request.url() !== "https://mainnet.base.org/" &&
+      request.url() !== "https://mainnet.base.org"
+    )
+      return;
+    const payload = request.postDataJSON();
+    for (const item of Array.isArray(payload) ? payload : [payload]) {
+      if (item.method !== "eth_call") continue;
+      const data = item.params[0].data as Hex;
+      let calls = [data];
+      try {
+        const decoded = decodeFunctionData({ abi: multicall3Abi, data });
+        if (decoded.functionName === "aggregate3")
+          calls = decoded.args[0].map((call) => call.callData);
+      } catch {}
+      for (const data of calls) {
+        try {
+          const call = decodeFunctionData({ abi: protocolAbi, data });
+          if (call.functionName === "getPair") pairs.push(call.args.join(":"));
+          if (call.functionName === "getTick") ticks.push(call.args[0]);
+        } catch {}
+      }
+    }
+  });
   let release!: () => void;
   const ready = new Promise<void>((resolve) => (release = resolve));
   await page.route("https://mainnet.base.org", async (route) => {
@@ -527,6 +554,36 @@ test("market summary cells keep their positions when reads finish", async ({
       nodes.map((node) => node.getBoundingClientRect().toJSON()),
     ),
   ).toEqual(before);
+  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
+  const configured = Object.entries(yieldList.markets["eip155:8453"]);
+  expect(pairs).toHaveLength(configured.length);
+  expect(new Set(pairs).size).toBe(configured.length);
+  const expected = (duration: 7 | 30) =>
+    configured
+      .flatMap(([key, config]) => {
+        const [tokenA, tokenB] = key.split(":") as [typeof a, typeof b];
+        return tickCandidates(
+          pairIdFor(tokenA, tokenB),
+          "baseTick" in config ? config.baseTick : 0,
+          config.stepTicks,
+        )
+          .filter((tick) => tick.durationDays === duration)
+          .map((tick) => tick.id);
+      })
+      .sort();
+  expect([...ticks].sort()).toEqual(expected(7));
+  ticks.length = 0;
+  await page
+    .getByRole("combobox", { name: "Market duration", exact: true })
+    .click();
+  await page.getByRole("option", { name: "30D", exact: true }).click();
+  await expect(
+    page.getByRole("combobox", { name: "Market duration", exact: true }),
+  ).toContainText("30D");
+  await expect.poll(() => ticks.length).toBe(expected(30).length);
+  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
+  expect([...ticks].sort()).toEqual(expected(30));
+  expect(pairs).toHaveLength(configured.length);
 });
 
 test("market search, tags, network isolation and responsive layout", async ({
@@ -1525,7 +1582,7 @@ test("Base UI keyboard navigation, tab panels and dialog focus restoration", asy
   await expect(
     page
       .getByLabel("Provide liquidity", { exact: true })
-      .getByText("Selected price", { exact: true }),
+      .getByText("Price", { exact: true }),
   ).toBeVisible();
   await page.getByRole("tab", { name: "Swap now", exact: true }).click();
   await expect(
@@ -1969,11 +2026,8 @@ test("new markets allow Provide directly and retain standalone Create Market", a
     page.getByRole("heading", { name: "Provide liquidity" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "No liquidity yet" }),
+    page.getByRole("heading", { name: "Choose your price" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Telegram group", exact: true }),
-  ).toHaveAttribute("href", "https://t.me/yld_group");
   const count = DISCOVERY_DEFAULTS.radius * 2 + 1;
   const ask = page.getByRole("group", { name: "Ask price levels" });
   const bid = page.getByRole("group", { name: "Bid price levels" });
@@ -1990,6 +2044,12 @@ test("new markets allow Provide directly and retain standalone Create Market", a
   const empty = ask.getByRole("button").last();
   await empty.click();
   await expect(empty).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByRole("heading", { name: "No liquidity yet" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Telegram group", exact: true }),
+  ).toHaveAttribute("href", "https://t.me/yld_group");
   await expect(
     page.getByLabel("Provide liquidity", { exact: true }),
   ).not.toContainText("Not selected");
@@ -2734,6 +2794,10 @@ async function transactionRpc(
     .getByRole("button", { name: "Connect wallet", exact: true })
     .click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "0x0000…0001", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   await page.evaluate(() => {
     (
       window as unknown as { testWallet: { chain: (chain: string) => void } }
@@ -2763,7 +2827,7 @@ for (const direction of [0, 1] as const) {
         .getByRole("button", { name: "Confirm Provide", exact: true })
         .click();
       await expect(
-        dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+        dialog.getByText("Confirmed ✅", { exact: true }),
       ).toBeVisible();
       expect(state.writes).toEqual([
         [
@@ -2810,9 +2874,7 @@ test("approval rejection and zero-first approval recover inside the same preview
   await dialog
     .getByRole("button", { name: "Confirm Provide", exact: true })
     .click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([
     ["approve"],
     ["approve"],
@@ -2858,9 +2920,7 @@ test("concurrent initialization refreshes the same preview and requires confirma
   );
   expect(state.writes).toHaveLength(0);
   await confirm.click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["supply"]]);
 });
 test("final simulation failure keeps the reviewed preview and retries only after confirmation", async ({
@@ -2880,9 +2940,7 @@ test("final simulation failure keeps the reviewed preview and retries only after
   expect(state.writes).toHaveLength(0);
   state.fail = false;
   await confirm.click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["supply"]]);
 });
 for (const change of ["account", "network"]) {
@@ -2998,7 +3056,7 @@ test("all withdrawal percentages use fresh principal and submit zero minimum imm
       .getByRole("button", { name: "Confirm Withdraw", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+      dialog.getByText("Confirmed ✅", { exact: true }),
     ).toBeVisible();
     expect(state.withdrawals.at(-1)?.slice(0, 3)).toEqual([
       id7,
@@ -3076,9 +3134,7 @@ test("claim-only and Resolving positions remain accessible and empty Collect is 
   state.settlement = true;
   await dialog.getByRole("button", { name: "Retry Collect" }).click();
   await dialog.getByRole("button", { name: "Confirm Collect" }).click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["collect"]]);
   state.settlement = false;
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
@@ -3088,9 +3144,7 @@ test("claim-only and Resolving positions remain accessible and empty Collect is 
   await page.reload();
   await card.getByRole("button", { name: "Preview Collect" }).click();
   await dialog.getByRole("button", { name: "Confirm Collect" }).click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["collect"], ["collect"]]);
 });
 
@@ -3120,9 +3174,7 @@ test("Use shows accrued Yield without balance or approval, then keeps approval a
   ).toBeVisible();
   expect(state.writes).toEqual([["approve"]]);
   await dialog.getByRole("button", { name: "Confirm Repay" }).click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["approve"], ["repay"]]);
 });
 
@@ -3153,9 +3205,7 @@ test("Use retains its estimate with insufficient Asset and changes to Close at m
   );
   await card.getByRole("button", { name: "Preview Close" }).click();
   await dialog.getByRole("button", { name: "Confirm Close" }).click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["close"]]);
 });
 
@@ -3246,6 +3296,16 @@ test("reopening clears stale previews, approval state and errors before refreshi
   await expect(
     dialog.getByText("Reading and simulating current state…", { exact: true }),
   ).toBeVisible();
+  const spinner = dialog
+    .getByRole("status")
+    .filter({
+      hasText: "Reading and simulating current state…",
+    })
+    .locator("svg");
+  await expect(spinner).toHaveCSS("animation-name", "spin");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(spinner).toHaveCSS("animation-name", "none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   await expect(
     dialog.getByRole("button", { name: "Approve WETH", exact: true }),
@@ -3260,6 +3320,7 @@ test("reopening clears stale previews, approval state and errors before refreshi
   await expect(
     dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
   ).toBeVisible();
+  await expect(spinner).toHaveCount(0);
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   expect(state.writes).toEqual([]);
 });
@@ -3318,7 +3379,7 @@ for (const submitted of ["approval", "transaction"] as const) {
     await expect(
       submitted === "approval"
         ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
-        : dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+        : dialog.getByText("Confirmed ✅", { exact: true }),
     ).toBeVisible();
     expect(state.writes).toEqual(writes);
   });
@@ -3434,7 +3495,7 @@ for (const atomic of ["supported", "safe"] as const) {
       .getByRole("button", { name: "Approve & Provide", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+      dialog.getByText("Confirmed ✅", { exact: true }),
     ).toBeVisible();
     expect(state.batches).toHaveLength(1);
     expect(state.batches[0].atomicRequired).toBe(true);
@@ -3466,7 +3527,7 @@ for (const atomic of ["missing", "unsupported"] as const) {
       .getByRole("button", { name: "Confirm Provide", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+      dialog.getByText("Confirmed ✅", { exact: true }),
     ).toBeVisible();
     expect(state.writes).toEqual([["approve"], ["supply"]]);
     expect(state.batches).toEqual([]);
@@ -3506,9 +3567,7 @@ test("Rent advances from confirmed approval to Confirm Rent despite delayed allo
   await dialog
     .getByRole("button", { name: "Confirm Rent", exact: true })
     .click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["approve"], ["use"]]);
 });
 test("pending atomic batch survives reload and never resubmits while awaiting multisig execution", async ({
@@ -3531,9 +3590,9 @@ test("pending atomic batch survives reload and never resubmits while awaiting mu
       exact: true,
     }),
   ).toBeVisible();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toHaveCount(0);
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
+    0,
+  );
   await page.reload();
   await openProvidePreview(page);
   await dialog
@@ -3542,14 +3601,14 @@ test("pending atomic batch survives reload and never resubmits while awaiting mu
       exact: true,
     })
     .click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toHaveCount(0);
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
+    0,
+  );
   expect(state.batches).toHaveLength(1);
   state.batchPending = false;
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible({ timeout: 10000 });
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible({
+    timeout: 10000,
+  });
   expect(state.batches).toHaveLength(1);
 });
 test("batch rejection permits a deliberate retry and reverted batch requires a new preview", async ({
@@ -3575,9 +3634,9 @@ test("batch rejection permits a deliberate retry and reverted batch requires a n
   await expect(
     dialog.getByRole("button", { name: "Retry Provide", exact: true }),
   ).toBeVisible();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toHaveCount(0);
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
+    0,
+  );
   expect(state.batches).toHaveLength(1);
 });
 test("atomic zero-first approval resets then approves exactly once in the wallet batch", async ({
@@ -3594,9 +3653,7 @@ test("atomic zero-first approval resets then approves exactly once in the wallet
   await dialog
     .getByRole("button", { name: "Approve & Provide", exact: true })
     .click();
-  await expect(
-    dialog.getByText("Confirmed. Market and Orders have been refreshed."),
-  ).toBeVisible();
+  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["approve", "approve", "supply"]]);
   const amounts = state.batches[0].calls
     .slice(0, -1)
@@ -3631,7 +3688,7 @@ for (const failure of ["simulationUnsupported", "sendUnsupported"] as const) {
       .getByRole("button", { name: "Confirm Provide", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+      dialog.getByText("Confirmed ✅", { exact: true }),
     ).toBeVisible();
     expect(state.writes).toEqual([["approve"], ["supply"]]);
     expect(state.batches).toEqual([]);
@@ -3657,7 +3714,7 @@ for (const atomic of [undefined, "supported"] as const) {
       button.click();
     });
     await expect(
-      dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+      dialog.getByText("Confirmed ✅", { exact: true }),
     ).toBeVisible();
     expect(state.writes).toHaveLength(1);
   });
@@ -3701,7 +3758,7 @@ for (const approval of [false, true]) {
     await expect(
       approval
         ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
-        : dialog.getByText("Confirmed. Market and Orders have been refreshed."),
+        : dialog.getByText("Confirmed ✅", { exact: true }),
     ).toBeVisible();
     expect(state.writes).toEqual([[approval ? "approve" : "supply"]]);
   });

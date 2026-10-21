@@ -280,8 +280,7 @@ function MarketContent({
           key={`use/${selected?.id ?? "empty"}`}
           market={market}
           display={display}
-          tick={selected?.status === "exists" ? selected : undefined}
-          hasLiquidity={ticks.some((t) => t.state.availableSupply > 0n)}
+          tick={selected}
           isPending={book.discovery.isPending}
           isIncomplete={incomplete}
         />

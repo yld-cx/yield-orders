@@ -1,4 +1,5 @@
 "use client";
+import { queryKeys } from "@/lib/query-keys";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { useState } from "react";
@@ -39,7 +40,7 @@ function OpenMarketForm({
     validation = explainError(e);
   }
   const query = useQuery({
-    queryKey: ["pair", network, key],
+    queryKey: queryKeys.pair(network, key),
     queryFn: () => getSdk(network).getPair(a as Address, b as Address),
     enabled: !!key,
   });

@@ -15,6 +15,7 @@ import {
 } from "@yld-cx/sdk/ethereum";
 import { useYieldBook, type BookLevel } from "@/hooks/use-yield-book";
 import { SupplyForm } from "@/components/markets/supply-form";
+import { UseForm } from "@/components/markets/use-form";
 import { YieldBook } from "@/components/markets/yield-book";
 import { discoveryBaseTick } from "@/lib/market-values";
 
@@ -239,6 +240,66 @@ describe("configured Yield Book", () => {
   );
 });
 
+describe("selected price Rent or Swap", () => {
+  function renderUse(
+    level?: BookLevel,
+    isPending = false,
+    isIncomplete = false,
+  ) {
+    mocks.query.mockReturnValue({ isError: false });
+    return renderToStaticMarkup(
+      <UseForm
+        market={market}
+        display={[market.token0, market.token1]}
+        tick={level}
+        isPending={isPending}
+        isIncomplete={isIncomplete}
+      />,
+    );
+  }
+  it.each([0n, 1n])(
+    "uses the selected tick's available supply (%s)",
+    (availableSupply) => {
+      const html = renderUse({
+        ...identity,
+        asset: a,
+        priceX128: state.priceX128,
+        status: "exists",
+        state: { ...state, availableSupply },
+      });
+      if (availableSupply > 0n) {
+        expect(html).toContain("You receive");
+        expect(mocks.flow.mock.calls[0][0].label).toBe("Preview Rent");
+      } else {
+        expect(html).toContain("No liquidity yet");
+        expect(html).toContain("https://t.me/yld_group");
+        expect(mocks.flow).not.toHaveBeenCalled();
+      }
+    },
+  );
+  it("distinguishes no selection, a missing level, loading and failed reads", () => {
+    expect(renderUse()).toContain(
+      "Select a Yield Book price to rent or swap tokens.",
+    );
+    const missing: BookLevel = {
+      ...identity,
+      asset: a,
+      priceX128: state.priceX128,
+      status: "missing",
+    };
+    expect(renderUse(missing)).toContain("No liquidity yet");
+    expect(renderUse(undefined, true)).toContain("Reading market…");
+    const failed = renderUse(
+      { ...missing, status: "failed", error: "RPC timeout" },
+      false,
+      true,
+    );
+    expect(failed).toContain("Liquidity unavailable");
+    expect(failed).not.toContain("No liquidity yet");
+    expect(mocks.flow).not.toHaveBeenCalled();
+  });
+});
+
 describe("selected price Supply", () => {
   it.each([0, 1] as const)(
     "previews Provide for missing direction %s with its exact initialization identity",
@@ -250,7 +311,7 @@ describe("selected price Supply", () => {
           level.durationDays === Duration.Monthly,
       )!;
       const html = supply(level);
-      expect(html).toContain("Selected price");
+      expect(html).toContain(">Price</dt>");
       expect(html).not.toContain("Posted price");
       expect(mocks.flow).toHaveBeenCalledTimes(1);
       const props = mocks.flow.mock.calls[0][0];
