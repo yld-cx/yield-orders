@@ -21,6 +21,151 @@ const params = (addresses = A) =>
 const fail: typeof fetch = async () => {
   throw new Error("Upstream unavailable");
 };
+const providerFailures: Record<string, typeof fetch> = {
+  "network error": fail,
+  timeout: async () => {
+    throw new DOMException("Request timed out", "TimeoutError");
+  },
+  "HTTP error": async () => new Response("rate limit", { status: 429 }),
+  "invalid JSON": async () => new Response("not JSON"),
+  "invalid response": fetchJson({ bad: true }),
+};
+
+test("successful GeckoTerminal responses never call CoinGecko, including partial and empty results", async (t) => {
+  for (const addresses of [[A, B], [A], []]) {
+    await t.test(`${addresses.length} tokens returned`, async () => {
+      const env = { ...environment(), COINGECKO_API_KEY: "test-demo-key" };
+      let calls = 0;
+      const fetcher: typeof fetch = async (input, init) => {
+        calls++;
+        assert.equal(
+          String(input),
+          `https://api.geckoterminal.com/api/v2/networks/base/tokens/multi/${A},${B}`,
+        );
+        assert.equal(
+          new Headers(init?.headers).has("x-cg-demo-api-key"),
+          false,
+        );
+        return fetchJson(gecko(addresses))(input, init);
+      };
+      const result = await getTokens(params(`${A},${B}`), env, fetcher, 100);
+      assert.equal(calls, 1);
+      assert.equal(result.upstream, "ok");
+      assert.deepEqual(
+        result.tokens.map((token) => token.status),
+        [A, B].map((a) => (addresses.includes(a) ? "available" : "unknown")),
+      );
+    });
+  }
+});
+
+test("GeckoTerminal failures fall back to authenticated CoinGecko and cache normalized results", async (t) => {
+  t.mock.method(console, "log", () => {});
+  for (const [name, failure] of Object.entries(providerFailures)) {
+    await t.test(name, async () => {
+      const env = { ...environment(), COINGECKO_API_KEY: "test-demo-key" };
+      const payload = gecko([A, B]);
+      const signals: (AbortSignal | null | undefined)[] = [];
+      const fetcher: typeof fetch = async (input, init) => {
+        signals.push(init?.signal);
+        const fallback = signals.length === 2;
+        assert.equal(
+          String(input),
+          fallback
+            ? `https://api.coingecko.com/api/v3/onchain/networks/base/tokens/multi/${A},${B}`
+            : `https://api.geckoterminal.com/api/v2/networks/base/tokens/multi/${A},${B}`,
+        );
+        assert.equal(
+          new Headers(init?.headers).get("accept"),
+          "application/json",
+        );
+        assert.equal(
+          new Headers(init?.headers).get("x-cg-demo-api-key"),
+          fallback ? env.COINGECKO_API_KEY : null,
+        );
+        assert.ok(init?.signal);
+        return (fallback ? fetchJson(payload) : failure)(input, init);
+      };
+      const result = await getTokens(params(`${A},${B}`), env, fetcher, 100);
+      assert.equal(signals.length, 2);
+      assert.notEqual(signals[0], signals[1]);
+      assert.equal(result.upstream, "ok");
+      assert.deepEqual(
+        result.tokens,
+        [...normalizeUpstream(payload, 8453, 100).values()].map((meta) => ({
+          id: `8453:${meta.address}`,
+          ...meta,
+          stale: false,
+        })),
+      );
+      const cached = await getTokens(params(`${A},${B}`), env, fetcher, 200);
+      assert.equal(cached.upstream, "cache");
+      assert.deepEqual(cached.tokens, result.tokens);
+      assert.equal(signals.length, 2);
+    });
+  }
+});
+
+test("both providers failing preserves stale snapshots and the existing failure cache", async (t) => {
+  const logs = t.mock.method(console, "log", () => {});
+  for (const [name, failure] of Object.entries(providerFailures)) {
+    await t.test(name, async () => {
+      const env = { ...environment(), COINGECKO_API_KEY: "test-demo-key" };
+      const original = await getTokens(params(), env, fetchJson(gecko()), 100);
+      let calls = 0;
+      const fetcher: typeof fetch = async (input, init) => {
+        calls++;
+        if (calls === 1) throw new Error(env.COINGECKO_API_KEY);
+        assert.equal(
+          String(input),
+          `https://api.coingecko.com/api/v3/onchain/networks/base/tokens/multi/${A},${B}`,
+        );
+        return failure(input, init);
+      };
+      const expiredAt = 100 + TOKEN_TTL;
+      const result = await getTokens(
+        params(`${A},${B}`),
+        env,
+        fetcher,
+        expiredAt,
+      );
+      assert.equal(calls, 2);
+      assert.equal(result.upstream, "unavailable");
+      assert.deepEqual(result.tokens[0], {
+        ...original.tokens[0],
+        stale: true,
+        retryAfter: expiredAt + 300,
+      });
+      assert.deepEqual(result.tokens[1], {
+        id: `8453:${B}`,
+        chainId: 8453,
+        address: B,
+        source: "geckoterminal",
+        status: "unavailable",
+        fetchedAt: expiredAt,
+        retryAfter: expiredAt + 300,
+        stale: false,
+      });
+      const cached = await getTokens(
+        params(`${A},${B}`),
+        env,
+        fetcher,
+        expiredAt + 1,
+      );
+      assert.equal(cached.upstream, "cache");
+      assert.deepEqual(cached.tokens, result.tokens);
+      assert.equal(calls, 2);
+      assert.equal(
+        JSON.stringify(result).includes(env.COINGECKO_API_KEY),
+        false,
+      );
+      assert.equal(
+        JSON.stringify(logs.mock.calls).includes(env.COINGECKO_API_KEY),
+        false,
+      );
+    });
+  }
+});
 
 test("addresses are validated, normalized and deduplicated, with request limits", () => {
   assert.deepEqual(

@@ -143,27 +143,43 @@ export async function getTokens(
     else if (!(await upstreamPermit(env, now))) upstream = "rate_limited";
     else {
       let found: Map<string, TokenMeta> | undefined;
-      try {
-        const response = await fetcher(
-          `https://api.geckoterminal.com/api/v2/networks/${network.gecko}/tokens/multi/${missing.join(",")}`,
-          {
-            headers: { accept: "application/json" },
-            signal: AbortSignal.timeout(5000),
-          },
-        );
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw new Error("GeckoTerminal HTTP failure");
+      for (const provider of ["geckoterminal", "coingecko"]) {
+        const fallback = provider === "coingecko";
+        if (fallback && !env.COINGECKO_API_KEY) break;
+        try {
+          const response = await fetcher(
+            fallback
+              ? `https://api.coingecko.com/api/v3/onchain/networks/${network.gecko}/tokens/multi/${missing.join(",")}`
+              : `https://api.geckoterminal.com/api/v2/networks/${network.gecko}/tokens/multi/${missing.join(",")}`,
+            {
+              headers: {
+                accept: "application/json",
+                ...(fallback
+                  ? { "x-cg-demo-api-key": env.COINGECKO_API_KEY! }
+                  : {}),
+              },
+              signal: AbortSignal.timeout(5000),
+            },
+          );
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error("Token metadata HTTP failure");
+          }
+          found = normalizeUpstream(
+            await response.json(),
+            network.chainId,
+            now,
+          );
+          upstream = "ok";
+          break;
+        } catch (error) {
+          upstream = "unavailable";
+          log({
+            type: "token_upstream_error",
+            chainId: network.chainId,
+            error: errorKind(error),
+          });
         }
-        found = normalizeUpstream(await response.json(), network.chainId, now);
-        upstream = "ok";
-      } catch (error) {
-        upstream = "unavailable";
-        log({
-          type: "token_upstream_error",
-          chainId: network.chainId,
-          error: errorKind(error),
-        });
       }
       const writes: D1PreparedStatement[] = [];
       for (const a of missing) {
