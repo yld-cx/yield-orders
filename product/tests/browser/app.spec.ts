@@ -393,7 +393,17 @@ test.beforeEach(async ({ page }) => {
     });
   });
   await page.route("**/api/tokens?**", (route) =>
-    route.fulfill({ json: { tokens: [] } }),
+    route.fulfill({
+      json: {
+        tokens:
+          new URL(route.request().url()).searchParams.get("chainId") === "8453"
+            ? configuredAddresses.map((address) => ({
+                address,
+                ...tokenFixture(address),
+              }))
+            : [],
+      },
+    }),
   );
   await page.addInitScript(() => {
     const events: string[] = [];
@@ -404,6 +414,227 @@ test.beforeEach(async ({ page }) => {
   });
   await rpc(page);
 });
+test("Trending reads only the ten visible USD* markets", async ({ page }) => {
+  const discovered = Array.from({ length: 23 }, (_, i) => {
+    const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
+    return { address, ...tokenFixture(address) };
+  });
+  await page.route("**/api/tokens?**", (route) =>
+    route.fulfill({
+      json: {
+        tokens:
+          new URL(route.request().url()).searchParams.get("chainId") === "8453"
+            ? [discovered[0], { address: b, ...tokenFixture(b) }, ...discovered]
+            : [],
+      },
+    }),
+  );
+  const pairs = new Set<string>();
+  const decimals = new Set<string>();
+  const metadataAddresses: string[] = [];
+  page.on("request", (request) => {
+    if (metadataRoute.test(request.url()))
+      metadataAddresses.push(
+        ...new URL(request.url()).searchParams.get("addresses")!.split(","),
+      );
+    if (!request.url().startsWith("https://mainnet.base.org")) return;
+    const payload = request.postDataJSON();
+    for (const item of Array.isArray(payload) ? payload : [payload]) {
+      if (item.method !== "eth_call") continue;
+      const call = item.params[0] as { data: Hex; to: string };
+      let calls = [{ callData: call.data, target: call.to }];
+      try {
+        const batch = decodeFunctionData({
+          abi: multicall3Abi,
+          data: call.data,
+        });
+        if (batch.functionName === "aggregate3") calls = [...batch.args[0]];
+      } catch {}
+      for (const entry of calls) {
+        if (entry.callData.startsWith("0x313ce567"))
+          decimals.add(entry.target.toLowerCase());
+        try {
+          const decoded = decodeFunctionData({
+            abi: protocolAbi,
+            data: entry.callData,
+          });
+          if (decoded.functionName === "getPair")
+            pairs.add(decoded.args.join(":").toLowerCase());
+        } catch {}
+      }
+    }
+  });
+  await page.goto("/?tag=trending&network=base&ref=keep#markets");
+  await expect(
+    page.getByRole("button", { name: "Trending", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const links = page.getByRole("table").getByRole("link", { name: /^Open / });
+  const pagination = page.getByRole("navigation", {
+    name: "Market pagination",
+  });
+  await expect(links).toHaveCount(10);
+  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
+  await expect(pagination).toContainText("1–10 of 23 markets");
+  await expect(
+    pagination.getByRole("button", { name: "Previous" }),
+  ).toBeDisabled();
+  expect(
+    await links.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("href")),
+    ),
+  ).toEqual(
+    discovered
+      .slice(0, 10)
+      .map(({ address }) => `/market/base/${address}:${b}`),
+  );
+  expect([...pairs]).toEqual(
+    discovered.slice(0, 10).map(({ address }) => `${address}:${b}`),
+  );
+  expect([...decimals].sort()).toEqual(
+    [...discovered.slice(0, 10).map(({ address }) => address), b].sort(),
+  );
+  expect([...metadataAddresses].sort()).toEqual(
+    [...discovered.map(({ address }) => address), b].sort(),
+  );
+
+  await pagination.getByRole("button", { name: "Next" }).click();
+  await expect(page).toHaveURL(/page=2/);
+  await expect(pagination).toContainText("11–20 of 23 markets");
+  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
+  expect(pairs.size).toBe(20);
+  expect(decimals.size).toBe(21);
+  expect(metadataAddresses).toHaveLength(discovered.length + 1);
+  await page.reload();
+  await expect(pagination).toContainText("Page 2 of 3");
+  await pagination.getByRole("button", { name: "Next" }).click();
+  await expect(pagination).toContainText("21–23 of 23 markets");
+  await expect(links).toHaveCount(3);
+  await expect(pagination.getByRole("button", { name: "Next" })).toBeDisabled();
+  await page.goBack();
+  await expect(pagination).toContainText("Page 2 of 3");
+
+  await page.getByLabel("Search markets").fill(discovered[22].symbol);
+  await expect(links).toHaveCount(1);
+  await expect(pagination).toContainText("Page 1 of 1");
+  expect(new URL(page.url()).searchParams.has("page")).toBe(false);
+  expect(new URL(page.url()).searchParams.get("ref")).toBe("keep");
+  expect(new URL(page.url()).hash).toBe("#markets");
+  await page.getByLabel("Search markets").clear();
+  await pagination.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("button", { name: "YieldList", exact: true }).click();
+  await expect(links).toHaveCount(6);
+  await expect(pagination).toContainText("Page 1 of 1");
+  expect(new URL(page.url()).searchParams.has("page")).toBe(false);
+
+  await page.getByRole("button", { name: "Trending", exact: true }).click();
+  await pagination.getByRole("button", { name: "Next" }).click();
+  await page
+    .getByRole("combobox", { name: "Market duration", exact: true })
+    .click();
+  await page.getByRole("option", { name: "30D", exact: true }).click();
+  await expect(pagination).toContainText("Page 1 of 3");
+  await pagination.getByRole("button", { name: "Next" }).click();
+  await page.getByRole("combobox", { name: "Network", exact: true }).click();
+  await page.getByRole("option", { name: "Robinhood", exact: true }).click();
+  await expect(
+    page.getByText("No matching markets", { exact: true }),
+  ).toBeVisible();
+  expect(new URL(page.url()).searchParams.has("page")).toBe(false);
+});
+
+for (const tag of ["all", "trending"]) {
+  test(`${tag} searches shared metadata by symbol, name, address and pair`, async ({
+    page,
+  }) => {
+    await page.route("**/api/tokens?**", (route) =>
+      route.fulfill({
+        json: {
+          tokens: [
+            { address: a, symbol: "DISCOVERY", name: "Discovery identity" },
+          ],
+        },
+      }),
+    );
+    await page.goto(`/?tag=${tag}&network=base&search=WETH%2FUSDC`);
+    const link = page.getByRole("link", {
+      name: "Open WETH / USDC",
+      exact: true,
+    });
+    await expect(link).toBeVisible();
+    for (const search of [
+      "weth",
+      "USDC | WETH",
+      "Wrapped Ether USD Coin",
+      a,
+      key,
+    ]) {
+      await page.getByLabel("Search markets").fill(search);
+      await expect(link).toBeVisible();
+    }
+    await expect(link).toHaveAttribute("href", `/market/base/${key}`);
+  });
+
+  test(`${tag} uses standard metadata fallback for search and onchain data in visible rows`, async ({
+    page,
+  }) => {
+    await page.route(metadataRoute, (route) => route.fulfill({ status: 503 }));
+    await page.route("**/api/tokens?**", (route) =>
+      route.fulfill({ json: { tokens: [{ address: a }] } }),
+    );
+    await page.goto(`/?tag=${tag}&network=base&search=${a}`);
+    const link = page.getByRole("link", {
+      name: "Open WETH / USDC",
+      exact: true,
+    });
+    await expect(link).toBeVisible();
+    for (const search of [
+      key,
+      `${a.slice(0, 6)}…${a.slice(-4)}/${b.slice(0, 6)}…${b.slice(-4)}`,
+    ]) {
+      await page.getByLabel("Search markets").fill(search);
+      await expect(link).toBeVisible();
+    }
+  });
+}
+
+test("Trending keeps the requested page while loading and offers retry on discovery failure", async ({
+  page,
+}) => {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => (release = resolve));
+  let unavailable = true;
+  await page.route("**/api/tokens?**", async (route) => {
+    await ready;
+    await route.fulfill(
+      unavailable
+        ? { status: 503, json: { tokens: [] } }
+        : { json: { tokens: [{ address: a, ...tokenFixture(a) }] } },
+    );
+  });
+  await page.goto("/?tag=trending&page=99&network=base");
+  await expect(
+    page.getByRole("status").filter({ hasText: "Loading trending markets…" }),
+  ).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("page")).toBe("99");
+  release();
+  await expect(
+    page.getByText("Trending markets unavailable", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("table")).toHaveCount(0);
+  expect(new URL(page.url()).searchParams.get("page")).toBe("99");
+  unavailable = false;
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("navigation", { name: "Market pagination" }),
+  ).toContainText("Page 1 of 1");
+  await expect
+    .poll(() => new URL(page.url()).searchParams.has("page"))
+    .toBe(false);
+});
+
 test("market keeps one spinner through initial reads and preserves content during refresh", async ({
   page,
 }) => {
@@ -506,6 +737,7 @@ test("market summary cells keep their positions when reads finish", async ({
 }) => {
   const pairs: string[] = [],
     ticks: bigint[] = [];
+  const requests: string[][] = [];
   page.on("request", (request) => {
     if (
       request.url() !== "https://mainnet.base.org/" &&
@@ -513,7 +745,9 @@ test("market summary cells keep their positions when reads finish", async ({
     )
       return;
     const payload = request.postDataJSON();
-    for (const item of Array.isArray(payload) ? payload : [payload]) {
+    const items = Array.isArray(payload) ? payload : [payload];
+    requests.push(items.map((item) => item.method));
+    for (const item of items) {
       if (item.method !== "eth_call") continue;
       const data = item.params[0].data as Hex;
       let calls = [data];
@@ -556,6 +790,7 @@ test("market summary cells keep their positions when reads finish", async ({
   ).toEqual(before);
   await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
   const configured = Object.entries(yieldList.markets["eip155:8453"]);
+  expect(requests.flat()).not.toContain("eth_getCode");
   expect(pairs).toHaveLength(configured.length);
   expect(new Set(pairs).size).toBe(configured.length);
   const expected = (duration: 7 | 30) =>
@@ -590,6 +825,9 @@ test("market search, tags, network isolation and responsive layout", async ({
   page,
 }, testInfo) => {
   await page.goto("/");
+  await expect(
+    page.getByRole("button", { name: "YieldList", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
   await expect(
     page.getByRole("heading", { name: "Yield Markets" }),
   ).toBeVisible();
@@ -653,7 +891,7 @@ test("market search, tags, network isolation and responsive layout", async ({
   ).toEqual(memePairs);
   await page.getByLabel("Search markets").fill("WETH");
   await expect(page.getByText("No matching markets")).toBeVisible();
-  await page.getByRole("button", { name: "All", exact: true }).click();
+  await page.getByRole("button", { name: "YieldList", exact: true }).click();
   await expect(
     page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
   ).toBeVisible();
@@ -718,10 +956,6 @@ test("shared market filters restore after reload and browser history, with a cen
         (descriptionBox!.x + descriptionBox!.width / 2),
     ),
   ).toBeLessThan(2);
-  await expect(page.getByText("Sides per market", { exact: true })).toHaveCount(
-    0,
-  );
-  await expect(page.getByText("Terms", { exact: true })).toHaveCount(0);
   for (const [title, color] of [
     ["01 · Provide liquidity", "rgb(231, 185, 77)"],
     ["02 · Rent or swap", "rgb(211, 195, 255)"],
@@ -1238,7 +1472,7 @@ test("Base tick drives the compact reference price, preserves selection and refr
     "true",
   );
   await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("2");
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expect(selector).toContainText(String(next));
   await expect(referenceRow).toContainText("0.000293981 WETH");
   await expect(overview).toContainText("0.000293981 WETH");
@@ -1247,7 +1481,7 @@ test("Base tick drives the compact reference price, preserves selection and refr
     "aria-pressed",
     "true",
   );
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await page
     .locator(".yield-book")
     .screenshot({ path: testInfo.outputPath("yield-book-base-tick.png") });
@@ -1445,7 +1679,7 @@ test("Yield Book shows five rows and scrolls best Ask and Bid next to the refere
   await expectViewport(id30, bid30);
   await expectPriceOrder();
   await page.locator(`[data-tick-id="${id30}"]`).click();
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expectViewport(bid30, id30);
   await expectPriceOrder();
   await expect(page.locator(`[data-tick-id="${id30}"]`)).toHaveAttribute(
@@ -1553,7 +1787,6 @@ test("empty edge levels select exact Ask and Bid identities, while off-grid acce
   await expect(
     supply.getByText(emptyBid.toString(), { exact: true }),
   ).toBeVisible();
-  await expect(page.getByLabel("Exact Tick ID")).toHaveCount(0);
   await expect(page.locator(`[data-tick-id="${directId}"]`)).toHaveCount(0);
 });
 
@@ -1618,7 +1851,7 @@ test("Base UI keyboard navigation, tab panels and dialog focus restoration", asy
   });
 });
 
-test("prototype market overview and inversion preserve canonical economics", async ({
+test("market overview and inversion preserve canonical economics", async ({
   page,
 }) => {
   await page.goto(`/market/base/${key}`);
@@ -1641,7 +1874,7 @@ test("prototype market overview and inversion preserve canonical economics", asy
       .getByLabel("Provide liquidity", { exact: true })
       .getByText("-196000", { exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expect(overview.getByLabel("USDC crowned token")).toBeVisible();
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
     "href",
@@ -1656,7 +1889,7 @@ test("prototype market overview and inversion preserve canonical economics", asy
       .getByLabel("Provide liquidity", { exact: true })
       .getByText("-196000", { exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expect(
     page.getByLabel("Provide liquidity", { exact: true }),
   ).toContainText(humanPrice(priceAtTick(-196000), 18, 6));
@@ -1668,7 +1901,7 @@ test("prototype market overview and inversion preserve canonical economics", asy
   await page.getByLabel("Amount", { exact: true }).fill("12.123456");
   await page.getByRole("tab", { name: "Swap now", exact: true }).click();
   await page.getByLabel("You receive").fill("20");
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expect(page.getByLabel("Amount", { exact: true })).toHaveValue(
     "12.123456",
   );
@@ -1799,7 +2032,7 @@ test("row utilization, gold borders and overview Yield follow the selected side 
   ).toBeVisible();
   await expect(overview.getByText("2.9935%", { exact: true })).toBeVisible();
   await bid.click();
-  await page.getByRole("button", { name: "Invert", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expect(
     overview.getByText("Ask Yield · 7D", { exact: true }),
   ).toBeVisible();
@@ -1870,43 +2103,31 @@ test("selected missing levels become available for Supply after discovery refres
   await expect(row).toHaveAttribute("aria-pressed", "true");
   await expect(row).toContainText("25 WETH");
   await expect(
-    page.getByRole("button", { name: "Create Tick", exact: true }),
-  ).toHaveCount(0);
-  await expect(
     page.getByRole("button", { name: "Preview Provide", exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("3");
 });
 
-test("prototype branding, background and copy", async ({ page }, testInfo) => {
+test("home branding and market overview", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(
     page.getByRole("heading", { name: "Liquidity, on your terms." }),
   ).toBeVisible();
-  await expect(page.locator(".brand-wordmark")).toHaveAttribute(
-    "viewBox",
-    "0 0 800 275",
-  );
-  await expect(page.locator(".brand-wordmark path")).toHaveCount(20);
+  await expect(
+    page.getByRole("img", { name: "yld.cx", exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText("Open. Permissionless. Immutable.", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: "Telegram ↗" })).toHaveAttribute(
-    "href",
-    "https://t.me/yld_cx",
-  );
-  await expect(page.getByText("Protocol fee 1%", { exact: false })).toHaveCount(
-    0,
-  );
   await expect(
-    page.getByText("Liquidity covers a bounded", { exact: false }),
-  ).toHaveCount(0);
+    page.getByRole("link", { name: "Telegram", exact: true }),
+  ).toHaveAttribute("href", "https://t.me/yld_cx");
   const background = await page.evaluate(
     () => getComputedStyle(document.body).backgroundImage,
   );
   expect(background.match(/linear-gradient/g)).toHaveLength(2);
   await page.screenshot({
-    path: testInfo.outputPath("prototype-aligned-home.png"),
+    path: testInfo.outputPath("home.png"),
     fullPage: true,
   });
   await page.goto(`/market/base/${key}`);
@@ -1916,7 +2137,7 @@ test("prototype branding, background and copy", async ({ page }, testInfo) => {
       .getByText("1,000 WETH", { exact: true }),
   ).toBeVisible();
   await page.screenshot({
-    path: testInfo.outputPath("prototype-aligned-market.png"),
+    path: testInfo.outputPath("market.png"),
     fullPage: true,
   });
 });
@@ -1985,9 +2206,6 @@ test("failed market reads remain incomplete rather than empty liquidity", async 
   await expect(failedRow).not.toContainText("0 WETH");
   await failedRow.click();
   await expect(
-    page.getByRole("button", { name: "Create Tick", exact: true }),
-  ).toHaveCount(0);
-  await expect(
     page.getByRole("button", { name: "Preview Provide", exact: true }),
   ).toBeDisabled();
   const overview = page.getByRole("region", { name: "Market overview" });
@@ -2016,9 +2234,6 @@ test("new markets allow Provide directly and retain standalone Create Market", a
   await expect(
     overview.getByText("Preview market", { exact: true }),
   ).toBeVisible();
-  await expect(overview.getByText("Open market", { exact: true })).toHaveCount(
-    0,
-  );
   await expect(
     overview.getByText("New · No liquidity", { exact: true }),
   ).toBeVisible();
@@ -2057,9 +2272,6 @@ test("new markets allow Provide directly and retain standalone Create Market", a
   await expect(
     page.getByRole("button", { name: "Preview Provide", exact: true }),
   ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Create Tick", exact: true }),
-  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Preview Create Market", exact: true }),
   ).toBeVisible();
@@ -2222,6 +2434,7 @@ async function transactionRpc(
     fail: !!options.fail,
     writes: [] as string[][],
     withdrawals: [] as (readonly bigint[])[],
+    swaps: [] as (readonly [bigint, bigint, bigint])[],
     simulations: [] as string[],
     timestamp: 0x68e00000n,
     settlement: false,
@@ -2280,7 +2493,7 @@ async function transactionRpc(
     ...options.positions?.use,
   };
   function tupleResult(
-    name: "withdraw" | "collect" | "repay" | "close",
+    name: "withdraw" | "collect" | "repay" | "close" | "swap",
     values: Record<string, bigint>,
   ) {
     const abi = protocolAbi.find(
@@ -2496,6 +2709,21 @@ async function transactionRpc(
                 tickId: selectedId,
                 closeFee: use.closeFee,
                 providerSwapProceeds: use.quotePrincipal - use.closeFee,
+              }),
+            );
+          } else if (action.functionName === "swap") {
+            const [tickId, assetAmount] = action.args;
+            const quotePrincipal =
+              tickId === bid7 || tickId === bid30
+                ? (assetAmount * 10n ** 12n) / 3000n
+                : (assetAmount * 3000n) / 10n ** 12n;
+            const swapFee = quotePrincipal / 100n;
+            results.push(
+              tupleResult("swap", {
+                assetAmount,
+                quotePrincipal,
+                swapFee,
+                providerSwapProceeds: quotePrincipal - swapFee,
               }),
             );
           } else if (action.functionName === "supply") results.push("0x");
@@ -2727,6 +2955,12 @@ async function transactionRpc(
             const action = decodeFunctionData({ abi: protocolAbi, data });
             if (action.functionName === "withdraw")
               state.withdrawals.push(action.args);
+            if (action.functionName === "swap")
+              state.swaps.push([
+                action.args[0],
+                action.args[1],
+                action.args[2],
+              ]);
           }
           state.writes.push(
             decoded.args[0].map(
@@ -2852,9 +3086,9 @@ test("approval rejection and zero-first approval recover inside the same preview
   });
   const dialog = page.getByRole("dialog");
   await expect(
-    dialog.getByText("The action has not been simulated yet.", {
-      exact: false,
-    }),
+    dialog
+      .getByRole("status")
+      .filter({ hasText: /Approve the token to simulate/ }),
   ).toBeVisible();
   await dialog
     .getByRole("button", { name: "Approve WETH", exact: true })
@@ -2936,7 +3170,9 @@ test("final simulation failure keeps the reviewed preview and retries only after
   state.fail = true;
   await confirm.click();
   await expect(dialog.getByRole("alert")).toBeVisible();
-  await expect(dialog.getByText("Your Active liquidity after")).toBeVisible();
+  await expect(
+    dialog.getByText("Estimated Yield", { exact: true }),
+  ).toBeVisible();
   expect(state.writes).toHaveLength(0);
   state.fail = false;
   await confirm.click();
@@ -2984,8 +3220,6 @@ test("position cards share a compact responsive layout on Market and Orders", as
     await expect(
       card.getByRole("button", { name: "Preview Withdraw" }),
     ).toBeEnabled();
-    await expect(card.getByRole("checkbox")).toHaveCount(0);
-    await expect(card.getByRole("button", { name: /Settle/ })).toHaveCount(0);
     await expect(card.getByText("Total Active principal")).toBeHidden();
     expect(
       await card.evaluate((node) => node.getBoundingClientRect().height),
@@ -3260,7 +3494,7 @@ test("reopening clears stale previews, approval state and errors before refreshi
     exact: true,
   });
   await expect(
-    dialog.getByText("Your Active liquidity after", { exact: true }),
+    dialog.getByText("Estimated Yield", { exact: true }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   state.allowance = 0n;
@@ -3269,7 +3503,7 @@ test("reopening clears stale previews, approval state and errors before refreshi
     dialog.getByRole("button", { name: "Approve WETH", exact: true }),
   ).toBeVisible();
   await expect(
-    dialog.getByText("Your Active liquidity after", { exact: true }),
+    dialog.getByText("Estimated Yield", { exact: true }),
   ).toHaveCount(0);
   state.reject = true;
   await dialog
@@ -3307,11 +3541,10 @@ test("reopening clears stale previews, approval state and errors before refreshi
   await expect(spinner).toHaveCSS("animation-name", "none");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(dialog.locator("dl")).toHaveCount(0);
+  await expect(dialog.locator("details")).toHaveCount(0);
   await expect(
     dialog.getByRole("button", { name: "Approve WETH", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    dialog.getByText("Your Active liquidity after", { exact: true }),
   ).toHaveCount(0);
   await expect(
     dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
@@ -3385,100 +3618,184 @@ for (const submitted of ["approval", "transaction"] as const) {
   });
 }
 
-for (const mode of ["Provide", "Rent", "Swap"] as const) {
-  test(`${mode} amount accepts decimal editing and blocks text without autocomplete`, async ({
-    page,
-  }) => {
-    await page.goto(`/market/base/${key}`);
-    if (mode !== "Provide")
-      await page.locator(`[data-tick-id="${id7}"]`).click();
-    if (mode === "Swap")
-      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
-    const input = page.getByLabel(
-      mode === "Provide" ? "Amount" : "You receive",
-      { exact: true },
-    );
-    await expect(input).toHaveAttribute("inputmode", "decimal");
-    await expect(input).toHaveAttribute("autocomplete", "off");
-    await expect(input).toHaveAttribute("autocorrect", "off");
-    await expect(input).toHaveAttribute("autocapitalize", "none");
-    await expect(input).toHaveAttribute("spellcheck", "false");
-    await input.pressSequentially("ds vdsveE+-");
-    await expect(input).toHaveValue("");
-    for (const value of [
-      "0",
-      "0.",
-      ".5",
-      "1.",
-      "0.000000000000000001",
-      "9007199254740993.123456789123456789",
-      "",
-    ]) {
-      await input.fill(value);
-      await expect(input).toHaveValue(value);
-    }
-    await input.pressSequentially("12.34");
-    await expect(input).toHaveValue("12.34");
-    // Replacing the value also exercises input from paste, without silently stripping text.
-    for (const invalid of [
-      "abc",
-      "1 WETH",
-      "1e3",
-      "1E3",
-      "-1",
-      "+1",
-      "1.2.3",
-      "1,000",
-      " 42 ",
-      "NaN",
-      "Infinity",
-    ]) {
-      await input.fill(invalid);
-      await expect(input).toHaveValue("12.34");
-    }
-    await input.pressSequentially("abcE+-.");
-    await expect(input).toHaveValue("12.34");
-    await input.evaluate((node: HTMLInputElement) =>
-      node.setSelectionRange(0, 2),
-    );
-    await page.keyboard.insertText("5");
-    await expect(input).toHaveValue("5.34");
-    await input.fill("1.");
-    await input.press("End");
-    await input.press("Backspace");
-    await expect(input).toHaveValue("1");
-    await input.press("Backspace");
-    await expect(input).toHaveValue("");
-  });
-}
-
-test("execution tolerance accepts only digits and disables autocomplete", async ({
+test("amount input accepts decimal editing and rejects invalid text", async ({
   page,
 }) => {
   await page.goto(`/market/base/${key}`);
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  await page.getByText("Execution settings", { exact: true }).click();
-  const input = page.getByLabel("Execution tolerance", { exact: true });
-  await expect(input).toHaveAttribute("inputmode", "numeric");
+  const input = page.getByLabel("Amount", { exact: true });
+  await expect(input).toHaveAttribute("inputmode", "decimal");
   await expect(input).toHaveAttribute("autocomplete", "off");
   await expect(input).toHaveAttribute("autocorrect", "off");
   await expect(input).toHaveAttribute("autocapitalize", "none");
   await expect(input).toHaveAttribute("spellcheck", "false");
-  for (const invalid of ["abc", "1.5", "1e2", "-1", "+1", "50%", "1,000"]) {
+  await input.pressSequentially("ds vdsveE+-");
+  await expect(input).toHaveValue("");
+  for (const value of [
+    "0",
+    "0.",
+    ".5",
+    "1.",
+    "0.000000000000000001",
+    "9007199254740993.123456789123456789",
+    "",
+  ]) {
+    await input.fill(value);
+    await expect(input).toHaveValue(value);
+  }
+  await input.pressSequentially("12.34");
+  await expect(input).toHaveValue("12.34");
+  // Replacing the value also exercises input from paste, without silently stripping text.
+  for (const invalid of [
+    "abc",
+    "1 WETH",
+    "1e3",
+    "1E3",
+    "-1",
+    "+1",
+    "1.2.3",
+    "1,000",
+    " 42 ",
+    "NaN",
+    "Infinity",
+  ]) {
     await input.fill(invalid);
-    await expect(input).toHaveValue("50");
+    await expect(input).toHaveValue("12.34");
+  }
+  await input.pressSequentially("abcE+-.");
+  await expect(input).toHaveValue("12.34");
+  await input.evaluate((node: HTMLInputElement) =>
+    node.setSelectionRange(0, 2),
+  );
+  await page.keyboard.insertText("5");
+  await expect(input).toHaveValue("5.34");
+  await input.fill("1.");
+  await input.press("End");
+  await input.press("Backspace");
+  await expect(input).toHaveValue("1");
+  await input.press("Backspace");
+  await expect(input).toHaveValue("");
+});
+
+test("Yield slippage accepts percentages and disables autocomplete", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  await page.locator(`[data-tick-id="${id7}"]`).click();
+  await page.getByText("Yield slippage", { exact: true }).click();
+  const input = page.getByLabel("Yield slippage", { exact: true });
+  await expect(input).toHaveValue("0.5");
+  await expect(input.locator("..")).toContainText("%");
+  await expect(input).toHaveAttribute("inputmode", "decimal");
+  await expect(input).toHaveAttribute("autocomplete", "off");
+  await expect(input).toHaveAttribute("autocorrect", "off");
+  await expect(input).toHaveAttribute("autocapitalize", "none");
+  await expect(input).toHaveAttribute("spellcheck", "false");
+  for (const invalid of ["abc", "1.2.3", "1e2", "-1", "+1", "0.5%", "1,000"]) {
+    await input.fill(invalid);
+    await expect(input).toHaveValue("0.5");
   }
   await input.fill("");
   await expect(input).toHaveValue("");
-  await input.pressSequentially("25abcE+-.");
-  await expect(input).toHaveValue("25");
+  await input.pressSequentially("0.25abcE+-");
+  await expect(input).toHaveValue("0.25");
   await input.fill("0");
   await expect(input).toHaveValue("0");
-  await input.fill("1001");
-  await expect(
-    page.getByRole("alert").filter({ hasText: "Tolerance must be" }),
-  ).toBeVisible();
+  for (const value of ["0.01", "0.29", "1.", ".5", "10"]) {
+    await input.fill(value);
+    await expect(input).toHaveValue(value);
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Yield slippage must be" }),
+    ).toHaveCount(0);
+  }
+  for (const value of ["", ".", "10.01", "333", "0.001"]) {
+    await input.fill(value);
+    await expect(
+      page
+        .getByRole("alert")
+        .filter({ hasText: "Yield slippage must be 0–10%" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Preview Rent", exact: true }),
+    ).toBeDisabled();
+  }
 });
+
+test("Rent converts Yield slippage to exact basis-point caps", async ({
+  page,
+}) => {
+  await transactionRpc(page, { pair: true, tick: true });
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByText("Yield slippage", { exact: true }).click();
+  await page.getByLabel("You receive", { exact: true }).fill("1");
+  for (const [percent, expectedCap] of [
+    ["0.5", "0.01005 WETH"],
+    ["0.29", "0.010029 WETH"],
+    ["0.01", "0.010001 WETH"],
+    ["0", "0.01 WETH"],
+    ["10", "0.011 WETH"],
+  ]) {
+    await page.getByLabel("Yield slippage", { exact: true }).fill(percent);
+    await page
+      .getByRole("button", { name: "Preview Rent", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "Confirm Rent", exact: true }),
+    ).toBeVisible();
+    await dialog.getByText("Transaction details", { exact: true }).click();
+    await expect(
+      dialog.getByText("Maximum accepted Yield", { exact: true }).locator(".."),
+    ).toContainText(expectedCap);
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  }
+});
+
+for (const direction of [0, 1] as const) {
+  test(`Swap submits the exact contract Quote in direction ${direction} regardless of Rent Yield slippage`, async ({
+    page,
+  }) => {
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      direction,
+    });
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByLabel("You receive", { exact: true }).fill("1");
+    for (const percent of ["10", ""]) {
+      await page.getByText("Yield slippage", { exact: true }).click();
+      await page.getByLabel("Yield slippage", { exact: true }).fill(percent);
+      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
+      await expect(
+        page.getByText("Yield slippage", { exact: true }),
+      ).toHaveCount(0);
+      await page
+        .getByRole("button", { name: "Preview Swap", exact: true })
+        .click();
+      await expect(
+        dialog.getByRole("button", { name: "Confirm Swap", exact: true }),
+      ).toBeVisible();
+      const payment = direction === 0 ? "3,000 USDC" : "0.000333 WETH";
+      for (const label of ["Pay Quote", "Maximum Quote payment"])
+        await expect(
+          dialog.getByText(label, { exact: true }).locator(".."),
+        ).toContainText(payment);
+      await dialog
+        .getByRole("button", { name: "Confirm Swap", exact: true })
+        .click();
+      await expect(
+        dialog.getByText("Confirmed ✅", { exact: true }),
+      ).toBeVisible();
+      expect(state.swaps.at(-1)).toEqual([
+        direction === 0 ? id7 : bid7,
+        direction === 0 ? 10n ** 18n : 10n ** 6n,
+        direction === 0 ? 3000n * 10n ** 6n : 333333333333333n,
+      ]);
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      await page.getByRole("tab", { name: "Rent", exact: true }).click();
+    }
+  });
+}
 
 for (const atomic of ["supported", "safe"] as const) {
   test(`${atomic === "safe" ? "Safe legacy capabilities" : "smart account capabilities"} uses one atomic approve and Provide submission`, async ({
@@ -3533,6 +3850,58 @@ for (const atomic of ["missing", "unsupported"] as const) {
     expect(state.batches).toEqual([]);
   });
 }
+for (const mode of ["Rent", "Swap"] as const) {
+  test(`${mode} preview keeps consequences and safety limits with collapsible transaction details`, async ({
+    page,
+  }) => {
+    await transactionRpc(page, { pair: true, tick: true });
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    if (mode === "Swap")
+      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
+    const explanation =
+      mode === "Rent"
+        ? "Repay WETH + Yield to unlock USDC, or it will be swapped at term end."
+        : "Swaps are instant and final.";
+    await page.getByLabel("You receive", { exact: true }).fill("1");
+    await page
+      .getByRole("button", { name: `Preview ${mode}`, exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: `Confirm ${mode}`, exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByText(explanation, { exact: true })).toBeVisible();
+    const info = dialog.getByRole("status").filter({ hasText: explanation });
+    await expect(info).toHaveCSS("font-size", "12px");
+    await expect(info.locator('[data-slot="alert-description"]')).toHaveCSS(
+      "font-size",
+      "12px",
+    );
+    await expect(
+      dialog.locator('[data-slot="dialog-description"]'),
+    ).toContainText("Base");
+    for (const label of [
+      "Network",
+      "Account",
+      "Execution deadline",
+      ...(mode === "Rent" ? ["Maximum accepted Yield"] : []),
+    ])
+      await expect(dialog.getByText(label, { exact: true })).toBeHidden();
+    if (mode === "Swap")
+      await expect(
+        dialog.getByText("Maximum Quote payment", { exact: true }),
+      ).toBeVisible();
+    await dialog.getByText("Transaction details", { exact: true }).click();
+    for (const label of [
+      "Network",
+      "Account",
+      "Execution deadline",
+      ...(mode === "Rent" ? ["Maximum accepted Yield"] : []),
+    ])
+      await expect(dialog.getByText(label, { exact: true })).toBeVisible();
+  });
+}
+
 test("Rent advances from confirmed approval to Confirm Rent despite delayed allowance RPC reads", async ({
   page,
 }) => {
@@ -4029,10 +4398,6 @@ test("metadata and image failures preserve onchain interactions and the universa
   await expect(
     page.getByRole("img", { name: "WETH logo" }).first(),
   ).toHaveAttribute("src", "/token.svg");
-  await page.goto("/?search=WETH");
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
   await page.route(metadataRoute, async (route) => {
     const url = new URL(route.request().url());
     await route.fulfill({

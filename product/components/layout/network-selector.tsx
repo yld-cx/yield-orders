@@ -32,6 +32,7 @@ export function NetworkSelector() {
         {
           ...parseMarketFilters(params, network),
           network: selected.slug,
+          page: 1,
         },
         params,
       );

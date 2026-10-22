@@ -1,7 +1,8 @@
 "use client";
 import { useId, type ReactNode } from "react";
-import { LoaderCircle } from "lucide-react";
+import { Info, LoaderIcon } from "lucide-react";
 import { DURATIONS, type Duration } from "@yld-cx/sdk";
+import { cn } from "@yld-cx/ui/lib/utils";
 import { Field, FieldLabel } from "@yld-cx/ui/components/ui/field";
 import {
   InputGroup,
@@ -128,24 +129,32 @@ export function Message({
   children,
   error = false,
   busy = false,
+  info = false,
+  className,
 }: {
   children: ReactNode;
   error?: boolean;
   busy?: boolean;
+  info?: boolean;
+  className?: string;
 }) {
   return (
     <Alert
-      className="my-3 border-dashed"
+      className={cn("my-3 border-dashed", className)}
       variant={error ? "destructive" : "default"}
       role={error ? "alert" : "status"}
     >
-      {busy && (
-        <LoaderCircle
+      {busy ? (
+        <LoaderIcon
           aria-hidden="true"
           className="size-4 animate-spin motion-reduce:animate-none"
         />
-      )}
-      <AlertDescription>{children}</AlertDescription>
+      ) : info ? (
+        <Info aria-hidden="true" className="size-4" />
+      ) : null}
+      <AlertDescription className="text-[length:inherit]">
+        {children}
+      </AlertDescription>
     </Alert>
   );
 }

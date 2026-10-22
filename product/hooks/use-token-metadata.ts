@@ -53,15 +53,11 @@ export function useTokenMetadata(
   });
   return queries.flatMap((query) => (query.data ? [query.data] : []));
 }
-export function useDiscoveryTokens(network: NetworkSlug) {
+export function useTokenDiscovery(network: NetworkSlug, enabled = true) {
   const id = getNetwork(network).id;
-  const configured = registry.getTokens(id);
-  const metadata = useTokenMetadata(
-    network,
-    configured.map((t) => t.address),
-  );
-  const query = useQuery({
+  return useQuery({
     queryKey: queryKeys.tokenDiscovery(network),
+    enabled,
     queryFn: async (): Promise<TokenMetadata[]> => {
       const response = await fetch(
         `/api/tokens?chainId=${getNetwork(network).chain.id}`,
@@ -78,6 +74,15 @@ export function useDiscoveryTokens(network: NetworkSlug) {
     staleTime: 86400_000,
     retry: false,
   });
+}
+export function useDiscoveryTokens(network: NetworkSlug) {
+  const id = getNetwork(network).id;
+  const configured = registry.getTokens(id);
+  const metadata = useTokenMetadata(
+    network,
+    configured.map((t) => t.address),
+  );
+  const query = useTokenDiscovery(network);
   return {
     ...query,
     tokens: selectorTokens(configured, query.data ?? [], metadata),

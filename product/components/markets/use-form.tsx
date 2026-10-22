@@ -10,6 +10,7 @@ import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { parseUnits } from "viem";
 import type { Market, Token } from "@yld-cx/sdk";
 import { getNetwork, tokenAmount, explainError } from "@yld-cx/sdk/ethereum";
 import { getSdk } from "@/lib/rpc";
@@ -22,12 +23,13 @@ import {
   Metric,
 } from "@/components/forms/financial-fields";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
+import { Field } from "@yld-cx/ui/components/ui/field";
 import {
-  Field,
-  FieldLabel,
-  FieldDescription,
-} from "@yld-cx/ui/components/ui/field";
-import { Input } from "@yld-cx/ui/components/ui/input";
+  InputGroup,
+  InputGroupInput,
+  InputGroupAddon,
+  InputGroupText,
+} from "@yld-cx/ui/components/ui/input-group";
 import {
   Tabs,
   TabsList,
@@ -40,6 +42,7 @@ import {
   EmptyTitle,
   EmptyDescription,
 } from "@yld-cx/ui/components/ui/empty";
+const BPS_PER_PERCENT = Number(BASIS_POINTS) / PERCENT_SCALE;
 export function UseForm({
   market,
   tick: level,
@@ -58,7 +61,7 @@ export function UseForm({
   const [mode, setMode] = useState<"use" | "swap">("use"),
     [amount, setAmount] = useState(""),
     [tolerance, setTolerance] = useState(
-      String(TRANSACTION_DEFAULTS.toleranceBps),
+      String(TRANSACTION_DEFAULTS.toleranceBps / BPS_PER_PERCENT),
     );
   const network = getNetwork(market.network).slug;
   const asset: Token =
@@ -67,16 +70,21 @@ export function UseForm({
         : market.token0,
     quote = asset === market.token0 ? market.token1 : market.token0;
   let raw = 0n,
+    toleranceBps = 0n,
     error = "";
   try {
     if (amount) raw = tokenAmount(amount, asset.decimals);
-    if (
-      !/^\d{1,4}$/.test(tolerance) ||
-      Number(tolerance) > TRANSACTION_DEFAULTS.maxToleranceBps
-    )
-      throw new Error(
-        `Tolerance must be 0–${TRANSACTION_DEFAULTS.maxToleranceBps} basis points`,
-      );
+    if (mode === "use") {
+      if (
+        !/^(?:\d+(?:\.\d{0,2})?|\.\d{1,2})$/.test(tolerance) ||
+        Number(tolerance) >
+          TRANSACTION_DEFAULTS.maxToleranceBps / BPS_PER_PERCENT
+      )
+        throw new Error(
+          `Yield slippage must be 0–${TRANSACTION_DEFAULTS.maxToleranceBps / BPS_PER_PERCENT}% with at most 2 decimal places`,
+        );
+      toleranceBps = parseUnits(tolerance, 2);
+    }
   } catch (e) {
     error = explainError(e);
   }
@@ -166,37 +174,35 @@ export function UseForm({
                 <Metric label="Term">
                   {tick.state.durationDays.toString()}D
                 </Metric>
-                <details className="my-3 space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
-                  <summary>Execution settings</summary>
-                  <Field className="my-4">
-                    <FieldLabel htmlFor="execution-tolerance">
-                      Execution tolerance (basis points)
-                    </FieldLabel>
-                    <Input
-                      id="execution-tolerance"
-                      aria-label="Execution tolerance"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="none"
-                      spellCheck={false}
-                      value={tolerance}
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        if (/^\d*$/.test(next)) setTolerance(next);
-                      }}
-                    />
-                    <FieldDescription className="text-xs">
-                      {TRANSACTION_DEFAULTS.toleranceBps} ={" "}
-                      {(TRANSACTION_DEFAULTS.toleranceBps /
-                        Number(BASIS_POINTS)) *
-                        PERCENT_SCALE}
-                      %. Caps are set from a fresh contract quote before review.
-                    </FieldDescription>
-                  </Field>
-                </details>
-                <Card className="mb-4">
+                {mode === "use" && (
+                  <details className="space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
+                    <summary>Yield slippage</summary>
+                    <Field className="my-2">
+                      <InputGroup>
+                        <InputGroupInput
+                          id="execution-tolerance"
+                          aria-label="Yield slippage"
+                          type="text"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          value={tolerance}
+                          onChange={(event) => {
+                            const next = event.target.value;
+                            if (/^\d*(?:\.\d*)?$/.test(next))
+                              setTolerance(next);
+                          }}
+                        />
+                        <InputGroupAddon align="inline-end">
+                          <InputGroupText>%</InputGroupText>
+                        </InputGroupAddon>
+                      </InputGroup>
+                    </Field>
+                  </details>
+                )}
+                <Card className="my-4">
                   <CardContent className="space-y-4">
                     <Metric label="Available">
                       {amountText(tick.state.availableSupply, asset.decimals)}{" "}
@@ -205,18 +211,14 @@ export function UseForm({
                     {query.data && (
                       <>
                         <Metric
-                          label={
-                            mode === "use"
-                              ? "Quote locked upfront"
-                              : "Quote paid"
-                          }
+                          label={mode === "use" ? "Quote locked" : "Quote paid"}
                         >
                           {amountText(query.data[0], quote.decimals)}{" "}
                           {quote.symbol}
                         </Metric>
                         {mode === "use" && (
                           <>
-                            <Metric label="Full-term Yield if repaid">
+                            <Metric label="Full-term Yield">
                               {amountText(query.data[1], asset.decimals)}{" "}
                               {asset.symbol}
                             </Metric>
@@ -247,7 +249,7 @@ export function UseForm({
                         (await sdk.publicClient.getBlock()).timestamp +
                         TRANSACTION_DEFAULTS.deadlineSeconds;
                     const cap = (value: bigint) =>
-                      (value * (BASIS_POINTS + BigInt(tolerance)) +
+                      (value * (BASIS_POINTS + toleranceBps) +
                         BASIS_POINTS -
                         1n) /
                       BASIS_POINTS;
@@ -263,21 +265,11 @@ export function UseForm({
                           kind: "swap",
                           tickId: tick.id,
                           amount: raw,
-                          maxQuoteIn: cap(principal),
+                          maxQuoteIn: principal,
                           deadline,
                         };
                   }}
                 />
-                {mode === "use" ? (
-                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    Repay {asset.symbol} + Yield to unlock {quote.symbol}, or it
-                    will be swapped at term end.
-                  </p>
-                ) : (
-                  <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                    Swaps are instant and final.
-                  </p>
-                )}
               </>
             )}
           </TabsContent>

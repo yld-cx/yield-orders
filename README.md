@@ -23,4 +23,4 @@
 
 - [Ethereum / EVM L2s protocol](./protocol/ethereum/README.md)
 
-**Time to yield.** ⩇⩇:⩇⩇
+**Time to yield** · ⩇⩇:⩇⩇

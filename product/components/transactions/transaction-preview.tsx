@@ -1,11 +1,13 @@
 import {
+  getNetwork,
   humanPrice,
   marginalYieldPercent,
   type Preview,
 } from "@yld-cx/sdk/ethereum";
-import type { Token } from "@yld-cx/sdk";
-import { Metric } from "@/components/forms/financial-fields";
+import { Q128, type Token } from "@yld-cx/sdk";
+import { Message, Metric } from "@/components/forms/financial-fields";
 import { amountText, timestampText, shortAddress } from "@/lib/utils";
+import { priceText } from "@/lib/market-values";
 export function TransactionPreview({
   preview,
   asset,
@@ -24,17 +26,21 @@ export function TransactionPreview({
       ? `${amountText(value, quote.decimals)} ${quote.symbol}`
       : `${value} raw Quote units`;
   const { action } = preview;
+  const estimatedSupplyQuote =
+    action.kind === "supply" && preview.tick
+      ? (action.amount * preview.tick.priceX128 + Q128 - 1n) / Q128
+      : undefined;
   return (
-    <div className="space-y-3 border-t pt-3 [&_p]:text-sm [&_p]:text-muted-foreground">
-      <Metric label="Network">{preview.chainId}</Metric>
-      <Metric label="Account">{shortAddress(preview.account)}</Metric>
+    <div className="space-y-3 border-t pt-3 [&_p]:text-muted-foreground">
       {preview.tick && ["supply", "use", "swap"].includes(action.kind) && (
         <>
           <Metric label="Price">
-            {humanPrice(
-              preview.tick.priceX128,
-              asset?.decimals ?? 0,
-              quote?.decimals ?? 0,
+            {priceText(
+              humanPrice(
+                preview.tick.priceX128,
+                asset?.decimals ?? 0,
+                quote?.decimals ?? 0,
+              ),
             )}{" "}
             {quote?.symbol ?? "Quote"} / {asset?.symbol ?? "Asset"}
           </Metric>
@@ -49,37 +55,45 @@ export function TransactionPreview({
         <>
           <Metric label="Token A">{shortAddress(action.tokenA)}</Metric>
           <Metric label="Token B">{shortAddress(action.tokenB)}</Metric>
-          <p>Creates an empty market. Supply liquidity separately.</p>
+          <Message info className="text-xs">
+            Creates new market for the token pair.
+          </Message>
         </>
       )}
       {action.kind === "createTick" && (
         <>
           <Metric label="Price tick">{action.priceTick}</Metric>
           <Metric label="Duration">{action.durationDays}D</Metric>
-          <p>Creates this price level. Supply liquidity after confirmation.</p>
+          <Message info className="text-xs">
+            Creates the price level. Supply liquidity after confirmation.
+          </Message>
         </>
       )}
       {action.kind === "supply" && (
         <>
           <Metric label="You supply">{a(action.amount)}</Metric>
-          <Metric label="Current Yield">
+          <Metric label="Estimated Quote">
+            {estimatedSupplyQuote === undefined ? "—" : q(estimatedSupplyQuote)}
+          </Metric>
+          <Metric label="Estimated Yield">
             {preview.tick
-              ? `${marginalYieldPercent(preview.tick) ?? "—"}% / term`
+              ? `${marginalYieldPercent(preview.tick) ?? "—"}%`
               : "—"}
           </Metric>
-          <Metric label="Your Active liquidity after">
-            {a(preview.provider!.activePrincipal)}
-          </Metric>
-          <Metric label="Market Available after">
-            {a(preview.tick!.availableSupply)}
-          </Metric>
-          <Metric label="Market In Use after">
-            {a(preview.tick!.activeWorking)}
-          </Metric>
-          <p>
-            Yield when used and returned. Supply restarts vesting of all your
-            outstanding Yield.
-          </p>
+          {preview.provider &&
+            preview.provider.activePrincipal !== action.amount && (
+              <Metric label="Your Active liquidity after">
+                {a(preview.provider.activePrincipal)}
+              </Metric>
+            )}
+          <Message info className="text-xs">
+            Estimates depend on future Use and are shown before the 1% fee.
+            {preview.provider &&
+              (preview.provider.outstandingActiveYieldAsset > 0n ||
+                preview.provider.outstandingExitYieldAsset > 0n) && (
+                <p>Supply restarts vesting of uncollected Yield.</p>
+              )}
+          </Message>
         </>
       )}
       {preview.position && (
@@ -93,34 +107,25 @@ export function TransactionPreview({
           <Metric label="Maximum term Yield">
             {a(preview.position.fullTermYieldAsset)}
           </Metric>
-          <Metric label="Yield paid now">0</Metric>
-          <Metric label="Close fee at maturity">
-            {q(preview.position.closeFee)}
-          </Metric>
-          <Metric label="Maturity">
+          <Metric label="Term end">
             {timestampText(preview.position.maturity)}
           </Metric>
-          <Metric label="Maximum accepted Yield">
-            {action.kind === "use" ? a(action.maxFullTermYieldAsset) : "—"}
-          </Metric>
-          <p>
-            Return earlier, pay less Yield. Close settles locked Quote at
-            maturity.
-          </p>
+          <Message info className="text-xs">
+            Repay {asset?.symbol ?? "Asset"} + Yield to unlock{" "}
+            {quote?.symbol ?? "Quote"}, or it will be swapped at term end.
+          </Message>
         </>
       )}
       {preview.swap && (
         <>
           <Metric label="Receive Asset">{a(preview.swap.assetAmount)}</Metric>
           <Metric label="Pay Quote">{q(preview.swap.quotePrincipal)}</Metric>
-          <Metric label="Quote fee">{q(preview.swap.swapFee)}</Metric>
-          <Metric label="Provider proceeds">
-            {q(preview.swap.providerSwapProceeds)}
-          </Metric>
           <Metric label="Maximum Quote payment">
             {action.kind === "swap" ? q(action.maxQuoteIn) : "—"}
           </Metric>
-          <p>Immediate execution. No term, locked principal, or Asset Yield.</p>
+          <Message info className="text-xs">
+            Swaps are instant and final.
+          </Message>
         </>
       )}
       {preview.withdraw && (
@@ -143,10 +148,9 @@ export function TransactionPreview({
           <Metric label="Minimum principal now">
             {action.kind === "withdraw" ? a(action.minImmediateAssetOut) : "—"}
           </Metric>
-          <p>
-            In Use principal moves to Resolving. Unvested Yield attributable to
-            this withdrawal becomes a protocol fee.
-          </p>
+          <Message info className="text-xs">
+            In-use liquidity moves to Resolving without unvested Yield.
+          </Message>
         </>
       )}
       {preview.collect && (
@@ -166,10 +170,9 @@ export function TransactionPreview({
                 preview.collect.outstandingExitYieldAsset,
             )}
           </Metric>
-          <p>
-            Collect charges no protocol fee and restarts vesting of remaining
-            Yield.
-          </p>
+          <Message info className="text-xs">
+            Collect restarts vesting of remaining Yield.
+          </Message>
         </>
       )}
       {preview.repay && (
@@ -192,10 +195,9 @@ export function TransactionPreview({
           <Metric label="Maximum accepted Yield">
             {action.kind === "repay" ? a(action.maxYieldAsset) : "—"}
           </Metric>
-          <p>
-            Yield continues accruing until inclusion, within your cap. The
-            resolved Use disappears from current Orders.
-          </p>
+          <Message info className="text-xs">
+            Yield accrues until repayment.
+          </Message>
         </>
       )}
       {preview.close && (
@@ -205,24 +207,32 @@ export function TransactionPreview({
           </Metric>
           <Metric label="Quote fee">{q(preview.close.closeFee)}</Metric>
           <Metric label="Asset Yield due">0</Metric>
-          <p>
-            Asset remains with the Use user. Locked Quote settles and the active
-            Use is removed.
-          </p>
+          <Message info className="text-xs">
+            Renter keeps Asset. Provider gets Quote.
+          </Message>
         </>
       )}
       {action.kind === "settle" && (
-        <p>
-          Process expired market activity. This may settle one matured rental.
-        </p>
-      )}
-      {"deadline" in action && (
-        <Metric label="Execution deadline">
-          {timestampText(action.deadline)}
-        </Metric>
+        <Message info className="text-xs">
+          Process matured positions.
+        </Message>
       )}
       <details className="text-xs text-muted-foreground">
         <summary>Transaction details</summary>
+        <Metric label="Network">
+          {getNetwork(`eip155:${preview.chainId}`).name} · {preview.chainId}
+        </Metric>
+        <Metric label="Account">{shortAddress(preview.account)}</Metric>
+        {"deadline" in action && (
+          <Metric label="Execution deadline">
+            {timestampText(action.deadline)}
+          </Metric>
+        )}
+        {action.kind === "use" && (
+          <Metric label="Maximum accepted Yield">
+            {a(action.maxFullTermYieldAsset)}
+          </Metric>
+        )}
         <Metric label="Estimated gas units">{preview.gas.toString()}</Metric>
         <Metric label="Preview block">{preview.blockNumber.toString()}</Metric>
       </details>

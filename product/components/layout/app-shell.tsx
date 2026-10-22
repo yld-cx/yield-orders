@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ArrowLink } from "@/components/arrow-link";
 import { AppHeader } from "@/components/layout/app-header";
 export function AppShell({ children }: { children: ReactNode }) {
   return (
@@ -15,27 +16,27 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="text-foreground">Time to yield.</span>
           </span>
           <span className="flex flex-wrap gap-4">
-            <a
+            <ArrowLink
               href="https://github.com/yld-cx"
               target="_blank"
               rel="noopener noreferrer"
             >
-              GitHub ↗
-            </a>
-            <a
+              GitHub
+            </ArrowLink>
+            <ArrowLink
               href="https://x.com/yld_cx"
               target="_blank"
               rel="noopener noreferrer"
             >
-              X ↗
-            </a>
-            <a
+              X
+            </ArrowLink>
+            <ArrowLink
               href="https://t.me/yld_cx"
               target="_blank"
               rel="noopener noreferrer"
             >
-              Telegram ↗
-            </a>
+              Telegram
+            </ArrowLink>
           </span>
         </footer>
       </main>

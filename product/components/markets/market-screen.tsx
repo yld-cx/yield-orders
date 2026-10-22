@@ -174,7 +174,6 @@ function MarketContent({
               onClick={() => setInverted((v) => !v)}
             >
               <ArrowLeftRight size={15} />
-              Invert
             </Button>
           </div>
           <p className="text-muted-foreground my-3 text-sm">
