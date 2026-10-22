@@ -431,7 +431,12 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   );
   const pairs = new Set<string>();
   const decimals = new Set<string>();
+  const metadataAddresses: string[] = [];
   page.on("request", (request) => {
+    if (metadataRoute.test(request.url()))
+      metadataAddresses.push(
+        ...new URL(request.url()).searchParams.get("addresses")!.split(","),
+      );
     if (!request.url().startsWith("https://mainnet.base.org")) return;
     const payload = request.postDataJSON();
     for (const item of Array.isArray(payload) ? payload : [payload]) {
@@ -488,6 +493,9 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   expect([...decimals].sort()).toEqual(
     [...discovered.slice(0, 10).map(({ address }) => address), b].sort(),
   );
+  expect([...metadataAddresses].sort()).toEqual(
+    [...discovered.map(({ address }) => address), b].sort(),
+  );
 
   await pagination.getByRole("button", { name: "Next" }).click();
   await expect(page).toHaveURL(/page=2/);
@@ -495,6 +503,7 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
   expect(pairs.size).toBe(20);
   expect(decimals.size).toBe(21);
+  expect(metadataAddresses).toHaveLength(discovered.length + 1);
   await page.reload();
   await expect(pagination).toContainText("Page 2 of 3");
   await pagination.getByRole("button", { name: "Next" }).click();
@@ -533,30 +542,58 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   expect(new URL(page.url()).searchParams.has("page")).toBe(false);
 });
 
-for (const metadataAvailable of [true, false]) {
-  test(`Trending searches resolved token symbols and names with ${metadataAvailable ? "remote metadata" : "onchain fallback"}`, async ({
+for (const tag of ["all", "trending"]) {
+  test(`${tag} searches shared metadata by symbol, name, address and pair`, async ({
     page,
   }) => {
-    if (!metadataAvailable)
-      await page.route(metadataRoute, (route) =>
-        route.fulfill({ status: 503 }),
-      );
     await page.route("**/api/tokens?**", (route) =>
       route.fulfill({
-        json: { tokens: [{ address: a, ...tokenFixture(a) }] },
+        json: {
+          tokens: [
+            { address: a, symbol: "DISCOVERY", name: "Discovery identity" },
+          ],
+        },
       }),
     );
-    await page.goto("/?tag=trending&network=base&search=WETH%2FUSDC");
+    await page.goto(`/?tag=${tag}&network=base&search=WETH%2FUSDC`);
     const link = page.getByRole("link", {
       name: "Open WETH / USDC",
       exact: true,
     });
     await expect(link).toBeVisible();
-    for (const search of ["USDC | WETH", "Wrapped Ether USD Coin"]) {
+    for (const search of [
+      "weth",
+      "USDC | WETH",
+      "Wrapped Ether USD Coin",
+      a,
+      key,
+    ]) {
       await page.getByLabel("Search markets").fill(search);
       await expect(link).toBeVisible();
     }
     await expect(link).toHaveAttribute("href", `/market/base/${key}`);
+  });
+
+  test(`${tag} uses standard metadata fallback for search and onchain data in visible rows`, async ({
+    page,
+  }) => {
+    await page.route(metadataRoute, (route) => route.fulfill({ status: 503 }));
+    await page.route("**/api/tokens?**", (route) =>
+      route.fulfill({ json: { tokens: [{ address: a }] } }),
+    );
+    await page.goto(`/?tag=${tag}&network=base&search=${a}`);
+    const link = page.getByRole("link", {
+      name: "Open WETH / USDC",
+      exact: true,
+    });
+    await expect(link).toBeVisible();
+    for (const search of [
+      key,
+      `${a.slice(0, 6)}…${a.slice(-4)}/${b.slice(0, 6)}…${b.slice(-4)}`,
+    ]) {
+      await page.getByLabel("Search markets").fill(search);
+      await expect(link).toBeVisible();
+    }
   });
 }
 
@@ -700,6 +737,7 @@ test("market summary cells keep their positions when reads finish", async ({
 }) => {
   const pairs: string[] = [],
     ticks: bigint[] = [];
+  const requests: string[][] = [];
   page.on("request", (request) => {
     if (
       request.url() !== "https://mainnet.base.org/" &&
@@ -707,7 +745,9 @@ test("market summary cells keep their positions when reads finish", async ({
     )
       return;
     const payload = request.postDataJSON();
-    for (const item of Array.isArray(payload) ? payload : [payload]) {
+    const items = Array.isArray(payload) ? payload : [payload];
+    requests.push(items.map((item) => item.method));
+    for (const item of items) {
       if (item.method !== "eth_call") continue;
       const data = item.params[0].data as Hex;
       let calls = [data];
@@ -750,6 +790,7 @@ test("market summary cells keep their positions when reads finish", async ({
   ).toEqual(before);
   await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
   const configured = Object.entries(yieldList.markets["eip155:8453"]);
+  expect(requests.flat()).not.toContain("eth_getCode");
   expect(pairs).toHaveLength(configured.length);
   expect(new Set(pairs).size).toBe(configured.length);
   const expected = (duration: 7 | 30) =>

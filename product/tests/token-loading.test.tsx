@@ -63,7 +63,6 @@ describe("authoritative ERC-20 metadata", () => {
     const sdk = new EthereumClient(
       {
         readContract,
-        getCode: async () => "0x1234",
       } as unknown as PublicClient,
       "eip155:8453",
     );
@@ -80,7 +79,6 @@ describe("authoritative ERC-20 metadata", () => {
             throw new Error("decimals unavailable");
           return "CHAIN";
         },
-        getCode: async () => "0x1234",
       } as unknown as PublicClient,
       "eip155:8453",
     );

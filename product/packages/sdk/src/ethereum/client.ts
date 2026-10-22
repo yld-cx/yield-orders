@@ -345,7 +345,7 @@ export class EthereumClient {
     });
   }
   async tokenMetadata(token: Address) {
-    const [symbol, name, decimals, code] = await Promise.all([
+    const [symbol, name, decimals] = await Promise.all([
       this.publicClient
         .readContract({ address: token, abi: erc20Abi, functionName: "symbol" })
         .catch(
@@ -360,10 +360,7 @@ export class EthereumClient {
         abi: erc20Abi,
         functionName: "decimals",
       }),
-      this.publicClient.getCode({ address: token }),
     ]);
-    if (!code || code === "0x")
-      throw new Error("No token contract at this address");
     return {
       address: token.toLowerCase(),
       network: this.network,

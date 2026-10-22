@@ -1,12 +1,15 @@
 "use client";
 
 import { getNetwork } from "@yld-cx/sdk/ethereum";
-import { useTokens } from "@/hooks/use-market";
 import {
   useTokenDiscovery,
   useTokenMetadata,
 } from "@/hooks/use-token-metadata";
-import { MarketTab, type MarketFilters } from "@/lib/market-filters";
+import {
+  MarketTab,
+  searchMarkets,
+  type MarketFilters,
+} from "@/lib/market-filters";
 import { registry } from "@/lib/registry";
 import { trendingMarkets, USD_ADDRESSES } from "@/lib/trending-markets";
 
@@ -19,35 +22,29 @@ export function useMarketList({
   const trending = tag === MarketTab.Trending;
   const quoteAddress = USD_ADDRESSES[id];
   const discovery = useTokenDiscovery(network, trending && !!quoteAddress);
-  const discoveryTokens = discovery.data ?? [];
-  const addresses = trending
-    ? quoteAddress
-      ? [quoteAddress]
-      : []
-    : registry.getTokens(id).map((token) => token.address);
+  const sourceMarkets = trending
+    ? trendingMarkets(
+        id,
+        (discovery.data ?? []).map((token) => token.address),
+      )
+    : registry.getMarkets(id);
+  const addresses = sourceMarkets.flatMap((market) => [
+    market.token0.address,
+    market.token1.address,
+  ]);
   const metadata = useTokenMetadata(network, addresses);
-  const cachedTokens = useTokens(network, addresses, trending);
-  const quote = cachedTokens.find(
-    (token) => token.address === quoteAddress?.toLowerCase(),
+  const markets = searchMarkets(sourceMarkets, search, metadata).filter(
+    (market) =>
+      tag === MarketTab.Trending ||
+      tag === MarketTab.YieldList ||
+      market.tags?.includes(tag),
   );
-  const markets = trending
-    ? trendingMarkets(id, discoveryTokens, search, quote)
-    : registry
-        .searchMarkets(id, search, [...cachedTokens, ...metadata])
-        .filter(
-          (market) =>
-            tag === MarketTab.YieldList ||
-            registry.getMarketsByTag(id, tag).includes(market),
-        );
   const failed =
     trending && !!quoteAddress && discovery.isError && !discovery.data;
 
   return {
     markets,
-    marketCount: trending
-      ? trendingMarkets(id, discoveryTokens).length
-      : registry.getMarkets(id).length,
-    discoveryTokens,
+    marketCount: sourceMarkets.length,
     loading: trending && !!quoteAddress && discovery.isPending,
     loadingLabel: trending ? "Loading trending markets…" : "Loading markets…",
     error: failed

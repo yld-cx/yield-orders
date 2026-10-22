@@ -32,7 +32,7 @@ import { marginalYieldPercent, getNetwork } from "@yld-cx/sdk/ethereum";
 import { type Duration, type Tick } from "@yld-cx/sdk";
 import { useMarket } from "@/hooks/use-market";
 import { useTokenMetadata } from "@/hooks/use-token-metadata";
-import { fallbackToken, type TokenMetadata } from "@/lib/token-metadata";
+import { fallbackToken } from "@/lib/token-metadata";
 import { marketPath } from "@/lib/registry";
 import { getSdk } from "@/lib/rpc";
 import { queryKeys } from "@/lib/query-keys";
@@ -88,11 +88,9 @@ function MarketRowSkeleton() {
 function MarketRow({
   market: config,
   duration,
-  discoveryTokens,
 }: {
   market: MarketConfiguration;
   duration: Duration;
-  discoveryTokens: readonly TokenMetadata[];
 }) {
   const network = getNetwork(config.network).slug,
     sdk = getSdk(network);
@@ -103,9 +101,7 @@ function MarketRow({
     config.token1.address,
   ]);
   const token = (address: string) =>
-    metadata.find((t) => t.address === address && t.status === "available") ??
-    discoveryTokens.find((t) => t.address === address) ??
-    metadata.find((t) => t.address === address) ??
+    metadata.find((token) => token.address === address) ??
     fallbackToken(config.network, address);
   const tokens = displayTokens<Pick<Token, "address" | "symbol" | "imageUrl">>(
     market ?? {
@@ -262,15 +258,8 @@ export function MarketTable() {
     page,
     updateFilters,
   } = useMarketFilters();
-  const {
-    markets,
-    marketCount,
-    discoveryTokens,
-    loading,
-    loadingLabel,
-    error,
-    empty,
-  } = useMarketList({ network, tag: category, search });
+  const { markets, marketCount, loading, loadingLabel, error, empty } =
+    useMarketList({ network, tag: category, search });
   const failed = !!error;
   const pageCount = Math.max(1, Math.ceil(markets.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
@@ -408,7 +397,6 @@ export function MarketTable() {
                           key={`${m.network}/${m.key}`}
                           market={m}
                           duration={duration}
-                          discoveryTokens={discoveryTokens}
                         />
                       ))}
                 </TableBody>

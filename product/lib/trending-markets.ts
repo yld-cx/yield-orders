@@ -7,7 +7,6 @@ import {
 import { canonicalPair } from "@yld-cx/sdk/registry";
 import { isAddress } from "viem";
 import { registry } from "./registry";
-import type { TokenMetadata } from "./token-metadata";
 
 export const USD_ADDRESSES: Partial<Record<NetworkId, string>> = {
   "eip155:1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
@@ -17,28 +16,17 @@ export const USD_ADDRESSES: Partial<Record<NetworkId, string>> = {
 
 export function trendingMarkets(
   network: NetworkId,
-  tokens: readonly TokenMetadata[],
-  search = "",
-  quote?: Pick<TokenMetadata, "symbol" | "name">,
+  addresses: readonly string[],
 ): MarketConfiguration[] {
   const quoteAddress = USD_ADDRESSES[network]?.toLowerCase();
   if (!quoteAddress) return [];
-  const words = search
-    .toLowerCase()
-    .trim()
-    .replace(/\s*[/|]\s*/g, "/")
-    .split(/\s+/);
   const seen = new Set<string>([quoteAddress]);
-  return tokens.flatMap((token) => {
-    const address = token.address.toLowerCase();
-    if (token.network !== network || !isAddress(address) || seen.has(address))
-      return [];
+  return addresses.flatMap((value) => {
+    const address = value.toLowerCase();
+    if (!isAddress(address) || seen.has(address)) return [];
     seen.add(address);
     const [a, b] = canonicalPair(network, address, quoteAddress);
     const key = `${a}:${b}`;
-    const text =
-      `${key} ${token.symbol} ${token.name} ${quote ? `${quote.symbol} ${quote.name} ${token.symbol}/${quote.symbol} ${quote.symbol}/${token.symbol}` : ""}`.toLowerCase();
-    if (!words.every((word) => text.includes(word))) return [];
     return [
       registry.getMarket(network, a, b) ?? {
         network,

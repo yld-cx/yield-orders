@@ -3,6 +3,8 @@ import {
   DURATIONS,
   type Duration,
   type Category,
+  type MarketConfiguration,
+  type Token,
 } from "@yld-cx/sdk";
 import { categorySchema } from "@yld-cx/sdk/registry";
 import type { NetworkSlug } from "@yld-cx/sdk/ethereum";
@@ -24,6 +26,26 @@ export interface MarketFilters {
   duration: Duration;
   network: NetworkSlug;
   page: number;
+}
+
+export function searchMarkets(
+  markets: readonly MarketConfiguration[],
+  search: string,
+  metadata: readonly Pick<Token, "address" | "symbol" | "name">[],
+): MarketConfiguration[] {
+  const words = search
+    .toLowerCase()
+    .trim()
+    .replace(/\s*[/|]\s*/g, "/")
+    .split(/\s+/);
+  return markets.filter((market) => {
+    const [a, b] = [market.token0, market.token1].map((ref) =>
+      metadata.find((token) => token.address.toLowerCase() === ref.address),
+    );
+    const text =
+      `${market.key} ${a?.symbol ?? ""} ${a?.name ?? ""} ${b?.symbol ?? ""} ${b?.name ?? ""} ${a?.symbol ?? ""}/${b?.symbol ?? ""} ${b?.symbol ?? ""}/${a?.symbol ?? ""}`.toLowerCase();
+    return words.every((word) => text.includes(word));
+  });
 }
 
 export function parseMarketFilters(
