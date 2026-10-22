@@ -2,8 +2,12 @@ import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseMarketRoute } from "@/lib/registry";
 import { contentSecurityPolicy } from "@/lib/csp";
-import { parseMarketFilters, marketFilterParams } from "@/lib/market-filters";
-import { Duration } from "@yld-cx/sdk";
+import {
+  parseMarketFilters,
+  marketFilterParams,
+  MarketTab,
+} from "@/lib/market-filters";
+import { Category, Duration } from "@yld-cx/sdk";
 import { TransactionPreview } from "@/components/transactions/transaction-preview";
 import { distinctConnectors } from "@/components/wallet/wallet-connect";
 import type { Connector } from "wagmi";
@@ -15,7 +19,7 @@ import sitemap from "@/app/sitemap";
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 describe("product identity and security", () => {
-  it("discloses the frozen Close fee and maturity settlement before opening a Use", () => {
+  it("renders raw token amounts when preview token metadata is unavailable", () => {
     const preview: Preview = {
       plan: { calls: [] },
       action: {
@@ -44,16 +48,17 @@ describe("product identity and security", () => {
       },
     };
     const html = renderToStaticMarkup(<TransactionPreview preview={preview} />);
-    expect(html).toContain("Close fee at maturity");
-    expect(html).toContain("20 raw Quote units");
-    expect(html).toContain("Close settles locked Quote at maturity.");
+    expect(html).toContain("1000 raw Asset units");
+    expect(html).toContain("2000 raw Quote units");
+    expect(html).toContain("100 raw Asset units");
   });
   it("round-trips shared market filters, preserving search text and unrelated parameters", () => {
     const filters = {
       search: "WETH / USDC +",
-      tag: "blue-chip",
+      tag: Category.BlueChip,
       duration: Duration.Monthly,
       network: "ethereum",
+      page: 3,
     } as const;
     const params = marketFilterParams(
       filters,
@@ -79,11 +84,20 @@ describe("product identity and security", () => {
       ),
     ).toEqual({
       search: "",
-      tag: "all",
+      tag: MarketTab.YieldList,
       duration: Duration.Weekly,
       network: "base",
+      page: 1,
     });
   });
+  it.each(["", "0", "-1", "1.5", "NaN", "Infinity", "9007199254740992"])(
+    "defaults invalid market page %s to the first page",
+    (page) => {
+      const filters = parseMarketFilters(new URLSearchParams({ page }), "base");
+      expect(filters.page).toBe(1);
+      expect(marketFilterParams(filters).has("page")).toBe(false);
+    },
+  );
   it("distinguishes RPC failures from wallet rejection", () => {
     expect(explainError(new BaseError("RPC connection failed"))).toBe(
       "RPC connection failed",
@@ -170,7 +184,7 @@ describe("product identity and security", () => {
       "WalletConnect",
     ]);
   });
-  it("renders creation semantics and gas without inventing an economic creation fee", () => {
+  it("renders market creation details and gas", () => {
     const preview: Preview = {
       plan: { calls: [] },
       action: { kind: "createPair", tokenA: a, tokenB: b },
@@ -181,9 +195,8 @@ describe("product identity and security", () => {
       gas: 40000n,
     };
     const html = renderToStaticMarkup(<TransactionPreview preview={preview} />);
-    expect(html).toContain("Creates an empty market");
+    expect(html).toContain("Creates new market for the token pair.");
     expect(html).toContain("40000");
-    expect(html).not.toContain("1%");
-    expect(html).toContain("8453");
+    expect(html).toContain("Base · 8453");
   });
 });

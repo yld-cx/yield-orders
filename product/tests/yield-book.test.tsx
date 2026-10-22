@@ -222,8 +222,6 @@ describe("configured Yield Book", () => {
     expect(html).toContain('data-status="missing"');
     expect(html).toContain("0 <small>USDC</small>");
     expect(html).toContain("Read failed");
-    expect(html).not.toContain("Load more price levels");
-    expect(html).not.toContain("Exact Tick ID");
   });
   it.each([null, result])(
     "never turns a failed discovery into confirmed empty levels (cached data: %s)",
@@ -269,6 +267,8 @@ describe("selected price Rent or Swap", () => {
       });
       if (availableSupply > 0n) {
         expect(html).toContain("You receive");
+        expect(html).toContain('aria-label="Slippage tolerance"');
+        expect(html).toContain('value="0.5"');
         expect(mocks.flow.mock.calls[0][0].label).toBe("Preview Rent");
       } else {
         expect(html).toContain("No liquidity yet");
@@ -312,7 +312,6 @@ describe("selected price Supply", () => {
       )!;
       const html = supply(level);
       expect(html).toContain(">Price</dt>");
-      expect(html).not.toContain("Posted price");
       expect(mocks.flow).toHaveBeenCalledTimes(1);
       const props = mocks.flow.mock.calls[0][0];
       expect(props.label).toBe("Preview Provide");

@@ -24,8 +24,12 @@ export function useMarketFilters() {
 
   function updateFilters(patch: Partial<MarketFilters>, replace = false) {
     const current = new URLSearchParams(window.location.search);
+    const filters = parseMarketFilters(current, network);
+    const changed = (Object.keys(patch) as (keyof MarketFilters)[]).some(
+      (key) => key !== "page" && patch[key] !== filters[key],
+    );
     const next = marketFilterParams(
-      { ...parseMarketFilters(current, network), ...patch },
+      { ...filters, ...patch, ...(changed ? { page: 1 } : {}) },
       current,
     );
     const url = `?${next}${window.location.hash}`;

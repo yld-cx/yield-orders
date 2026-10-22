@@ -120,9 +120,9 @@ export function SupplyForm({
                   <Metric label="Estimated Yield">
                     {estimatedYield !== undefined
                       ? `${estimatedYield}% / ${selected.durationDays}D`
-                      : "Yield when used and returned"}
+                      : "—"}
                   </Metric>
-                  <details className="my-3 space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
+                  <details className="space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
                     <summary>Price details</summary>
                     <Metric label="Price tick">{selected.priceTick}</Metric>
                     <code>{selected.id.toString()}</code>

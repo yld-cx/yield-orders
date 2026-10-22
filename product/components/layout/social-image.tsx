@@ -74,7 +74,7 @@ export function SocialImage({
         justifyContent: "space-between",
         width: "100%",
         height: "100%",
-        padding: "77px",
+        padding: "100px",
         backgroundColor: "#000000",
         backgroundImage:
           "radial-gradient(circle at 50% -10%, rgba(0,255,76,0.07), rgba(0,255,76,0) 28%), linear-gradient(rgba(0,255,76,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,76,0.03) 1px, transparent 1px)",
@@ -160,10 +160,8 @@ export function SocialImage({
       >
         <span>Asset moves. Quote locks.</span>
         <span>
-          yld.cx —{" "}
-          {label
-            ? "provide or use tokens at your price."
-            : "liquidity rental markets"}
+          yld.cx ·{" "}
+          {label ? "provide or use tokens at your price." : "time to yield."}
         </span>
       </div>
     </div>

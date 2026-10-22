@@ -178,7 +178,8 @@ export function WalletConnect() {
         </DialogTrigger>
         <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <Wallet size={16} aria-hidden="true" />
               {connection.isConnected ? "Your wallet" : "Connect Wallet"}
             </DialogTitle>
             <DialogDescription>
@@ -194,7 +195,10 @@ export function WalletConnect() {
                   ? "Connected wallet"
                   : connection.connector?.name}
               </p>
-              <code className="break-all" title={connection.address}>
+              <code
+                className="break-all bg-card p-1 rounded"
+                title={connection.address}
+              >
                 <span className="sm:hidden">
                   {shortAddress(connection.address)}
                 </span>

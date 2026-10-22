@@ -18,8 +18,6 @@ import {
   AtomicUnavailableError,
   supportsAtomic,
   type PendingOperation,
-  humanPrice,
-  priceAtTick,
   type NetworkSlug,
   type Preview,
   type TransactionStage,
@@ -145,6 +143,12 @@ function TransactionSession({
     "pending",
   ].includes(stage);
   const blocking = busy && stage !== "pending" && stage !== "submitted";
+  const previewLoading = [
+    "preparing",
+    "verifying",
+    "simulating",
+    "synchronizing",
+  ].includes(stage);
   const status = (next: TransactionStage, txHash?: `0x${string}`) => {
     if (!mounted.current) return;
     setStage(next);
@@ -548,29 +552,9 @@ function TransactionSession({
                 : `Preview ${actionName}`}
             </DialogTitle>
             <DialogDescription>
-              {getNetwork(network).name} · Verify all amounts before signing.
+              {getNetwork(network).name} · Verify amounts before signing.
             </DialogDescription>
           </DialogHeader>
-          {!preview && action?.kind === "supply" && action.initialize && (
-            <>
-              <Metric label="You provide">
-                {asset
-                  ? `${amountText(action.amount, asset.decimals)} ${asset.symbol}`
-                  : action.amount.toString()}
-              </Metric>
-              <Metric label="Price">
-                {humanPrice(
-                  priceAtTick(action.initialize.priceTick),
-                  asset?.decimals ?? 0,
-                  quote?.decimals ?? 0,
-                )}{" "}
-                {quote?.symbol ?? "Quote"} / {asset?.symbol ?? "Asset"}
-              </Metric>
-              <Metric label="Duration">
-                {action.initialize.durationDays}D
-              </Metric>
-            </>
-          )}
           {atomicUnavailable && stage === "approval" && (
             <Message>{atomicUnavailable}</Message>
           )}
@@ -602,8 +586,7 @@ function TransactionSession({
             required && (
               <>
                 <Message>
-                  Approve the token to calculate your full preview. The action
-                  has not been simulated yet.
+                  Approve the token to simulate your full preview.
                 </Message>
                 <Metric label="Estimated payment">
                   {token
@@ -619,9 +602,8 @@ function TransactionSession({
                 </p>
                 <details className="my-3 text-xs text-muted-foreground">
                   <summary>Approval details</summary>
-                  Spender: <code>{sdk.address}</code>. If needed, allowance is
-                  reset to zero first. Approval alone does not execute the
-                  action.
+                  Spender: <code>{sdk.address}</code>. Approval does not execute
+                  the action.
                 </details>
                 <Button className="w-full" onClick={() => void approve()}>
                   {`Approve ${token?.symbol ?? "token"}`}
@@ -629,7 +611,7 @@ function TransactionSession({
               </>
             )
           )}
-          {preview && (
+          {preview && !previewLoading && (
             <TransactionPreview preview={preview} asset={asset} quote={quote} />
           )}{" "}
           {stage === "review" && !waiting && (

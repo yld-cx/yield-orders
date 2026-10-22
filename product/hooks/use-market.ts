@@ -63,13 +63,20 @@ export function useToken(
   };
 }
 /** Full tokens for views that need balances and onchain fallback search. */
-export function useTokens(network: NetworkSlug, addresses: readonly string[]) {
+export function useTokens(
+  network: NetworkSlug,
+  addresses: readonly string[],
+  enabled = true,
+) {
   const unique = [
     ...new Set(addresses.map((address) => address.toLowerCase())),
   ];
   const metadata = useTokenMetadata(network, unique);
   const onchain = useQueries({
-    queries: unique.map((address) => onchainTokenOptions(network, address)),
+    queries: unique.map((address) => ({
+      ...onchainTokenOptions(network, address),
+      enabled,
+    })),
   });
   return onchain.flatMap((query) =>
     query.data

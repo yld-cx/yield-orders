@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { Category } from "@yld-cx/sdk";
 import {
   Registry,
   canonicalPair,
@@ -74,9 +75,9 @@ describe("YieldList", () => {
     expect(r.data).not.toHaveProperty("tokens");
     expect(r.getMarket(network, b, a)?.key).toBe(`${a}:${b}`);
     expect(r.getMarketsByToken(network, b)).toHaveLength(1);
-    expect(r.getMarketsByTag(network, "blue-chip")).toHaveLength(1);
-    expect(r.getMarketsByTag(network, "stable")).toHaveLength(1);
-    expect(r.getMarketsByTag("eip155:1", "stable")).toHaveLength(0);
+    expect(r.getMarketsByTag(network, Category.BlueChip)).toHaveLength(1);
+    expect(r.getMarketsByTag(network, Category.Stable)).toHaveLength(1);
+    expect(r.getMarketsByTag("eip155:1", Category.Stable)).toHaveLength(0);
     const metadata = [
       { address: a, symbol: "WETH", name: "Wrapped Ether" },
       { address: b, symbol: "USDC", name: "USD Coin" },

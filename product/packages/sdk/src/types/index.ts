@@ -6,8 +6,15 @@ export type EvmNetwork = `eip155:${number}`;
 export type SolanaNetwork = `solana:${string}`;
 export type NetworkId = EvmNetwork | SolanaNetwork;
 export type Direction = 0 | 1;
-export type Category =
-  "blue-chip" | "stable" | "meme" | "token" | "stock" | "rwa";
+export const enum Category {
+  BlueChip = "blue-chip",
+  Stable = "stable",
+  Meme = "meme",
+  Defi = "defi",
+  Token = "token",
+  Stock = "stock",
+  Rwa = "rwa",
+}
 export interface Token {
   network: NetworkId;
   address: string;

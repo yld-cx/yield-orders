@@ -9,14 +9,14 @@ import {
 // Avoid even the caught eval-capability probe in nonce-only browser CSPs.
 z.config({ jitless: true });
 import { canonicalPair, decodeBase58 } from "../registry/addresses.ts";
-import type { NetworkId } from "../types/index.ts";
+import { Category, type NetworkId } from "../types/index.ts";
 export const categorySchema = z.enum([
-  "blue-chip",
-  "stable",
-  "meme",
-  "token",
-  "stock",
-  "rwa",
+  Category.BlueChip,
+  Category.Stable,
+  Category.Meme,
+  Category.Defi,
+  Category.Stock,
+  Category.Rwa,
 ]);
 export const networkSchema = z.string().refine((value) => {
   if (/^eip155:[1-9]\d*$/.test(value))
