@@ -28,4 +28,7 @@
     "RPC_TIMEOUT_MS": "8000",
     "TOKEN_UPSTREAM_PER_MINUTE": "20",
   },
+  "secrets": {
+    "required": ["COINGECKO_API_KEY"],
+  },
 }

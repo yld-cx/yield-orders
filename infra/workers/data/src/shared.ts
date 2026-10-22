@@ -14,6 +14,7 @@ export interface Env {
   MAX_CLEANUP_BATCHES?: string;
   RPC_TIMEOUT_MS?: string;
   TOKEN_UPSTREAM_PER_MINUTE?: string;
+  COINGECKO_API_KEY?: string;
 }
 
 export class HttpError extends Error {
