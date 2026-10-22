@@ -28,25 +28,18 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { displayTokens } from "@yld-cx/sdk/registry";
-import {
-  marginalYieldPercent,
-  getNetwork,
-  type NetworkSlug,
-} from "@yld-cx/sdk/ethereum";
+import { marginalYieldPercent, getNetwork } from "@yld-cx/sdk/ethereum";
 import { type Duration, type Tick } from "@yld-cx/sdk";
-import { useMarket, useTokens } from "@/hooks/use-market";
-import {
-  useTokenDiscovery,
-  useTokenMetadata,
-} from "@/hooks/use-token-metadata";
+import { useMarket } from "@/hooks/use-market";
+import { useTokenMetadata } from "@/hooks/use-token-metadata";
 import { fallbackToken, type TokenMetadata } from "@/lib/token-metadata";
-import { registry, marketPath } from "@/lib/registry";
+import { marketPath } from "@/lib/registry";
 import { getSdk } from "@/lib/rpc";
 import { queryKeys } from "@/lib/query-keys";
 import { amountText } from "@/lib/utils";
 import { useMarketFilters } from "@/hooks/use-market-filters";
+import { useMarketList } from "@/hooks/use-market-list";
 import { MARKET_TAGS, MarketTab } from "@/lib/market-filters";
-import { trendingMarkets, usdToken } from "@/lib/trending-markets";
 import {
   Empty,
   EmptyHeader,
@@ -269,39 +262,16 @@ export function MarketTable() {
     page,
     updateFilters,
   } = useMarketFilters();
-  const id = getNetwork(network as NetworkSlug).id;
-  const quote = usdToken(id);
-  const discovery = useTokenDiscovery(
-    network,
-    category === MarketTab.Trending && !!quote,
-  );
-  const discoveryTokens = [
-    ...(discovery.data ?? []),
-    ...(quote ? [quote] : []),
-  ];
-  const addresses =
-    category === MarketTab.Trending
-      ? []
-      : registry.getTokens(id).map((t) => t.address);
-  const metadata = useTokenMetadata(network, addresses);
-  const cachedTokens = useTokens(network, addresses, false);
-  const markets =
-    category === MarketTab.Trending
-      ? trendingMarkets(id, discovery.data ?? [], search)
-      : registry
-          .searchMarkets(id, search, [...cachedTokens, ...metadata])
-          .filter(
-            (m) =>
-              category === MarketTab.YieldList ||
-              registry.getMarketsByTag(id, category).includes(m),
-          );
-  const loading =
-    category === MarketTab.Trending && !!quote && discovery.isPending;
-  const failed =
-    category === MarketTab.Trending &&
-    !!quote &&
-    discovery.isError &&
-    !discovery.data;
+  const {
+    markets,
+    marketCount,
+    discoveryTokens,
+    loading,
+    loadingLabel,
+    error,
+    empty,
+  } = useMarketList({ network, tag: category, search });
+  const failed = !!error;
   const pageCount = Math.max(1, Math.ceil(markets.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const start = (currentPage - 1) * PAGE_SIZE;
@@ -328,12 +298,7 @@ export function MarketTable() {
         <div className="flex flex-wrap items-center gap-6">
           <div className="space-y-1">
             <div className="text-2xl font-semibold tabular-nums">
-              {(category === MarketTab.Trending
-                ? trendingMarkets(id, discovery.data ?? []).length
-                : registry.getMarkets(id).length
-              )
-                .toString()
-                .padStart(2, "0")}
+              {marketCount.toString().padStart(2, "0")}
             </div>
             <div className="text-xs text-muted-foreground">Markets</div>
           </div>
@@ -392,16 +357,14 @@ export function MarketTable() {
         </div>
         <Card className="gap-0 p-0">
           <CardContent className="space-y-4">
-            {failed ? (
+            {error ? (
               <Empty>
                 <EmptyHeader>
-                  <EmptyTitle>Trending markets unavailable</EmptyTitle>
-                  <EmptyDescription>
-                    Could not load tokens. Please try again.
-                  </EmptyDescription>
+                  <EmptyTitle>{error.title}</EmptyTitle>
+                  <EmptyDescription>{error.description}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
-                  <Button variant="outline" onClick={() => discovery.refetch()}>
+                  <Button variant="outline" onClick={() => error.retry()}>
                     Retry
                   </Button>
                 </EmptyContent>
@@ -410,7 +373,7 @@ export function MarketTable() {
               <Table className="min-w-[48rem] table-fixed">
                 {loading && (
                   <TableCaption className="sr-only" role="status">
-                    Loading trending markets…
+                    {loadingLabel}
                   </TableCaption>
                 )}
                 <TableHeader>
@@ -442,7 +405,7 @@ export function MarketTable() {
                       ))
                     : visibleMarkets.map((m) => (
                         <MarketRow
-                          key={`${id}/${m.key}`}
+                          key={`${m.network}/${m.key}`}
                           market={m}
                           duration={duration}
                           discoveryTokens={discoveryTokens}
@@ -453,16 +416,8 @@ export function MarketTable() {
             ) : (
               <Empty>
                 <EmptyHeader>
-                  <EmptyTitle>
-                    {category === MarketTab.Trending && !quote
-                      ? "USDC markets unavailable"
-                      : "No matching markets"}
-                  </EmptyTitle>
-                  <EmptyDescription>
-                    {category === MarketTab.Trending && !quote
-                      ? "Trending markets are not available on this network yet."
-                      : "Try another token or category, or open a permissionless market."}
-                  </EmptyDescription>
+                  <EmptyTitle>{empty.title}</EmptyTitle>
+                  <EmptyDescription>{empty.description}</EmptyDescription>
                 </EmptyHeader>
                 <EmptyContent>
                   <div className="flex gap-4">

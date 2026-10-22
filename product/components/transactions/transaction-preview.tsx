@@ -149,7 +149,7 @@ export function TransactionPreview({
             {action.kind === "withdraw" ? a(action.minImmediateAssetOut) : "—"}
           </Metric>
           <Message info className="text-xs">
-            In-use liquidity move to Resolving without unvested Yield.
+            In-use liquidity moves to Resolving without unvested Yield.
           </Message>
         </>
       )}

@@ -74,14 +74,17 @@ export function UseForm({
     error = "";
   try {
     if (amount) raw = tokenAmount(amount, asset.decimals);
-    if (
-      !/^(?:\d+(?:\.\d{0,2})?|\.\d{1,2})$/.test(tolerance) ||
-      Number(tolerance) > TRANSACTION_DEFAULTS.maxToleranceBps / BPS_PER_PERCENT
-    )
-      throw new Error(
-        `Slippage tolerance must be 0–${TRANSACTION_DEFAULTS.maxToleranceBps / BPS_PER_PERCENT}% with at most 2 decimal places`,
-      );
-    toleranceBps = parseUnits(tolerance, 2);
+    if (mode === "use") {
+      if (
+        !/^(?:\d+(?:\.\d{0,2})?|\.\d{1,2})$/.test(tolerance) ||
+        Number(tolerance) >
+          TRANSACTION_DEFAULTS.maxToleranceBps / BPS_PER_PERCENT
+      )
+        throw new Error(
+          `Yield slippage must be 0–${TRANSACTION_DEFAULTS.maxToleranceBps / BPS_PER_PERCENT}% with at most 2 decimal places`,
+        );
+      toleranceBps = parseUnits(tolerance, 2);
+    }
   } catch (e) {
     error = explainError(e);
   }
@@ -171,32 +174,35 @@ export function UseForm({
                 <Metric label="Term">
                   {tick.state.durationDays.toString()}D
                 </Metric>
-                <details className="my-3 space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
-                  <summary>Slippage</summary>
-                  <Field className="my-2">
-                    <InputGroup>
-                      <InputGroupInput
-                        id="execution-tolerance"
-                        aria-label="Slippage tolerance"
-                        type="text"
-                        inputMode="decimal"
-                        autoComplete="off"
-                        autoCorrect="off"
-                        autoCapitalize="none"
-                        spellCheck={false}
-                        value={tolerance}
-                        onChange={(event) => {
-                          const next = event.target.value;
-                          if (/^\d*(?:\.\d*)?$/.test(next)) setTolerance(next);
-                        }}
-                      />
-                      <InputGroupAddon align="inline-end">
-                        <InputGroupText>%</InputGroupText>
-                      </InputGroupAddon>
-                    </InputGroup>
-                  </Field>
-                </details>
-                <Card className="mb-4">
+                {mode === "use" && (
+                  <details className="space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
+                    <summary>Yield slippage</summary>
+                    <Field className="my-2">
+                      <InputGroup>
+                        <InputGroupInput
+                          id="execution-tolerance"
+                          aria-label="Yield slippage"
+                          type="text"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          autoCorrect="off"
+                          autoCapitalize="none"
+                          spellCheck={false}
+                          value={tolerance}
+                          onChange={(event) => {
+                            const next = event.target.value;
+                            if (/^\d*(?:\.\d*)?$/.test(next))
+                              setTolerance(next);
+                          }}
+                        />
+                        <InputGroupAddon align="inline-end">
+                          <InputGroupText>%</InputGroupText>
+                        </InputGroupAddon>
+                      </InputGroup>
+                    </Field>
+                  </details>
+                )}
+                <Card className="my-4">
                   <CardContent className="space-y-4">
                     <Metric label="Available">
                       {amountText(tick.state.availableSupply, asset.decimals)}{" "}
@@ -259,7 +265,7 @@ export function UseForm({
                           kind: "swap",
                           tickId: tick.id,
                           amount: raw,
-                          maxQuoteIn: cap(principal),
+                          maxQuoteIn: principal,
                           deadline,
                         };
                   }}

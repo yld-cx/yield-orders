@@ -267,7 +267,7 @@ describe("selected price Rent or Swap", () => {
       });
       if (availableSupply > 0n) {
         expect(html).toContain("You receive");
-        expect(html).toContain('aria-label="Slippage tolerance"');
+        expect(html).toContain('aria-label="Yield slippage"');
         expect(html).toContain('value="0.5"');
         expect(mocks.flow.mock.calls[0][0].label).toBe("Preview Rent");
       } else {

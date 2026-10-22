@@ -414,7 +414,7 @@ test.beforeEach(async ({ page }) => {
   });
   await rpc(page);
 });
-test("Trending reads only the ten visible USDC markets", async ({ page }) => {
+test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   const discovered = Array.from({ length: 23 }, (_, i) => {
     const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
     return { address, ...tokenFixture(address) };
@@ -532,6 +532,33 @@ test("Trending reads only the ten visible USDC markets", async ({ page }) => {
   ).toBeVisible();
   expect(new URL(page.url()).searchParams.has("page")).toBe(false);
 });
+
+for (const metadataAvailable of [true, false]) {
+  test(`Trending searches resolved token symbols and names with ${metadataAvailable ? "remote metadata" : "onchain fallback"}`, async ({
+    page,
+  }) => {
+    if (!metadataAvailable)
+      await page.route(metadataRoute, (route) =>
+        route.fulfill({ status: 503 }),
+      );
+    await page.route("**/api/tokens?**", (route) =>
+      route.fulfill({
+        json: { tokens: [{ address: a, ...tokenFixture(a) }] },
+      }),
+    );
+    await page.goto("/?tag=trending&network=base&search=WETH%2FUSDC");
+    const link = page.getByRole("link", {
+      name: "Open WETH / USDC",
+      exact: true,
+    });
+    await expect(link).toBeVisible();
+    for (const search of ["USDC | WETH", "Wrapped Ether USD Coin"]) {
+      await page.getByLabel("Search markets").fill(search);
+      await expect(link).toBeVisible();
+    }
+    await expect(link).toHaveAttribute("href", `/market/base/${key}`);
+  });
+}
 
 test("Trending keeps the requested page while loading and offers retry on discovery failure", async ({
   page,
@@ -2366,6 +2393,7 @@ async function transactionRpc(
     fail: !!options.fail,
     writes: [] as string[][],
     withdrawals: [] as (readonly bigint[])[],
+    swaps: [] as (readonly [bigint, bigint, bigint])[],
     simulations: [] as string[],
     timestamp: 0x68e00000n,
     settlement: false,
@@ -2886,6 +2914,12 @@ async function transactionRpc(
             const action = decodeFunctionData({ abi: protocolAbi, data });
             if (action.functionName === "withdraw")
               state.withdrawals.push(action.args);
+            if (action.functionName === "swap")
+              state.swaps.push([
+                action.args[0],
+                action.args[1],
+                action.args[2],
+              ]);
           }
           state.writes.push(
             decoded.args[0].map(
@@ -3601,13 +3635,13 @@ test("amount input accepts decimal editing and rejects invalid text", async ({
   await expect(input).toHaveValue("");
 });
 
-test("slippage tolerance accepts percentages and disables autocomplete", async ({
+test("Yield slippage accepts percentages and disables autocomplete", async ({
   page,
 }) => {
   await page.goto(`/market/base/${key}`);
   await page.locator(`[data-tick-id="${id7}"]`).click();
-  await page.getByText("Slippage", { exact: true }).click();
-  const input = page.getByLabel("Slippage tolerance", { exact: true });
+  await page.getByText("Yield slippage", { exact: true }).click();
+  const input = page.getByLabel("Yield slippage", { exact: true });
   await expect(input).toHaveValue("0.5");
   await expect(input.locator("..")).toContainText("%");
   await expect(input).toHaveAttribute("inputmode", "decimal");
@@ -3629,7 +3663,7 @@ test("slippage tolerance accepts percentages and disables autocomplete", async (
     await input.fill(value);
     await expect(input).toHaveValue(value);
     await expect(
-      page.getByRole("alert").filter({ hasText: "Slippage tolerance must be" }),
+      page.getByRole("alert").filter({ hasText: "Yield slippage must be" }),
     ).toHaveCount(0);
   }
   for (const value of ["", ".", "10.01", "333", "0.001"]) {
@@ -3637,7 +3671,7 @@ test("slippage tolerance accepts percentages and disables autocomplete", async (
     await expect(
       page
         .getByRole("alert")
-        .filter({ hasText: "Slippage tolerance must be 0–10%" }),
+        .filter({ hasText: "Yield slippage must be 0–10%" }),
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Preview Rent", exact: true }),
@@ -3645,41 +3679,79 @@ test("slippage tolerance accepts percentages and disables autocomplete", async (
   }
 });
 
-for (const mode of ["Rent", "Swap"] as const) {
-  test(`${mode} converts percentage slippage to exact basis-point caps`, async ({
+test("Rent converts Yield slippage to exact basis-point caps", async ({
+  page,
+}) => {
+  await transactionRpc(page, { pair: true, tick: true });
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByText("Yield slippage", { exact: true }).click();
+  await page.getByLabel("You receive", { exact: true }).fill("1");
+  for (const [percent, expectedCap] of [
+    ["0.5", "0.01005 WETH"],
+    ["0.29", "0.010029 WETH"],
+    ["0.01", "0.010001 WETH"],
+    ["0", "0.01 WETH"],
+    ["10", "0.011 WETH"],
+  ]) {
+    await page.getByLabel("Yield slippage", { exact: true }).fill(percent);
+    await page
+      .getByRole("button", { name: "Preview Rent", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "Confirm Rent", exact: true }),
+    ).toBeVisible();
+    await dialog.getByText("Transaction details", { exact: true }).click();
+    await expect(
+      dialog.getByText("Maximum accepted Yield", { exact: true }).locator(".."),
+    ).toContainText(expectedCap);
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  }
+});
+
+for (const direction of [0, 1] as const) {
+  test(`Swap submits the exact contract Quote in direction ${direction} regardless of Rent Yield slippage`, async ({
     page,
   }) => {
-    await transactionRpc(page, { pair: true, tick: true });
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      direction,
+    });
     const dialog = page.getByRole("dialog");
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    if (mode === "Swap")
-      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
-    await page.getByText("Slippage", { exact: true }).click();
     await page.getByLabel("You receive", { exact: true }).fill("1");
-    for (const [percent, rentCap, swapCap] of [
-      ["0.5", "0.01005 WETH", "3,015 USDC"],
-      ["0.29", "0.010029 WETH", "3,008.7 USDC"],
-      ["0.01", "0.010001 WETH", "3,000.3 USDC"],
-      ["0", "0.01 WETH", "3,000 USDC"],
-      ["10", "0.011 WETH", "3,300 USDC"],
-    ]) {
+    for (const percent of ["10", ""]) {
+      await page.getByText("Yield slippage", { exact: true }).click();
+      await page.getByLabel("Yield slippage", { exact: true }).fill(percent);
+      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
+      await expect(
+        page.getByText("Yield slippage", { exact: true }),
+      ).toHaveCount(0);
       await page
-        .getByLabel("Slippage tolerance", { exact: true })
-        .fill(percent);
-      await page
-        .getByRole("button", { name: `Preview ${mode}`, exact: true })
+        .getByRole("button", { name: "Preview Swap", exact: true })
         .click();
       await expect(
-        dialog.getByRole("button", { name: `Confirm ${mode}`, exact: true }),
+        dialog.getByRole("button", { name: "Confirm Swap", exact: true }),
       ).toBeVisible();
-      if (mode === "Rent")
-        await dialog.getByText("Transaction details", { exact: true }).click();
-      const label =
-        mode === "Rent" ? "Maximum accepted Yield" : "Maximum Quote payment";
+      const payment = direction === 0 ? "3,000 USDC" : "0.000333 WETH";
+      for (const label of ["Pay Quote", "Maximum Quote payment"])
+        await expect(
+          dialog.getByText(label, { exact: true }).locator(".."),
+        ).toContainText(payment);
+      await dialog
+        .getByRole("button", { name: "Confirm Swap", exact: true })
+        .click();
       await expect(
-        dialog.getByText(label, { exact: true }).locator(".."),
-      ).toContainText(mode === "Rent" ? rentCap : swapCap);
+        dialog.getByText("Confirmed ✅", { exact: true }),
+      ).toBeVisible();
+      expect(state.swaps.at(-1)).toEqual([
+        direction === 0 ? id7 : bid7,
+        direction === 0 ? 10n ** 18n : 10n ** 6n,
+        direction === 0 ? 3000n * 10n ** 6n : 333333333333333n,
+      ]);
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      await page.getByRole("tab", { name: "Rent", exact: true }).click();
     }
   });
 }
