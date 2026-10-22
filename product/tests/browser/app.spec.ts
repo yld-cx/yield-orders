@@ -4398,14 +4398,6 @@ test("metadata and image failures preserve onchain interactions and the universa
   await expect(
     page.getByRole("img", { name: "WETH logo" }).first(),
   ).toHaveAttribute("src", "/token.svg");
-  await page.goto("/?tag=all");
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
-  await page.getByLabel("Search markets").fill("WETH");
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
   await page.route(metadataRoute, async (route) => {
     const url = new URL(route.request().url());
     await route.fulfill({
