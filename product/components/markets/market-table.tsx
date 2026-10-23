@@ -280,8 +280,7 @@ export function MarketTable() {
             Liquidity, on your terms<span className="text-brand">.</span>
           </h1>
           <p className="mt-3 max-w-2xl text-muted-foreground">
-            Provide or rent tokens at your price. Earn yield when renters repay,
-            or swap at the price you choose.
+            Provide and rent tokens. Earn yield or swap at the price you choose.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-6">
@@ -466,7 +465,7 @@ export function MarketTable() {
               </nav>
             )}
             <div className="border-t p-4 text-xs leading-relaxed text-muted-foreground">
-              Estimated Yield is earned on Repay. Swap or Close settles in
+              Estimated Yield is earned on Repay. Swap closes the position in
               Quote.
             </div>
           </CardContent>

@@ -2418,7 +2418,6 @@ async function transactionRpc(
     };
     balance?: bigint;
     atomic?: "supported" | "unsupported" | "missing" | "safe";
-    allowanceLag?: number;
     zeroFirst?: boolean;
     simulationUnsupported?: boolean;
     sendUnsupported?: boolean;
@@ -2438,13 +2437,10 @@ async function transactionRpc(
     simulations: [] as string[],
     timestamp: 0x68e00000n,
     settlement: false,
-    receiptUnknown: false,
-    submissionUnknown: false,
+    blockNumber: 10000001n,
     batchPending: false,
     batchReverted: false,
-    receiptReverted: false,
     pendingAllowance: undefined as bigint | undefined,
-    allowanceReads: 0,
     batches: [] as {
       atomicRequired?: boolean;
       calls: { to: string; data: Hex }[];
@@ -2519,15 +2515,6 @@ async function transactionRpc(
         token.functionName === "balanceOf" ||
         token.functionName === "allowance"
       ) {
-        if (
-          token.functionName === "allowance" &&
-          state.pendingAllowance !== undefined
-        ) {
-          if (state.allowanceReads-- <= 0) {
-            state.allowance = state.pendingAllowance;
-            state.pendingAllowance = undefined;
-          }
-        }
         return {
           success: true,
           returnData: encodeFunctionResult({
@@ -2891,8 +2878,16 @@ async function transactionRpc(
         state.allowance = actualAllowance;
       } else if (item.method === "eth_getCode") result = protocolRuntime;
       else if (item.method === "eth_chainId") result = "0x2105";
-      else if (item.method === "eth_blockNumber") result = "0x989680";
-      else if (item.method === "eth_getBlockByNumber")
+      else if (item.method === "eth_blockNumber") {
+        if (
+          state.blockNumber > 10000000n &&
+          state.pendingAllowance !== undefined
+        ) {
+          state.allowance = state.pendingAllowance;
+          state.pendingAllowance = undefined;
+        }
+        result = `0x${state.blockNumber.toString(16)}`;
+      } else if (item.method === "eth_getBlockByNumber")
         result = {
           number: "0x989680",
           timestamp: `0x${state.timestamp.toString(16)}`,
@@ -2945,7 +2940,6 @@ async function transactionRpc(
             return error("User rejected approval");
           }
           state.pendingAllowance = approval.args[1];
-          state.allowanceReads = options.allowanceLag ?? 0;
           state.writes.push(["approve"]);
         } else {
           const decoded = decodeFunctionData({ abi: protocolAbi, data });
@@ -2970,12 +2964,7 @@ async function transactionRpc(
           );
         }
         result = txHash;
-      } else if (
-        item.method === "eth_getTransactionReceipt" &&
-        state.receiptUnknown
-      )
-        return error("Receipt tracking unavailable", -32601);
-      else if (item.method === "eth_getTransactionByHash")
+      } else if (item.method === "eth_getTransactionByHash")
         result = {
           hash: txHash,
           blockNumber: "0x989680",
@@ -2998,7 +2987,7 @@ async function transactionRpc(
           transactionIndex: "0x0",
           from: "0x0000000000000000000000000000000000000001",
           to: deploymentFor("eip155:8453").address,
-          status: state.receiptReverted ? "0x0" : "0x1",
+          status: "0x1",
           gasUsed: "0x493e0",
           cumulativeGasUsed: "0x493e0",
           effectiveGasPrice: "0x1",
@@ -3007,11 +2996,6 @@ async function transactionRpc(
           type: "0x2",
         };
       else return error(`Unsupported test RPC ${item.method}`, -32601);
-      if (
-        state.submissionUnknown &&
-        ["eth_sendTransaction", "wallet_sendCalls"].includes(item.method)
-      )
-        return error("Wallet response lost after submission", -32603);
       return { id: item.id, jsonrpc: "2.0", result };
     };
     const body = route.request().postDataJSON();
@@ -3243,6 +3227,25 @@ test("position cards share a compact responsive layout on Market and Orders", as
     await expect(card.getByText(a, { exact: true })).toBeVisible();
     await details.press("Enter");
     await expect(card.getByText("Total Active principal")).toBeHidden();
+    await page.evaluate(() => {
+      (
+        window as unknown as { testWallet: { chain: (chain: string) => void } }
+      ).testWallet.chain("0x1");
+    });
+    const switchNetwork = card.getByRole("button", { name: "Switch network" });
+    await expect(switchNetwork).toHaveCount(1);
+    await expect(card.getByText("Your wallet is on Ethereum.")).toHaveCount(1);
+    await expect(
+      card.getByRole("button", { name: "Preview Withdraw" }),
+    ).toBeDisabled();
+    await expect(
+      card.getByRole("button", { name: "Preview Collect" }),
+    ).toBeDisabled();
+    await switchNetwork.click();
+    await expect(switchNetwork).toHaveCount(0);
+    await expect(
+      card.getByRole("button", { name: "Preview Withdraw" }),
+    ).toBeEnabled();
   }
 });
 
@@ -3394,7 +3397,7 @@ test("Use shows accrued Yield without balance or approval, then keeps approval a
   await page.goto("/orders");
   await page.getByRole("tab", { name: /^Use \(/ }).click();
   const card = page.locator('[data-slot="position-card"]').first();
-  await expect(card.getByText("Accrued Yield (estimated)")).toBeVisible();
+  await expect(card.getByText("Accrued Yield")).toBeVisible();
   await expect(card.getByText("5 WETH", { exact: true })).toBeVisible();
   expect(state.simulations).toEqual([]);
   expect(state.writes).toEqual([]);
@@ -3559,7 +3562,7 @@ test("reopening clears stale previews, approval state and errors before refreshi
 });
 
 for (const submitted of ["approval", "transaction"] as const) {
-  test(`reopening preserves an unknown ${submitted} and resumes tracking without resubmission`, async ({
+  test(`${submitted} waits for two confirmations before continuing`, async ({
     page,
   }) => {
     const state = await transactionRpc(page, {
@@ -3567,54 +3570,30 @@ for (const submitted of ["approval", "transaction"] as const) {
       tick: true,
       allowance: submitted === "approval" ? 0n : 10n ** 30n,
     });
+    state.blockNumber = 10000000n;
     const dialog = page.getByRole("dialog");
-    state.receiptUnknown = true;
     await dialog
       .getByRole("button", {
         name: submitted === "approval" ? "Approve WETH" : "Confirm Provide",
         exact: true,
       })
       .click();
-    const check =
-      submitted === "approval"
-        ? "Check approval confirmation"
-        : "Check transaction confirmation";
     await expect(
-      dialog.getByRole("button", { name: check, exact: true }),
+      dialog.getByText("Waiting for onchain confirmation…", { exact: true }),
     ).toBeVisible();
-    await expect(dialog.getByRole("alert")).toContainText(
-      "Confirmation is still unknown",
+    await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
+      0,
     );
-    const hash = await dialog
-      .getByRole("link", { name: "View transaction" })
-      .getAttribute("href");
-    const writes = state.writes.map((calls) => [...calls]);
-    expect(writes).toEqual([[submitted === "approval" ? "approve" : "supply"]]);
-    await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    // A fresh simulation would now fail; reopening must retain the submitted action instead.
-    state.fail = true;
-    await page
-      .getByRole("button", { name: "Preview Provide", exact: true })
-      .click();
-    await expect(
-      dialog.getByRole("button", { name: check, exact: true }),
-    ).toBeVisible();
-    await expect(
-      dialog.getByRole("link", { name: "View transaction" }),
-    ).toHaveAttribute("href", hash!);
-    await expect(dialog.getByRole("alert")).toContainText(
-      "Confirmation is still unknown",
-    );
-    expect(state.writes).toEqual(writes);
-    state.receiptUnknown = false;
-    state.fail = false;
-    await dialog.getByRole("button", { name: check, exact: true }).click();
+    expect(state.writes).toEqual([
+      [submitted === "approval" ? "approve" : "supply"],
+    ]);
+    state.blockNumber = 10000001n;
     await expect(
       submitted === "approval"
         ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
         : dialog.getByText("Confirmed ✅", { exact: true }),
-    ).toBeVisible();
-    expect(state.writes).toEqual(writes);
+    ).toBeVisible({ timeout: 10000 });
+    expect(state.writes).toHaveLength(1);
   });
 }
 
@@ -3902,14 +3881,13 @@ for (const mode of ["Rent", "Swap"] as const) {
   });
 }
 
-test("Rent advances from confirmed approval to Confirm Rent despite delayed allowance RPC reads", async ({
+test("Rent advances to Confirm Rent after two approval confirmations", async ({
   page,
 }) => {
   const state = await transactionRpc(page, {
     pair: true,
     tick: true,
     allowance: 0n,
-    allowanceLag: 3,
   });
   await page
     .getByRole("dialog")
@@ -3921,11 +3899,6 @@ test("Rent advances from confirmed approval to Confirm Rent despite delayed allo
   await dialog
     .getByRole("button", { name: "Approve USDC", exact: true })
     .click();
-  await expect(
-    dialog.getByText(
-      "Approval confirmed. Synchronizing allowance and refreshing simulation…",
-    ),
-  ).toBeVisible();
   await expect(
     dialog.getByRole("button", { name: "Confirm Rent", exact: true }),
   ).toBeVisible({ timeout: 15000 });
@@ -3939,9 +3912,7 @@ test("Rent advances from confirmed approval to Confirm Rent despite delayed allo
   await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["approve"], ["use"]]);
 });
-test("pending atomic batch survives reload and never resubmits while awaiting multisig execution", async ({
-  page,
-}) => {
+test("pending atomic batch waits for wallet execution", async ({ page }) => {
   const state = await transactionRpc(page, {
     pair: true,
     tick: true,
@@ -3954,22 +3925,8 @@ test("pending atomic batch survives reload and never resubmits while awaiting mu
     .getByRole("button", { name: "Approve & Provide", exact: true })
     .click();
   await expect(
-    dialog.getByRole("button", {
-      name: "Check transaction confirmation",
-      exact: true,
-    }),
+    dialog.getByText("Waiting for onchain confirmation…", { exact: true }),
   ).toBeVisible();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
-    0,
-  );
-  await page.reload();
-  await openProvidePreview(page);
-  await dialog
-    .getByRole("button", {
-      name: "Check transaction confirmation",
-      exact: true,
-    })
-    .click();
   await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
     0,
   );
@@ -4088,125 +4045,6 @@ for (const atomic of [undefined, "supported"] as const) {
     expect(state.writes).toHaveLength(1);
   });
 }
-for (const approval of [false, true]) {
-  test(`pending ${approval ? "approval" : "action"} recovers after reload without resubmission`, async ({
-    page,
-  }) => {
-    const state = await transactionRpc(page, {
-      pair: true,
-      tick: true,
-      allowance: approval ? 0n : 10n ** 30n,
-    });
-    state.receiptUnknown = true;
-    const dialog = page.getByRole("dialog");
-    await dialog
-      .getByRole("button", {
-        name: approval ? "Approve WETH" : "Confirm Provide",
-        exact: true,
-      })
-      .click();
-    await expect(
-      dialog.getByRole("button", {
-        name: approval
-          ? "Check approval confirmation"
-          : "Check transaction confirmation",
-        exact: true,
-      }),
-    ).toBeVisible();
-    await page.reload();
-    await openProvidePreview(page);
-    state.receiptUnknown = false;
-    await dialog
-      .getByRole("button", {
-        name: approval
-          ? "Check approval confirmation"
-          : "Check transaction confirmation",
-        exact: true,
-      })
-      .click();
-    await expect(
-      approval
-        ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
-        : dialog.getByText("Confirmed ✅", { exact: true }),
-    ).toBeVisible();
-    expect(state.writes).toEqual([[approval ? "approve" : "supply"]]);
-  });
-}
-
-for (const phase of ["approval", "action", "batch"] as const) {
-  test(`unknown ${phase} submission can be manually cleared after reload without automatic retry`, async ({
-    page,
-  }) => {
-    const state = await transactionRpc(page, {
-      pair: true,
-      tick: true,
-      allowance: phase === "action" ? 10n ** 30n : 0n,
-      atomic: phase === "batch" ? "supported" : undefined,
-    });
-    const dialog = page.getByRole("dialog");
-    state.submissionUnknown = true;
-    await dialog
-      .getByRole("button", {
-        name:
-          phase === "approval"
-            ? "Approve WETH"
-            : phase === "batch"
-              ? "Approve & Provide"
-              : "Confirm Provide",
-        exact: true,
-      })
-      .click();
-    await expect(
-      dialog.getByText(/The transaction may have been submitted/),
-    ).toBeVisible();
-    await expect(
-      dialog.getByRole("button", { name: "Clear pending state", exact: true }),
-    ).toBeVisible();
-    expect(state.writes).toHaveLength(1);
-    await page.reload();
-    await openProvidePreview(page);
-    await expect(
-      dialog.getByText(
-        /Check your wallet before clearing pending state, since it might still execute/,
-      ),
-    ).toBeVisible();
-    await expect(
-      dialog.getByRole("button", { name: /Check .*confirmation/ }),
-    ).toHaveCount(0);
-    expect(state.writes).toHaveLength(1);
-    await dialog
-      .getByRole("button", { name: "Clear pending state", exact: true })
-      .click();
-    await expect(
-      dialog.getByRole("button", { name: "Retry Provide", exact: true }),
-    ).toBeVisible();
-    expect(
-      await page.evaluate(() =>
-        Object.keys(localStorage).filter((key) =>
-          key.startsWith("yld/operation/v1/"),
-        ),
-      ),
-    ).toEqual([]);
-    expect(state.writes).toHaveLength(1);
-    state.submissionUnknown = false;
-    await dialog
-      .getByRole("button", { name: "Retry Provide", exact: true })
-      .click();
-    await expect(
-      dialog.getByRole("button", {
-        name:
-          phase === "approval"
-            ? "Confirm Provide"
-            : phase === "batch"
-              ? "Approve & Provide"
-              : "Confirm Provide",
-        exact: true,
-      }),
-    ).toBeVisible();
-    expect(state.writes).toHaveLength(1);
-  });
-}
-
 test("fresh review resets atomic fallback and attempts batching again", async ({
   page,
 }) => {

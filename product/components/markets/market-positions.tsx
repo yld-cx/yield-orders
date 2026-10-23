@@ -54,12 +54,6 @@ export function MarketPositions({ market }: { market: Market }) {
           Load more positions
         </Button>
       )}
-      {!!positions.length && (
-        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-          Collect transfers claimable Asset Yield and Quote proceeds. It does
-          not remove remaining Active liquidity.
-        </p>
-      )}
     </section>
   );
 }

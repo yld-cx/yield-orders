@@ -140,7 +140,7 @@ export function Message({
 }) {
   return (
     <Alert
-      className={cn("my-3 border-dashed", className)}
+      className={cn("my-3 min-w-0 border-dashed break-all", className)}
       variant={error ? "destructive" : "default"}
       role={error ? "alert" : "status"}
     >
@@ -152,7 +152,7 @@ export function Message({
       ) : info ? (
         <Info aria-hidden="true" className="size-4" />
       ) : null}
-      <AlertDescription className="text-[length:inherit]">
+      <AlertDescription className="min-w-0 text-[length:inherit] break-all">
         {children}
       </AlertDescription>
     </Alert>

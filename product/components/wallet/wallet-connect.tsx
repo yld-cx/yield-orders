@@ -266,7 +266,7 @@ export function NetworkGuard({ chainId }: { chainId: number }) {
     return <Message>Connect a wallet to transact.</Message>;
   if (connection.chainId === chainId) return null;
   return (
-    <div className="message flex items-center gap-2 my-2">
+    <div className="message flex flex-wrap items-center gap-2 my-2">
       <p>
         Your wallet is on {connection.chain?.name ?? "an unsupported network"}.
       </p>

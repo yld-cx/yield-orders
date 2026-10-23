@@ -54,7 +54,7 @@ export const RPC_RETRY_COUNT = 1;
 export const SAFE_INFO_TIMEOUT_MS = 10000;
 export const NETWORK_COOKIE_MAX_AGE_SECONDS = 31536000;
 export const RECEIPT_TIMEOUT_MS = 0;
-export const TRANSACTION_CONFIRMATIONS = 1;
+export const TRANSACTION_CONFIRMATIONS = 2;
 
 export const BASIS_POINTS = 10000n;
 export const PERCENT_SCALE = 100;

@@ -72,7 +72,9 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
           <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
             Yield Orders<span className="text-brand">.</span>
           </h1>
-          <p>Manage supplied liquidity and active rentals in one place.</p>
+          <p className="mt-3 max-w-2xl text-muted-foreground">
+            Manage provided liquidity and active rentals in one place.
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-6">
           {account.address && (
@@ -209,11 +211,6 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
                 </Button>
               )}
             </div>
-            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-              {tab === "provide"
-                ? "Provide positions remain visible while Active liquidity, Resolving principal, or claimable assets remain. Yield comes from Repay; Swap/Close creates Quote proceeds."
-                : "Use shows active rental positions only. A position disappears after Repay or Close."}
-            </p>
           </TabsContent>
         </Tabs>
       )}
