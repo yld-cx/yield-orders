@@ -17,7 +17,7 @@ import {
 } from "@yld-cx/ui/components/ui/table";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Fragment, useEffect } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -26,9 +26,10 @@ import {
   MoveUpRight,
   ArrowLeftRight,
   RotateCcw,
+  LayersPlus,
 } from "lucide-react";
 import { displayTokens } from "@yld-cx/sdk/registry";
-import { marginalYieldPercent, getNetwork } from "@yld-cx/sdk/ethereum";
+import { getNetwork } from "@yld-cx/sdk/ethereum";
 import { type Duration, type Tick } from "@yld-cx/sdk";
 import { useMarket } from "@/hooks/use-market";
 import { useTokenMetadata } from "@/hooks/use-token-metadata";
@@ -52,6 +53,8 @@ import { Input } from "@yld-cx/ui/components/ui/input";
 import { DurationSelect } from "@/components/forms/financial-fields";
 import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
 import { PairIcons } from "./token-icon";
+import { YieldModeSwitch } from "@/components/forms/yield-display";
+import { DEFAULT_YIELD_MODE, tickYieldText, type YieldMode } from "@/lib/yield";
 
 const PAGE_SIZE = 10;
 
@@ -88,9 +91,11 @@ function MarketRowSkeleton() {
 function MarketRow({
   market: config,
   duration,
+  yieldMode,
 }: {
   market: MarketConfiguration;
   duration: Duration;
+  yieldMode: YieldMode;
 }) {
   const network = getNetwork(config.network).slug,
     sdk = getSdk(network);
@@ -206,6 +211,7 @@ function MarketRow({
           <TableCell className="p-4 text-right first:text-left">
             <YieldReference
               duration={duration}
+              yieldMode={yieldMode}
               pending={pending}
               ticks={query.data?.failed || query.isError ? [] : s.side}
             />
@@ -222,13 +228,15 @@ function YieldReference({
   duration,
   ticks,
   pending,
+  yieldMode,
 }: {
   duration: Duration;
   ticks: Tick[];
   pending: boolean;
+  yieldMode: YieldMode;
 }) {
   const tick = ticks.find((t) => t.state.availableSupply > 0n);
-  const estimatedYield = tick ? marginalYieldPercent(tick.state) : undefined;
+  const estimatedYield = tick ? tickYieldText(tick.state, yieldMode) : "—";
   return (
     <>
       <div className="text-primary">
@@ -237,19 +245,24 @@ function YieldReference({
             className="ml-auto h-5 w-12 motion-reduce:animate-none"
             aria-label="Loading yield…"
           />
-        ) : estimatedYield !== undefined ? (
-          `${estimatedYield}%`
         ) : (
-          "—"
+          estimatedYield
         )}
       </div>
       <small className={pending ? "invisible" : undefined}>
-        {tick || pending ? `${duration}D reference` : "No liquidity yet"}
+        {tick || pending
+          ? yieldMode === "apy"
+            ? "Annualized"
+            : `${duration}D reference`
+          : "No liquidity yet"}
       </small>
     </>
   );
 }
 export function MarketTable() {
+  const [yieldMode, setYieldMode] = useState<YieldMode>(
+    DEFAULT_YIELD_MODE.markets,
+  );
   const {
     network,
     search,
@@ -280,8 +293,7 @@ export function MarketTable() {
             Liquidity, on your terms<span className="text-brand">.</span>
           </h1>
           <p className="mt-3 max-w-2xl text-muted-foreground">
-            Provide or rent tokens at your price. Earn yield when renters repay,
-            or swap at the price you choose.
+            Provide and rent tokens. Earn yield or swap at the price you choose.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-6">
@@ -301,9 +313,9 @@ export function MarketTable() {
               Choose a market to provide liquidity or rent tokens.
             </p>
           </div>
-          <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto">
+          <div className="flex w-full min-w-0 flex-wrap items-center gap-3 sm:w-auto">
             <Button render={<Link href="/market/open" />} nativeButton={false}>
-              <Layers size={16} />
+              <LayersPlus size={16} />
               Open Market
             </Button>
             <div className="relative min-w-0 flex-1 sm:w-48 sm:flex-none [&>svg]:pointer-events-none [&>svg]:absolute [&>svg]:left-3 [&>svg]:top-2 [&>svg]:size-4 [&>svg]:text-muted-foreground [&>input]:pl-9">
@@ -322,6 +334,12 @@ export function MarketTable() {
               label="Market duration"
               value={duration}
               onChange={(duration) => updateFilters({ duration })}
+            />
+            <YieldModeSwitch
+              label="Markets yield display"
+              termLabel="Term"
+              value={yieldMode}
+              onChange={setYieldMode}
             />
           </div>
         </div>
@@ -373,14 +391,20 @@ export function MarketTable() {
                     <TableHead className="w-[15%] px-4 text-right first:text-left">
                       Ask liquidity
                     </TableHead>
-                    <TableHead className="w-[15%] px-4 text-right first:text-left">
-                      Ask Yield
+                    <TableHead
+                      className="w-[15%] px-4 text-right first:text-left"
+                      aria-label={yieldMode === "apy" ? "Ask APY" : "Ask Yield"}
+                    >
+                      {yieldMode === "apy" ? "Ask APY" : "Ask Yield"}
                     </TableHead>
                     <TableHead className="w-[15%] px-4 text-right first:text-left">
                       Bid liquidity
                     </TableHead>
-                    <TableHead className="w-[15%] px-4 text-right first:text-left">
-                      Bid Yield
+                    <TableHead
+                      className="w-[15%] px-4 text-right first:text-left"
+                      aria-label={yieldMode === "apy" ? "Bid APY" : "Bid Yield"}
+                    >
+                      {yieldMode === "apy" ? "Bid APY" : "Bid Yield"}
                     </TableHead>
                     <TableHead className="w-[10%] px-4 text-center">
                       <span className="sr-only">Open</span>
@@ -397,6 +421,7 @@ export function MarketTable() {
                           key={`${m.network}/${m.key}`}
                           market={m}
                           duration={duration}
+                          yieldMode={yieldMode}
                         />
                       ))}
                 </TableBody>
@@ -466,7 +491,7 @@ export function MarketTable() {
               </nav>
             )}
             <div className="border-t p-4 text-xs leading-relaxed text-muted-foreground">
-              Estimated Yield is earned on Repay. Swap or Close settles in
+              Estimated Yield is earned on Repay. Swap closes the position in
               Quote.
             </div>
           </CardContent>

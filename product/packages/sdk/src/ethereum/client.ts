@@ -1,7 +1,6 @@
 import {
   BaseError,
   ContractFunctionRevertedError,
-  TransactionReceiptNotFoundError,
   decodeFunctionResult,
   encodeFunctionData,
   erc20Abi,
@@ -14,9 +13,8 @@ import {
   type WalletClient,
   type TransactionReceipt,
   type ContractFunctionReturnType,
-  type GetCallsStatusReturnType,
 } from "viem";
-import { waitForTransactionReceipt } from "viem/actions";
+import { waitForCallsStatus, waitForTransactionReceipt } from "viem/actions";
 import type {
   Duration,
   EconomicAction,
@@ -43,12 +41,7 @@ import { protocolAbi } from "./abi.ts";
 import { deploymentFor, getNetwork } from "./networks.ts";
 import { pairIdFor, tickCandidates, tickIdFor } from "./math.ts";
 import { protocolErrorName } from "./errors.ts";
-import {
-  OperationStore,
-  type PendingOperation,
-  type WalletCall,
-  type BatchSender,
-} from "./operations.ts";
+import { type WalletCall, type BatchSender } from "./operations.ts";
 type Return<N extends "withdraw" | "collect" | "repay" | "swap" | "close"> =
   ContractFunctionReturnType<typeof protocolAbi, "nonpayable", N>;
 export interface InputRequirement {
@@ -67,29 +60,8 @@ export class PreviewChangedError extends Error {
     );
   }
 }
-export class TransactionPendingError extends Error {
-  constructor(
-    readonly hash: string,
-    options?: ErrorOptions,
-    readonly outcome: "pending" | "unknown" = "unknown",
-  ) {
-    super(
-      outcome === "pending"
-        ? "Wallet batch is pending onchain execution. Additional wallet signatures may be needed."
-        : "Confirmation is still unknown. Check the submitted transaction before continuing.",
-      options,
-    );
-  }
-}
 export class TransactionTerminalError extends Error {}
 export class AtomicUnavailableError extends Error {}
-export class AllowanceSyncError extends Error {
-  constructor() {
-    super(
-      "Approval confirmed. Waiting for RPC allowance synchronization; no new approval is needed.",
-    );
-  }
-}
 export interface Preview {
   action: EconomicAction;
   plan: TransactionPlan;
@@ -134,7 +106,6 @@ export type TransactionStage =
   | "simulating"
   | "signing"
   | "submitted"
-  | "synchronizing"
   | "pending"
   | "confirmed";
 export type StatusCallback = (stage: TransactionStage, hash?: Hex) => void;
@@ -248,23 +219,17 @@ export class EthereumClient {
   readonly chainId: number;
   readonly runtimeCodeHash: Hex;
   private readonly activeWallets = new Set<string>();
-  readonly operations: OperationStore;
   // Only verified identities are cached. Liquidity is always freshly read.
   readonly knownTicks = new Map<bigint, TickIdentity>();
   constructor(
     readonly publicClient: PublicClient,
     readonly network: EvmNetwork,
     verification?: { address: Address; runtimeCodeHash: Hex },
-    storage?: Storage,
   ) {
     const config = verification ?? deploymentFor(network);
     this.address = config.address;
     this.runtimeCodeHash = config.runtimeCodeHash;
     this.chainId = getNetwork(network).chain.id;
-    this.operations = new OperationStore(
-      `${this.chainId}/${this.address.toLowerCase()}`,
-      storage,
-    );
   }
   async verifyDeployment(): Promise<void> {
     const [chainId, code] = await Promise.all([
@@ -852,19 +817,6 @@ export class EthereumClient {
     if (addresses[0]?.toLowerCase() !== account.toLowerCase())
       throw new Error("Wallet account changed. Review a new preview.");
   }
-  pending(account: Address) {
-    return this.operations.get(account);
-  }
-  clearTerminal(account: Address) {
-    const op = this.pending(account);
-    if (
-      op &&
-      ["confirmed", "reverted"].includes(op.status) &&
-      (op.status === "reverted" ||
-        (op.phase !== "approval" && op.phase !== "approval-reset"))
-    )
-      this.operations.remove(account);
-  }
   private async needsReset(
     token: Address,
     account: Address,
@@ -938,212 +890,29 @@ export class EthereumClient {
     });
     return calls;
   }
-  private async synchronize(op: PendingOperation, onStatus?: StatusCallback) {
-    onStatus?.("synchronizing");
-    if (!op.approvalToken)
-      throw new Error("Approval token is missing from the submitted operation");
-    for (let attempt = 0; attempt < 12; attempt++) {
-      try {
-        const allowance = await this.allowance(
-          op.approvalToken,
-          op.account,
-          op.blockNumber,
-        );
-        if (
-          op.phase === "approval-reset"
-            ? allowance === 0n
-            : allowance >= op.approvalAmount!
-        )
-          return;
-      } catch {}
-      if (attempt < 11)
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    throw new AllowanceSyncError();
-  }
-  private async submit(
-    op: PendingOperation,
-    send: () => Promise<string>,
-    onStatus?: StatusCallback,
-  ) {
-    if (this.pending(op.account))
-      throw new Error("A submitted operation must be resolved first");
-    this.operations.put(op);
-    try {
-      op.id = await send();
-      op.status = "submitted";
-      this.operations.put(op);
-      onStatus?.(
-        "submitted",
-        op.identifier === "transaction" ? (op.id as Hex) : undefined,
-      );
-    } catch (error) {
-      const unsupported = (e: unknown): boolean =>
-        !!e &&
-        typeof e === "object" &&
-        (("code" in e && [-32601, 4200, 5700, 5760].includes(Number(e.code))) ||
-          ("cause" in e && unsupported(e.cause)));
-      if (
-        op.identifier === "calls" &&
-        (error instanceof AtomicUnavailableError || unsupported(error))
-      ) {
-        this.operations.remove(op.account);
-        throw new AtomicUnavailableError(
-          "Wallet atomic execution is unavailable. Approve separately and review the action.",
-          { cause: error },
-        );
-      }
-      const rejected = (e: unknown): boolean =>
-        !!e &&
-        typeof e === "object" &&
-        (("code" in e && e.code === 4001) ||
-          ("message" in e &&
-            /user rejected|user denied/i.test(String(e.message))) ||
-          ("cause" in e && rejected(e.cause)));
-      if (!op.id && (rejected(error) || unsupported(error)))
-        this.operations.remove(op.account);
-      else {
-        op.status = "unknown";
-        this.operations.put(op);
-      }
-      throw error;
-    }
-  }
-  private async track(
-    op: PendingOperation,
+  private async waitForReceipt(
+    hash: Hex,
     wallet: WalletClient,
     onStatus?: StatusCallback,
-    batchStatus?: GetCallsStatusReturnType,
   ): Promise<TransactionReceipt> {
-    if (!op.id) {
-      op.status = "unknown";
-      this.operations.put(op);
-      throw new Error(
-        "Wallet submission outcome is unknown. The transaction may have been submitted. Check your wallet before clearing pending state; it might still execute. Automatic resubmission is disabled.",
-      );
-    }
-    if (op.status === "reverted")
-      throw new TransactionTerminalError(
-        "Transaction reverted or replaced. Review current state before retrying.",
-      );
-    op.status = "pending";
-    this.operations.put(op);
-    onStatus?.(
-      "pending",
-      op.identifier === "transaction" ? (op.id as Hex) : undefined,
-    );
-    try {
-      let hash: Hex;
-      if (op.identifier === "calls") {
-        if (!batchStatus) throw new Error("Batch is awaiting wallet execution");
-        if (batchStatus.chainId !== this.chainId)
-          throw new Error("Batch belongs to another network");
-        if (batchStatus.status === "pending")
-          throw new TransactionPendingError(op.id, undefined, "pending");
-        if (batchStatus.status === "failure")
+    onStatus?.("pending", hash);
+    const receipt = await waitForTransactionReceipt(wallet, {
+      hash,
+      timeout: RECEIPT_TIMEOUT_MS,
+      confirmations: TRANSACTION_CONFIRMATIONS,
+      onReplaced: (replacement) => {
+        if (replacement.reason !== "repriced")
           throw new TransactionTerminalError(
-            "Wallet batch failed or reverted. Review current state.",
+            "Transaction cancelled or replaced with different data. Review current state.",
           );
-        if (
-          batchStatus.status !== "success" ||
-          (!batchStatus.atomic &&
-            !["1.0", "1.0.0"].includes(batchStatus.version)) ||
-          !batchStatus.receipts?.length
-        )
-          throw new Error("Atomic execution is not yet verified");
-        if (batchStatus.receipts.some((r) => r.status !== "success"))
-          throw new TransactionTerminalError("Wallet batch reverted");
-        const hashes = new Set(
-          batchStatus.receipts.map((r) => r.transactionHash),
-        );
-        if (hashes.size !== 1)
-          throw new Error("Wallet did not provide one atomic transaction");
-        hash = batchStatus.receipts[0].transactionHash;
-      } else hash = op.id as Hex;
-      const receipt = await waitForTransactionReceipt(wallet, {
-        hash,
-        timeout: RECEIPT_TIMEOUT_MS,
-        confirmations: TRANSACTION_CONFIRMATIONS,
-        onReplaced: (replacement) => {
-          if (replacement.reason !== "repriced")
-            throw new TransactionTerminalError(
-              "Transaction cancelled or replaced with different data. Review current state.",
-            );
-          if (op.identifier === "transaction")
-            op.id = replacement.transaction.hash;
-          this.operations.put(op);
-          onStatus?.("pending", replacement.transaction.hash);
-        },
-      });
-      if (receipt.status !== "success")
-        throw new TransactionTerminalError(
-          "Transaction reverted. Review current state.",
-        );
-      let verified: TransactionReceipt;
-      try {
-        verified = await this.publicClient.getTransactionReceipt({
-          hash: receipt.transactionHash,
-        });
-      } catch (error) {
-        if (!(error instanceof TransactionReceiptNotFoundError)) throw error;
-        const block = await this.publicClient.getBlock({
-          blockHash: receipt.blockHash,
-        });
-        const executionHash = block.transactions[receipt.transactionIndex];
-        if (typeof executionHash !== "string") throw error;
-        verified = await this.publicClient.getTransactionReceipt({
-          hash: executionHash,
-        });
-      }
-      if (
-        verified.blockHash !== receipt.blockHash ||
-        verified.transactionIndex !== receipt.transactionIndex
-      )
-        throw new Error(
-          "Wallet receipt is not synchronized with the canonical onchain receipt",
-        );
-      if (verified.status !== "success")
-        throw new TransactionTerminalError(
-          "Transaction reverted. Review current state.",
-        );
-      op.status = "confirmed";
-      op.blockNumber = verified.blockNumber;
-      this.operations.put(op);
-      return verified;
-    } catch (error) {
-      op.status =
-        error instanceof TransactionTerminalError
-          ? "reverted"
-          : error instanceof TransactionPendingError &&
-              error.outcome === "pending"
-            ? "pending"
-            : "unknown";
-      this.operations.put(op);
-      if (error instanceof TransactionTerminalError) throw error;
-      if (error instanceof TransactionPendingError) throw error;
-      throw new TransactionPendingError(op.id as Hex, { cause: error });
-    }
-  }
-  async recover(
-    wallet: WalletClient,
-    account: Address,
-    onStatus?: StatusCallback,
-    batchStatus?: GetCallsStatusReturnType,
-  ): Promise<TransactionResult | { approvalBlock: bigint }> {
-    return this.exclusive(account, async () => {
-      await this.assertWallet(wallet, account);
-      await this.verifyDeployment();
-      const op = this.pending(account);
-      if (!op) throw new Error("No submitted operation to recover");
-      const receipt = await this.track(op, wallet, onStatus, batchStatus);
-      if (op.phase === "approval" || op.phase === "approval-reset") {
-        await this.synchronize(op, onStatus);
-        this.operations.remove(account);
-        return { approvalBlock: receipt.blockNumber };
-      }
-      onStatus?.("confirmed", receipt.transactionHash);
-      return this.result(receipt);
+        onStatus?.("pending", replacement.transaction.hash);
+      },
     });
+    if (receipt.status !== "success")
+      throw new TransactionTerminalError(
+        "Transaction reverted. Review current state.",
+      );
+    return receipt;
   }
   async approve(
     action: EconomicAction,
@@ -1156,16 +925,6 @@ export class EthereumClient {
       await this.verifyDeployment();
       await this.assertWallet(wallet, account);
       let minBlock: bigint | undefined;
-      const pending = this.pending(account);
-      if (pending) {
-        if (pending.phase !== "approval" && pending.phase !== "approval-reset")
-          throw new Error("A submitted operation must be resolved first");
-        const receipt = await this.track(pending, wallet, onStatus);
-        await this.synchronize(pending, onStatus);
-        minBlock = receipt.blockNumber;
-        this.operations.remove(account);
-        if (pending.phase === "approval") return minBlock;
-      }
       const input = await this.requiredInput(action);
       if (!input) return minBlock;
       const [balance, allowance] = await Promise.all([
@@ -1186,21 +945,10 @@ export class EthereumClient {
           account,
         });
         await this.assertWallet(wallet, account);
-        const op: PendingOperation = {
-          account,
-          chainId: this.chainId,
-          action,
-          phase: reset ? "approval-reset" : "approval",
-          identifier: "transaction",
-          status: "submitted",
-          approvalAmount: amount,
-          approvalToken: input.token,
-        };
-        await this.submit(op, () => wallet.writeContract(request), onStatus);
-        const receipt = await this.track(op, wallet, onStatus);
-        await this.synchronize(op, onStatus);
+        const hash = await wallet.writeContract(request);
+        onStatus?.("submitted", hash);
+        const receipt = await this.waitForReceipt(hash, wallet, onStatus);
         minBlock = receipt.blockNumber;
-        this.operations.remove(account);
       };
       if (
         await this.needsReset(
@@ -1227,16 +975,6 @@ export class EthereumClient {
       onStatus?.("verifying");
       await this.verifyDeployment();
       await this.assertWallet(wallet, preview.account);
-      const pending = this.pending(preview.account);
-      if (pending) {
-        if (actionData(pending.action) !== actionData(preview.action))
-          throw new Error("Another submitted action must be resolved first");
-        if (pending.phase !== "action")
-          throw new Error("A submitted operation must be resolved first");
-        const receipt = await this.track(pending, wallet, onStatus);
-        onStatus?.("confirmed", receipt.transactionHash);
-        return this.result(receipt);
-      }
       onStatus?.("simulating");
       let block = await this.publicClient.getBlock();
       if (block.number < preview.blockNumber)
@@ -1302,25 +1040,40 @@ export class EthereumClient {
       }
       await this.assertWallet(wallet, preview.account);
       onStatus?.("signing");
-      const op: PendingOperation = {
-        account: preview.account,
-        chainId: this.chainId,
-        action: preview.action,
-        phase: preview.walletCalls ? "batch" : "action",
-        identifier: preview.walletCalls ? "calls" : "transaction",
-        status: "submitted",
-      };
-      await this.submit(
-        op,
-        () =>
-          preview.walletCalls
-            ? sendBatch!(preview.walletCalls)
-            : wallet.writeContract(request!),
-        onStatus,
-      );
-      if (preview.walletCalls)
-        return this.track(op, wallet, onStatus).then((r) => this.result(r));
-      const receipt = await this.track(op, wallet, onStatus);
+      let hash: Hex;
+      if (preview.walletCalls) {
+        let id: string;
+        try {
+          id = await sendBatch!(preview.walletCalls);
+        } catch (error) {
+          const unsupported = (e: unknown): boolean =>
+            !!e &&
+            typeof e === "object" &&
+            (("code" in e &&
+              [-32601, 4200, 5700, 5760].includes(Number(e.code))) ||
+              ("cause" in e && unsupported(e.cause)));
+          if (error instanceof AtomicUnavailableError || unsupported(error))
+            throw new AtomicUnavailableError(
+              "Wallet atomic execution is unavailable. Approve separately and review the action.",
+              { cause: error },
+            );
+          throw error;
+        }
+        onStatus?.("submitted");
+        const batch = await waitForCallsStatus(wallet, {
+          id,
+          timeout: RECEIPT_TIMEOUT_MS,
+        });
+        if (batch.status !== "success" || !batch.receipts?.length)
+          throw new TransactionTerminalError(
+            "Wallet batch failed or reverted.",
+          );
+        hash = batch.receipts[0].transactionHash;
+      } else {
+        hash = await wallet.writeContract(request!);
+        onStatus?.("submitted", hash);
+      }
+      const receipt = await this.waitForReceipt(hash, wallet, onStatus);
       onStatus?.("confirmed", receipt.transactionHash);
       return this.result(receipt);
     });

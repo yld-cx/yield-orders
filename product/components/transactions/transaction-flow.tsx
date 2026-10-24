@@ -1,23 +1,33 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import {
+  ArrowLeftRight,
+  ArrowUpFromLine,
+  CircleCheck,
+  CircleX,
+  Coins,
+  Crown,
+  Droplets,
+  Hourglass,
+  LockKeyholeOpen,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+import {
   useConnection,
   useWalletClient,
   useCapabilities,
   useSendCalls,
-  useCallsStatus,
 } from "wagmi";
 import { useQueryClient } from "@tanstack/react-query";
-import type { GetCallsStatusReturnType } from "viem";
 import type { EconomicAction, Token, TransactionResult } from "@yld-cx/sdk";
 import {
   explainError,
   protocolErrorName,
   PreviewChangedError,
-  TransactionPendingError,
+  TransactionTerminalError,
   AtomicUnavailableError,
   supportsAtomic,
-  type PendingOperation,
   type NetworkSlug,
   type Preview,
   type TransactionStage,
@@ -38,6 +48,19 @@ import {
 } from "@yld-cx/ui/components/ui/dialog";
 import { NetworkGuard } from "@/components/wallet/wallet-connect";
 import { TransactionPreview } from "./transaction-preview";
+
+const ACTION_ICONS: Record<string, LucideIcon> = {
+  Provide: Droplets,
+  Rent: Hourglass,
+  Swap: ArrowLeftRight,
+  Withdraw: ArrowUpFromLine,
+  Collect: Coins,
+  Repay: LockKeyholeOpen,
+  Close: CircleX,
+  Settle: CircleCheck,
+  "Create Market": Crown,
+};
+
 export function TransactionFlow({
   network,
   label,
@@ -45,6 +68,7 @@ export function TransactionFlow({
   asset,
   quote,
   disabled,
+  showNetworkGuard = true,
   onSuccess,
   validatePreview,
 }: {
@@ -54,6 +78,7 @@ export function TransactionFlow({
   asset?: Token;
   quote?: Token;
   disabled?: boolean;
+  showNetworkGuard?: boolean;
   onSuccess?: (result: TransactionResult) => void;
   validatePreview?: (preview: Preview) => void | Promise<void>;
 }) {
@@ -67,6 +92,7 @@ export function TransactionFlow({
       asset={asset}
       quote={quote}
       disabled={disabled}
+      showNetworkGuard={showNetworkGuard}
       onSuccess={onSuccess}
       validatePreview={validatePreview}
     />
@@ -79,6 +105,7 @@ function TransactionSession({
   asset,
   quote,
   disabled,
+  showNetworkGuard,
   onSuccess,
   validatePreview,
 }: Parameters<typeof TransactionFlow>[0]) {
@@ -91,8 +118,6 @@ function TransactionSession({
     [hash, setHash] = useState<string>(),
     [open, setOpen] = useState(false);
   const locked = useRef(false);
-  const [waiting, setWaiting] = useState<"approval" | "execute">();
-  const [operation, setOperation] = useState<PendingOperation>();
   const mounted = useRef(true);
   const [atomicUnavailable, setAtomicUnavailable] = useState("");
   const [required, setRequired] = useState<InputRequirement>();
@@ -108,29 +133,12 @@ function TransactionSession({
     },
   });
   const batch = useSendCalls();
-  const callsStatus = useCallsStatus({
-    id: operation?.identifier === "calls" ? (operation.id ?? "") : "",
-    query: {
-      enabled:
-        open &&
-        operation?.identifier === "calls" &&
-        !!operation.id &&
-        operation.status !== "confirmed" &&
-        operation.status !== "reverted",
-      retry: false,
-      refetchInterval: 2000,
-    },
-  });
   useEffect(() => {
     mounted.current = true;
-    const timer = setTimeout(() => {
-      if (account.address) setOperation(sdk.pending(account.address));
-    }, 0);
     return () => {
-      clearTimeout(timer);
       mounted.current = false;
     };
-  }, [sdk, account.address]);
+  }, []);
   const busy = [
     "preparing",
     "verifying",
@@ -139,16 +147,12 @@ function TransactionSession({
     "simulating",
     "signing",
     "submitted",
-    "synchronizing",
     "pending",
   ].includes(stage);
   const blocking = busy && stage !== "pending" && stage !== "submitted";
-  const previewLoading = [
-    "preparing",
-    "verifying",
-    "simulating",
-    "synchronizing",
-  ].includes(stage);
+  const previewLoading = ["preparing", "verifying", "simulating"].includes(
+    stage,
+  );
   const status = (next: TransactionStage, txHash?: `0x${string}`) => {
     if (!mounted.current) return;
     setStage(next);
@@ -206,21 +210,6 @@ function TransactionSession({
   async function review() {
     setOpen(true);
     if (locked.current) return;
-    if (account.address) {
-      const pending = sdk.pending(account.address);
-      if (pending && pending.status !== "reverted") {
-        setOperation(pending);
-        setAction(pending!.action);
-        setWaiting(
-          pending!.phase.startsWith("approval") ? "approval" : "execute",
-        );
-        setStage(pending!.phase.startsWith("approval") ? "approval" : "review");
-        if (pending!.identifier === "transaction") setHash(pending!.id);
-        return;
-      }
-      sdk.clearTerminal(account.address);
-      setOperation(undefined);
-    }
     locked.current = true;
     setAction(undefined);
     setPreview(undefined);
@@ -257,21 +246,10 @@ function TransactionSession({
         account.address,
         status,
       );
-      setWaiting(undefined);
       approved = true;
       await refresh(action, minBlock);
     } catch (e) {
-      setError(
-        e instanceof TransactionPendingError && e.outcome === "pending"
-          ? ""
-          : explainError(e),
-      );
-      const pending = account.address
-        ? sdk.pending(account.address)
-        : undefined;
-      setOperation(pending);
-      setWaiting(pending ? "approval" : undefined);
-      if (e instanceof TransactionPendingError) setHash(e.hash);
+      setError(explainError(e));
       setStage(approved ? "idle" : "approval");
     } finally {
       locked.current = false;
@@ -285,10 +263,6 @@ function TransactionSession({
     setStage("verifying");
     let confirmed = false;
     try {
-      if (operation || (account.address && sdk.pending(account.address))) {
-        await recover();
-        return;
-      }
       if (
         !wallet.data ||
         !preview ||
@@ -316,7 +290,6 @@ function TransactionSession({
         },
       );
       confirmed = true;
-      setWaiting(undefined);
       if (!mounted.current) return;
       await finish(result);
     } catch (e) {
@@ -350,19 +323,14 @@ function TransactionSession({
           /* Preserve the current action if refreshing is unavailable. */
         }
       }
-      const pending = account.address
-        ? sdk.pending(account.address)
-        : undefined;
-      setOperation(pending);
-      setWaiting(pending ? "execute" : undefined);
-      if (
-        e instanceof TransactionPendingError &&
-        pending?.identifier !== "calls"
-      )
-        setHash(e.hash);
       setError(explainError(e));
+      if (e instanceof TransactionTerminalError) {
+        setPreview(undefined);
+        setStage("idle");
+        return;
+      }
       setStage(preview ? "review" : "idle");
-      if (!pending && !preview?.walletCalls && required && account.address) {
+      if (!preview?.walletCalls && required && account.address) {
         try {
           if (
             (await sdk.allowance(required.token, account.address)) <
@@ -377,11 +345,9 @@ function TransactionSession({
       locked.current = false;
     }
   }
-  async function finish(result: TransactionResult, recovered = false) {
+  async function finish(result: TransactionResult) {
     if (!mounted.current) return;
     setStage("confirmed");
-    setWaiting(undefined);
-    setOperation(undefined);
     setHash(result.hash);
     await Promise.all(
       [
@@ -389,120 +355,16 @@ function TransactionSession({
         QUERY_NAMES.quote,
         QUERY_NAMES.pair,
         QUERY_NAMES.ticks,
+        QUERY_NAMES.balance,
       ].map((name) =>
         queries.invalidateQueries({ queryKey: [name, getNetwork(network).id] }),
       ),
     );
     if (!mounted.current) return;
-    if (account.address) sdk.clearTerminal(account.address);
-    if (!recovered) onSuccess?.(result);
+    onSuccess?.(result);
   }
-  async function recover(knownStatus?: GetCallsStatusReturnType) {
-    if (!wallet.data || !account.address)
-      throw new Error(
-        "Connect the submitting wallet and network to resume tracking.",
-      );
-    const pending = sdk.pending(account.address);
-    if (!pending) throw new Error("No pending operation");
-    const batchState =
-      pending.identifier === "calls"
-        ? (knownStatus ?? (await callsStatus.refetch()).data)
-        : undefined;
-    const result = await sdk.recover(
-      wallet.data,
-      account.address,
-      status,
-      batchState,
-    );
-    if ("approvalBlock" in result) {
-      setOperation(undefined);
-      setWaiting(undefined);
-      setPreview(undefined);
-      const next = await prepare();
-      setAction(next);
-      await refresh(next, result.approvalBlock);
-    } else await finish(result, true);
-  }
-
-  async function check(knownStatus?: GetCallsStatusReturnType) {
-    if (locked.current) return;
-    locked.current = true;
-    setError("");
-    try {
-      await recover(knownStatus);
-    } catch (e) {
-      setError(
-        e instanceof TransactionPendingError && e.outcome === "pending"
-          ? ""
-          : explainError(e),
-      );
-      const pending = account.address
-        ? sdk.pending(account.address)
-        : undefined;
-      setOperation(pending);
-      if (pending?.status === "reverted") {
-        sdk.clearTerminal(account.address!);
-        setOperation(undefined);
-        setWaiting(undefined);
-        setPreview(undefined);
-        setStage("idle");
-      } else if (pending)
-        setStage(pending.phase.startsWith("approval") ? "approval" : "review");
-      else setStage("idle");
-    } finally {
-      locked.current = false;
-    }
-  }
-  function clearPending() {
-    if (locked.current || !account.address) return;
-    const pending = sdk.pending(account.address);
-    if (!pending || pending.id) return;
-    sdk.operations.remove(account.address);
-    setOperation(undefined);
-    setWaiting(undefined);
-    setPreview(undefined);
-    setHash(undefined);
-    setError("");
-    setStage("idle");
-  }
-  useEffect(() => {
-    if (
-      open &&
-      operation?.identifier === "calls" &&
-      callsStatus.data &&
-      !locked.current
-    )
-      void check(callsStatus.data);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [callsStatus.dataUpdatedAt, open, operation?.id]);
-  useEffect(() => {
-    if (
-      !open ||
-      operation?.status !== "confirmed" ||
-      !operation.phase.startsWith("approval")
-    )
-      return;
-    const timer = setInterval(() => {
-      if (!locked.current) void check();
-    }, 3000);
-    return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, operation?.status, operation?.phase]);
-  const actionName =
-    waiting && operation
-      ? {
-          supply: "Provide",
-          use: "Rent",
-          swap: "Swap",
-          repay: "Repay",
-          withdraw: "Withdraw",
-          collect: "Collect",
-          close: "Close",
-          settle: "Settle",
-          createPair: "Create Market",
-          createTick: "Create Market",
-        }[operation.action.kind]
-      : label.replace(/^(?:Preview|Review)\s+/i, "");
+  const actionName = label.replace(/^(?:Preview|Review)\s+/i, "");
+  const ActionIcon = ACTION_ICONS[actionName] ?? Zap;
   const token = required
     ? [asset, quote].find(
         (t) => t?.address.toLowerCase() === required.token.toLowerCase(),
@@ -510,12 +372,12 @@ function TransactionSession({
     : undefined;
   return (
     <div className="transaction-flow">
-      <NetworkGuard chainId={sdk.chainId} />
+      {showNetworkGuard && <NetworkGuard chainId={sdk.chainId} />}
       <Button
         className="w-full"
         aria-label={label}
         disabled={
-          (disabled && !operation) ||
+          disabled ||
           blocking ||
           !account.address ||
           account.chainId !== sdk.chainId ||
@@ -523,7 +385,8 @@ function TransactionSession({
         }
         onClick={() => void review()}
       >
-        <span aria-hidden="true">👀</span> {actionName}
+        <ActionIcon aria-hidden="true" data-icon="inline-start" />
+        {actionName}
       </Button>
       <Dialog
         open={open}
@@ -558,63 +421,37 @@ function TransactionSession({
           {atomicUnavailable && stage === "approval" && (
             <Message>{atomicUnavailable}</Message>
           )}
-          {operation && waiting && (
-            <Message>
-              {!operation.id
-                ? "The transaction may have been submitted. Check your wallet before clearing pending state, since it might still execute. Clearing does not cancel the transaction."
-                : operation.identifier === "calls"
-                  ? `Wallet batch ${operation.id}. Awaiting verified onchain execution.`
-                  : "A submitted operation is being tracked. Checking confirmation never submits another transaction."}
-            </Message>
-          )}
-          {waiting ? (
-            <Button
-              className="w-full"
-              disabled={busy}
-              onClick={() =>
-                operation && !operation.id ? clearPending() : void check()
-              }
-            >
-              {operation && !operation.id
-                ? "Clear pending state"
-                : waiting === "approval"
-                  ? "Check approval confirmation"
-                  : "Check transaction confirmation"}
-            </Button>
-          ) : (
-            stage === "approval" &&
-            required && (
-              <>
-                <Message>
-                  Approve the token to simulate your full preview.
-                </Message>
-                <Metric label="Estimated payment">
-                  {token
-                    ? `${amountText(required.amount, token.decimals)} ${token.symbol}`
-                    : required.amount.toString()}
-                </Metric>
-                <p>
-                  Approve{" "}
-                  {token
-                    ? `${amountText(required.allowanceAmount, token.decimals)} ${token.symbol}`
-                    : `${required.allowanceAmount} raw units of ${shortAddress(required.token)}`}
-                  .
-                </p>
-                <details className="my-3 text-xs text-muted-foreground">
-                  <summary>Approval details</summary>
-                  Spender: <code>{sdk.address}</code>. Approval does not execute
-                  the action.
-                </details>
-                <Button className="w-full" onClick={() => void approve()}>
-                  {`Approve ${token?.symbol ?? "token"}`}
-                </Button>
-              </>
-            )
+          {stage === "approval" && required && (
+            <>
+              <Message>
+                Approve the token to simulate your full preview.
+              </Message>
+              <Metric label="Estimated payment">
+                {token
+                  ? `${amountText(required.amount, token.decimals)} ${token.symbol}`
+                  : required.amount.toString()}
+              </Metric>
+              <p>
+                Approve{" "}
+                {token
+                  ? `${amountText(required.allowanceAmount, token.decimals)} ${token.symbol}`
+                  : `${required.allowanceAmount} raw units of ${shortAddress(required.token)}`}
+                .
+              </p>
+              <details className="my-3 text-xs text-muted-foreground">
+                <summary>Approval details</summary>
+                Spender: <code>{sdk.address}</code>.
+                <p>Approval does not execute the action.</p>
+              </details>
+              <Button className="w-full" onClick={() => void approve()}>
+                {`Approve ${token?.symbol ?? "token"}`}
+              </Button>
+            </>
           )}
           {preview && !previewLoading && (
             <TransactionPreview preview={preview} asset={asset} quote={quote} />
           )}{" "}
-          {stage === "review" && !waiting && (
+          {stage === "review" && (
             <Button className="w-full" onClick={() => void execute()}>
               {preview?.walletCalls && preview.walletCalls.length > 1
                 ? `Approve & ${actionName}`
@@ -625,15 +462,13 @@ function TransactionSession({
             <Message busy>
               {stage === "pending" || stage === "submitted"
                 ? "Waiting for onchain confirmation…"
-                : stage === "synchronizing"
-                  ? "Approval confirmed. Synchronizing allowance and refreshing simulation…"
-                  : stage === "approving-reset"
-                    ? "Reset allowance in your wallet…"
-                    : stage === "approving"
-                      ? "Approve token allowance in your wallet…"
-                      : stage === "signing"
-                        ? "Confirm the transaction in your wallet…"
-                        : "Reading and simulating current state…"}
+                : stage === "approving-reset"
+                  ? "Reset allowance in your wallet…"
+                  : stage === "approving"
+                    ? "Approve token allowance in your wallet…"
+                    : stage === "signing"
+                      ? "Confirm the transaction in your wallet…"
+                      : "Reading and simulating current state…"}
             </Message>
           )}
           {hash && (

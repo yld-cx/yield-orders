@@ -54,8 +54,8 @@ export function AppHeader() {
           </Button>
         </nav>
         <div className="ml-auto flex items-center gap-2">
-          <Badge className="border-green-500 bg-black text-white p-3">
-            Public beta
+          <Badge variant="ghost" className="text-green-500!">
+            beta
           </Badge>
           <NetworkSelector />
           <WalletConnect />

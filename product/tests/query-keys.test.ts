@@ -20,12 +20,14 @@ describe("shared RPC query keys", () => {
       queryKeys.portfolio("base", a),
       queryKeys.portfolio("base", b),
       queryKeys.quote("base", pair, 1n, 10n),
+      queryKeys.balance("base", a, b),
     ];
     const unaffected = [
       queryKeys.ticks("ethereum", pair),
       queryKeys.pair("ethereum", pair),
       queryKeys.portfolio("ethereum", a),
       queryKeys.quote("ethereum", pair, 1n, 10n),
+      queryKeys.balance("ethereum", a, b),
       queryKeys.token("base", a),
       queryKeys.tokenMetadata("base", a),
       queryKeys.deployment("base"),
@@ -38,6 +40,7 @@ describe("shared RPC query keys", () => {
         QUERY_NAMES.pair,
         QUERY_NAMES.portfolio,
         QUERY_NAMES.quote,
+        QUERY_NAMES.balance,
       ].map((name) =>
         client.invalidateQueries({ queryKey: [name, "eip155:8453"] }),
       ),
@@ -72,6 +75,16 @@ describe("shared RPC query keys", () => {
     expect(queryKeys.portfolio("base", b.toUpperCase())).toEqual(
       queryKeys.portfolio("eip155:8453", b),
     );
+    expect(queryKeys.balance("base", a.toUpperCase(), b.toUpperCase())).toEqual(
+      queryKeys.balance("eip155:8453", a, b),
+    );
+    for (const other of [
+      queryKeys.balance("ethereum", a, b),
+      queryKeys.balance("base", c, b),
+      queryKeys.balance("base", a, c),
+      queryKeys.balance("base", a),
+    ])
+      expect(other).not.toEqual(queryKeys.balance("base", a, b));
     client.clear();
   });
   it("shares identical discovery reads while separating network, grid, duration and quote inputs", () => {

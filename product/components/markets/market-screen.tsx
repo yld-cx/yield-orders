@@ -10,7 +10,6 @@ import {
   getNetwork,
   candidateLevels,
   explainError,
-  marginalYieldPercent,
   priceAtTick,
   humanPrice,
   type NetworkSlug,
@@ -20,6 +19,8 @@ import { useMarket } from "@/hooks/use-market";
 import { useYieldBook, type BookTick } from "@/hooks/use-yield-book";
 import { amountText } from "@/lib/utils";
 import { compactPriceText, discoveryBaseTick } from "@/lib/market-values";
+import { DEFAULT_YIELD_MODE, tickYieldText } from "@/lib/yield";
+import { ApyLabel } from "@/components/forms/yield-display";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
@@ -131,8 +132,8 @@ function MarketContent({
     (bidSelected ? bid : ask).find((t) => t.state.availableSupply > 0n);
   const estimatedYield =
     yieldTick?.status === "exists"
-      ? marginalYieldPercent(yieldTick.state)
-      : undefined;
+      ? tickYieldText(yieldTick.state, DEFAULT_YIELD_MODE.markets)
+      : "—";
   const incomplete = book.failed > 0 || book.discovery.isError;
   const available = (side: BookTick[], index: 0 | 1) =>
     incomplete
@@ -224,15 +225,12 @@ function MarketContent({
           </div>
           <div>
             <dt>
-              {bidSelected ? "Bid" : "Ask"} Yield · {duration}D
+              <ApyLabel>{`${bidSelected ? "Bid" : "Ask"} APY · ${duration}D reference`}</ApyLabel>
             </dt>
             <dd className={bidSelected ? "text-bid" : "text-ask"}>
-              {incomplete
-                ? "Incomplete"
-                : estimatedYield !== undefined
-                  ? `${estimatedYield}%`
-                  : "—"}
+              {incomplete ? "Incomplete" : estimatedYield}
             </dd>
+            <small className="text-xs text-muted-foreground">Annualized</small>
           </div>
           <div>
             <dt>Available · Bid</dt>

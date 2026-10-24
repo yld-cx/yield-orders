@@ -3,13 +3,20 @@ import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { useState } from "react";
 import { useConnection } from "wagmi";
 import { usePortfolio } from "@/hooks/use-portfolio";
-import { explainError, type NetworkSlug } from "@yld-cx/sdk/ethereum";
+import {
+  explainError,
+  getNetwork,
+  type NetworkSlug,
+} from "@yld-cx/sdk/ethereum";
 import { useNetwork } from "@/components/layout/providers";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Input } from "@yld-cx/ui/components/ui/input";
 import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
-import { WalletConnect } from "@/components/wallet/wallet-connect";
+import {
+  NetworkGuard,
+  WalletConnect,
+} from "@/components/wallet/wallet-connect";
 import { ProviderCard, UseCard } from "./position-card";
 import { useTokens } from "@/hooks/use-market";
 import { displayTokens } from "@yld-cx/sdk/registry";
@@ -20,6 +27,26 @@ import {
   TabsContent,
 } from "@yld-cx/ui/components/ui/tabs";
 import { RefreshCw } from "lucide-react";
+
+const enum OrderTab {
+  Provide = "provide",
+  Use = "use",
+}
+
+const enum OrderFilter {
+  All = "all",
+  Active = "active",
+  Ask = "ask",
+  Bid = "bid",
+}
+
+const ORDER_FILTERS = [
+  OrderFilter.All,
+  OrderFilter.Active,
+  OrderFilter.Ask,
+  OrderFilter.Bid,
+] as const;
+
 export function OrdersScreen() {
   const { network } = useNetwork(),
     account = useConnection();
@@ -29,9 +56,9 @@ export function OrdersScreen() {
 }
 function OrdersForWallet({ network }: { network: NetworkSlug }) {
   const account = useConnection(),
-    [tab, setTab] = useState<"provide" | "use">("provide"),
+    [tab, setTab] = useState<OrderTab>(OrderTab.Provide),
     [search, setSearch] = useState(""),
-    [filter, setFilter] = useState<"all" | "active" | "ask" | "bid">("all");
+    [filter, setFilter] = useState<OrderFilter>(OrderFilter.All);
   const query = usePortfolio(network);
   const pages = query.data?.pages ?? [],
     providers = pages.flatMap((p) => p.providers),
@@ -52,14 +79,14 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
         ? displayTokens({ token0: asset, token1: quote })[0].address
         : [tick.asset.toLowerCase(), tick.quote.toLowerCase()].sort()[0];
     return (
-      (filter !== "ask" && filter !== "bid") ||
-      (tick.asset.toLowerCase() === askAsset) === (filter === "ask")
+      (filter !== OrderFilter.Ask && filter !== OrderFilter.Bid) ||
+      (tick.asset.toLowerCase() === askAsset) === (filter === OrderFilter.Ask)
     );
   };
   const filteredProviders = providers.filter(
     (p) =>
       matches(p.tick) &&
-      (filter !== "active" || p.position.activePrincipalX36 > 0n),
+      (filter !== OrderFilter.Active || p.position.activePrincipalX36 > 0n),
   );
   const filteredUses = uses.filter((p) => matches(p.tick));
   return (
@@ -72,7 +99,9 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
           <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
             Yield Orders<span className="text-brand">.</span>
           </h1>
-          <p>Manage supplied liquidity and active rentals in one place.</p>
+          <p className="mt-3 max-w-2xl text-muted-foreground">
+            Manage provided liquidity and active rentals in one place.
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-6">
           {account.address && (
@@ -98,21 +127,20 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
       {!account.address ? (
         <Card className="items-center text-center [&_h2]:text-xl [&_h3]:text-lg [&_p]:max-w-xl [&_p]:text-muted-foreground">
           <CardContent className="space-y-4">
-            <h2>Connect to see your Orders</h2>
+            <p>Connect to see your Orders</p>
             <WalletConnect />
           </CardContent>
         </Card>
       ) : (
-        <Tabs
-          value={tab}
-          onValueChange={(next) => setTab(next as "provide" | "use")}
-        >
+        <Tabs value={tab} onValueChange={(next) => setTab(next as OrderTab)}>
           <div className="my-4 flex flex-wrap items-center justify-between gap-4">
             <TabsList aria-label="Orders tab" data-intent="term" variant="line">
-              <TabsTrigger value="provide">
+              <TabsTrigger value={OrderTab.Provide}>
                 Provide ({providers.length})
               </TabsTrigger>
-              <TabsTrigger value="use">Use ({uses.length})</TabsTrigger>
+              <TabsTrigger value={OrderTab.Use}>
+                Use ({uses.length})
+              </TabsTrigger>
             </TabsList>
             <div className="flex items-center gap-3">
               <Input
@@ -137,18 +165,20 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
             </div>
           </div>
           <div
-            className="mb-4 flex flex-wrap items-center gap-2"
+            className="flex flex-wrap items-center gap-2"
             role="group"
             aria-label="Order filters"
           >
-            {(["all", "active", "ask", "bid"] as const).map((value) => (
+            {ORDER_FILTERS.map((value) => (
               <Button
                 variant={filter === value ? "secondary" : "ghost"}
                 size="sm"
                 key={value}
                 aria-pressed={filter === value}
                 data-intent={
-                  value === "ask" || value === "bid" ? value : undefined
+                  value === OrderFilter.Ask || value === OrderFilter.Bid
+                    ? value
+                    : undefined
                 }
                 onClick={() => setFilter(value)}
               >
@@ -156,8 +186,9 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
               </Button>
             ))}
           </div>
+          <NetworkGuard chainId={getNetwork(network).chain.id} />
           <TabsContent value={tab}>
-            <div className="mt-4 min-h-64" aria-busy={query.isPending}>
+            <div className="mt-2 min-h-64" aria-busy={query.isPending}>
               {query.isPending && (
                 <LoadingScreen className="min-h-64" label="Loading Orders…" />
               )}
@@ -167,7 +198,7 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
                 </Message>
               )}
               <div className="grid grid-cols-1 gap-4">
-                {tab === "provide"
+                {tab === OrderTab.Provide
                   ? filteredProviders.map((p) => (
                       <ProviderCard
                         key={p.tickId.toString()}
@@ -185,17 +216,15 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
                     ))}
               </div>
               {query.isSuccess &&
-                (tab === "provide" ? filteredProviders : filteredUses)
+                (tab === OrderTab.Provide ? filteredProviders : filteredUses)
                   .length === 0 && (
                   <Card className="items-center text-center [&_h2]:text-xl [&_h3]:text-lg [&_p]:max-w-xl [&_p]:text-muted-foreground">
                     <CardContent className="space-y-4">
-                      <h3>
-                        No{" "}
-                        {tab === "provide"
-                          ? "Provide positions"
-                          : "active Uses"}{" "}
-                        match these filters.
-                      </h3>
+                      No{" "}
+                      {tab === OrderTab.Provide
+                        ? "Provide positions"
+                        : "active Uses"}{" "}
+                      match these filters.
                     </CardContent>
                   </Card>
                 )}
@@ -209,11 +238,6 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
                 </Button>
               )}
             </div>
-            <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-              {tab === "provide"
-                ? "Provide positions remain visible while Active liquidity, Resolving principal, or claimable assets remain. Yield comes from Repay; Swap/Close creates Quote proceeds."
-                : "Use shows active rental positions only. A position disappears after Repay or Close."}
-            </p>
           </TabsContent>
         </Tabs>
       )}

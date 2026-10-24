@@ -6,6 +6,7 @@ import { usePortfolio } from "@/hooks/use-portfolio";
 import { ProviderCard } from "@/components/orders/position-card";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
+import { NetworkGuard } from "@/components/wallet/wallet-connect";
 
 export function MarketPositions({ market }: { market: Market }) {
   const account = useConnection();
@@ -29,10 +30,11 @@ export function MarketPositions({ market }: { market: Market }) {
         <div>
           <h2>Your liquidity</h2>
           <p className="text-xs text-muted-foreground">
-            A clear view of what you own
+            Provided positions in this market.
           </p>
         </div>
       </div>
+      <NetworkGuard chainId={getNetwork(network).chain.id} />
       {portfolio.isError && (
         <Message error>{explainError(portfolio.error)}</Message>
       )}
@@ -53,12 +55,6 @@ export function MarketPositions({ market }: { market: Market }) {
         >
           Load more positions
         </Button>
-      )}
-      {!!positions.length && (
-        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
-          Collect transfers claimable Asset Yield and Quote proceeds. It does
-          not remove remaining Active liquidity.
-        </p>
       )}
     </section>
   );

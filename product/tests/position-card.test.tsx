@@ -41,6 +41,7 @@ vi.mock("@/components/layout/providers", () => ({
 }));
 vi.mock("@/components/wallet/wallet-connect", () => ({
   WalletConnect: () => null,
+  NetworkGuard: () => null,
 }));
 vi.mock("@/lib/rpc", () => ({
   getSdk: () => ({
@@ -379,7 +380,7 @@ describe("Use information without execution simulation", () => {
     "estimates contract-rounded Yield at timestamp %s",
     (timestamp, accrued) => {
       const html = using(timestamp, { ...use, fullTermYieldAsset: 11n });
-      expect(html).toContain("Accrued Yield (estimated)");
+      expect(html).toContain("Accrued Yield");
       // Use a zero-decimal Asset so a single-unit rounding difference is visible.
       mocks.token.mockImplementation((_network, address) => ({
         data: address === a ? { ...asset, decimals: 0 } : quote,

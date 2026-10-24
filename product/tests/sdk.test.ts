@@ -112,6 +112,8 @@ describe("balance requirements and approval caps", () => {
       getAddresses: async () => [owner],
       writeContract,
       getTransactionReceipt,
+      getBlockNumber: async () => 101n,
+      pollingInterval: 5,
     } as unknown as WalletClient;
     return {
       sdk,
@@ -228,7 +230,7 @@ describe("direct reads and write safety", () => {
         getAddresses: async () => [owner],
         writeContract: async () => "0x1234",
         getTransactionReceipt,
-        getBlockNumber: async () => 1n,
+        getBlockNumber: async () => 2n,
         getTransaction: async () => ({
           hash: "0x1234",
           from: owner,

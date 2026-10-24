@@ -29,6 +29,7 @@ vi.mock("@tanstack/react-query", () => ({
   keepPreviousData: (data: unknown) => data,
 }));
 vi.mock("@/lib/rpc", () => ({ getSdk: () => ({ discover: mocks.discover }) }));
+vi.mock("wagmi", () => ({ useConnection: () => ({}) }));
 vi.mock("@/components/transactions/transaction-flow", () => ({
   TransactionFlow: (props: { label: string }) => {
     mocks.flow(props);
@@ -267,11 +268,13 @@ describe("selected price Rent or Swap", () => {
       });
       if (availableSupply > 0n) {
         expect(html).toContain("You receive");
+        expect(html).toContain(">Max</button>");
         expect(html).toContain('aria-label="Yield slippage"');
         expect(html).toContain('value="0.5"');
         expect(mocks.flow.mock.calls[0][0].label).toBe("Preview Rent");
       } else {
         expect(html).toContain("No liquidity yet");
+        expect(html).not.toContain(">Max</button>");
         expect(html).toContain("https://t.me/yld_group");
         expect(mocks.flow).not.toHaveBeenCalled();
       }

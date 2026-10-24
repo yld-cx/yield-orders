@@ -15,7 +15,6 @@ import {
 import {
   EthereumClient,
   PreviewChangedError,
-  TransactionPendingError,
   actionData,
   pairIdFor,
   tickIdFor,
@@ -29,7 +28,7 @@ import {
   type TickState,
   type UsePosition,
 } from "@yld-cx/sdk";
-// Exercise timeout recovery without imposing a short timeout on Safe users.
+// Keep unexpected receipt waits bounded in tests.
 vi.mock("../packages/sdk/src/constants.ts", async (original) => ({
   ...(await original<object>()),
   RECEIPT_TIMEOUT_MS: 200,
@@ -62,7 +61,7 @@ function supply(direction: 0 | 1 = 0): EconomicAction {
     },
   };
 }
-function fixture(pair = true, tick = true, storage?: Storage) {
+function fixture(pair = true, tick = true) {
   const state = {
     pair,
     tick,
@@ -234,7 +233,6 @@ function fixture(pair = true, tick = true, storage?: Storage) {
     } as unknown as PublicClient,
     "eip155:8453",
     { address: a, runtimeCodeHash: keccak256("0x1234") },
-    storage,
   );
   const writeContract = vi.fn(
     async (request: { functionName: string; args: readonly unknown[] }) => {
@@ -243,12 +241,21 @@ function fixture(pair = true, tick = true, storage?: Storage) {
       return hash;
     },
   );
+  const watchBlockNumber = vi.fn(
+    ({ onBlockNumber }: { onBlockNumber: (block: bigint) => void }) => {
+      queueMicrotask(() => onBlockNumber(101n));
+      return () => {};
+    },
+  );
   const wallet = {
     uid: `plan-wallet-${Math.random()}`,
     getChainId: async () => 8453,
     getAddresses: async () => [owner],
     writeContract,
     getTransactionReceipt,
+    getCallsStatus: vi.fn(async () => batchStatus()),
+    pollingInterval: 5,
+    watchBlockNumber,
   } as unknown as WalletClient;
   return {
     sdk,
@@ -262,6 +269,7 @@ function fixture(pair = true, tick = true, storage?: Storage) {
     writeContract,
     getTransactionReceipt,
     verifyReceipt,
+    watchBlockNumber,
   };
 }
 describe("atomic Provide plans", () => {
@@ -380,7 +388,7 @@ describe("atomic Provide plans", () => {
     expect(f.writeContract).not.toHaveBeenCalled();
   });
 });
-describe("validation and transaction recovery", () => {
+describe("validation and transaction confirmation", () => {
   it("never writes on final simulation failure, and preserves the preview for retry", async () => {
     const f = fixture();
     const preview = await f.sdk.preview(supply(), owner);
@@ -430,29 +438,36 @@ describe("validation and transaction recovery", () => {
     await submitted;
     expect(f.writeContract).toHaveBeenCalledTimes(1);
   });
-  it("retries an unknown receipt without another wallet submission", async () => {
-    const f = fixture();
-    const preview = await f.sdk.preview(supply(), owner);
-    f.getTransactionReceipt.mockRejectedValueOnce(new Error("receipt timeout"));
-    await expect(f.sdk.execute(preview, f.wallet)).rejects.toBeInstanceOf(
-      TransactionPendingError,
-    );
-    f.state.failure = new Error("state changed while pending");
-    await f.sdk.execute(preview, f.wallet);
-    expect(f.writeContract).toHaveBeenCalledTimes(1);
-    expect(f.getTransactionReceipt).toHaveBeenCalledTimes(2);
-  });
-  it("resumes approval receipt waiting and never executes the economic action", async () => {
-    const f = fixture(false, false);
-    f.state.allowance = 0n;
-    f.getTransactionReceipt.mockRejectedValueOnce(new Error("timeout"));
-    await expect(
-      f.sdk.approve(supply(), f.wallet, owner),
-    ).rejects.toBeInstanceOf(TransactionPendingError);
-    await f.sdk.approve(supply(), f.wallet, owner);
-    expect(f.writeContract).toHaveBeenCalledTimes(1);
-    expect(f.writeContract.mock.calls[0][0].functionName).toBe("approve");
-  });
+  it.each(["action", "approval"] as const)(
+    "waits for two confirmations before completing an %s",
+    async (phase) => {
+      const f = fixture();
+      f.state.allowance = phase === "approval" ? 0n : 10000n;
+      const preview = await f.sdk.preview(supply(), owner);
+      let onBlock!: (block: bigint) => void;
+      f.watchBlockNumber.mockImplementation(({ onBlockNumber }) => {
+        onBlock = onBlockNumber;
+        return () => {};
+      });
+      const status = vi.fn();
+      let completed = false;
+      const submitted = (
+        phase === "approval"
+          ? f.sdk.approve(supply(), f.wallet, owner, status)
+          : f.sdk.execute(preview, f.wallet, status)
+      ).then(() => {
+        completed = true;
+      });
+      await vi.waitFor(() => expect(onBlock).toBeTypeOf("function"));
+      await onBlock(100n);
+      expect(completed).toBe(false);
+      expect(status).not.toHaveBeenCalledWith("confirmed", hash);
+      await onBlock(101n);
+      await submitted;
+      expect(completed).toBe(true);
+      expect(f.writeContract).toHaveBeenCalledTimes(1);
+    },
+  );
   it("recovers from approval rejection, including after a zero-first reset", async () => {
     const f = fixture(false, false);
     f.state.allowance = 1n;
@@ -521,23 +536,6 @@ describe("validation and transaction recovery", () => {
   );
 });
 
-function memoryStorage(): Storage {
-  const data = new Map<string, string>();
-  return {
-    get length() {
-      return data.size;
-    },
-    clear: () => data.clear(),
-    key: (index) => [...data.keys()][index] ?? null,
-    getItem: (key) => data.get(key) ?? null,
-    setItem: (key, value) => {
-      data.set(key, value);
-    },
-    removeItem: (key) => {
-      data.delete(key);
-    },
-  };
-}
 function batchStatus(
   status: "pending" | "success" | "failure" = "success",
 ): GetCallsStatusReturnType {
@@ -563,7 +561,7 @@ function batchStatus(
           ],
   };
 }
-describe("wallet batching and persisted operations", () => {
+describe("wallet batching", () => {
   it.each([
     undefined,
     {},
@@ -614,17 +612,10 @@ describe("wallet batching and persisted operations", () => {
       const send = vi.fn(async () => "batch-1");
       await expect(
         f.sdk.execute(preview, f.wallet, undefined, send),
-      ).rejects.toBeInstanceOf(TransactionPendingError);
+      ).resolves.toMatchObject({ hash });
       expect(send).toHaveBeenCalledExactlyOnceWith(calls);
       expect(f.writeContract).not.toHaveBeenCalled();
-      expect(f.sdk.pending(owner)).toMatchObject({
-        id: "batch-1",
-        identifier: "calls",
-        status: "unknown",
-      });
-      await expect(
-        f.sdk.recover(f.wallet, owner, undefined, batchStatus()),
-      ).resolves.toMatchObject({ hash });
+      expect(f.wallet.getCallsStatus).toHaveBeenCalledWith({ id: "batch-1" });
     },
   );
   it("omits approvals when allowance is sufficient", async () => {
@@ -645,137 +636,32 @@ describe("wallet batching and persisted operations", () => {
     expect(f.writeContract).toHaveBeenCalledTimes(1);
     expect(f.writeContract.mock.calls[0][0].args[1]).toBe(123n);
   });
-  it("synchronizes delayed allowance at the confirmed receipt block without resubmitting", async () => {
+  it("returns the approval block for the refreshed preview", async () => {
     const f = fixture();
     f.state.allowance = 0n;
-    const allowance = vi.spyOn(f.sdk, "allowance");
-    allowance
-      .mockResolvedValueOnce(0n)
-      .mockResolvedValueOnce(0n)
-      .mockResolvedValueOnce(123n);
     expect(await f.sdk.approve(supply(), f.wallet, owner)).toBe(100n);
-    expect(allowance).toHaveBeenLastCalledWith(a, owner, 100n);
     expect(f.writeContract).toHaveBeenCalledTimes(1);
-    expect(f.sdk.pending(owner)).toBeUndefined();
     expect(
       (await f.sdk.preview(supply(), owner, { minBlock: 100n })).blockNumber,
     ).toBe(100n);
   });
-  it.each(["Safe", "smart account"])(
-    "recovers a pending %s batch after reload without another submission",
-    async () => {
-      const storage = memoryStorage();
-      const f = fixture(true, true, storage);
-      f.state.allowance = 0n;
-      const preview = await f.sdk.preview(supply(), owner, { atomic: true });
-      const send = vi.fn(async () => "persisted-batch");
-      await expect(
-        f.sdk.execute(preview, f.wallet, undefined, send),
-      ).rejects.toBeInstanceOf(TransactionPendingError);
-      const reloaded = new EthereumClient(
-        f.sdk.publicClient,
-        "eip155:8453",
-        { address: a, runtimeCodeHash: keccak256("0x1234") },
-        storage,
-      );
-      expect(reloaded.pending(owner)?.action).toEqual(supply());
-      await expect(
-        reloaded.recover(f.wallet, owner, undefined, batchStatus("pending")),
-      ).rejects.toBeInstanceOf(TransactionPendingError);
-      expect(f.getTransactionReceipt).not.toHaveBeenCalled();
-      await expect(
-        reloaded.recover(f.wallet, owner, undefined, batchStatus()),
-      ).resolves.toMatchObject({ hash });
-      expect(send).toHaveBeenCalledTimes(1);
-      expect(f.writeContract).not.toHaveBeenCalled();
-    },
-  );
-  it.each(["transaction", "approval"])(
-    "recovers an unresolved %s after reload",
-    async (phase) => {
-      const storage = memoryStorage();
-      const f = fixture(true, true, storage);
-      f.state.allowance = phase === "approval" ? 0n : 1000n;
-      const preview = await f.sdk.preview(supply(), owner);
-      f.getTransactionReceipt.mockRejectedValueOnce(new Error("RPC offline"));
-      await expect(
-        phase === "approval"
-          ? f.sdk.approve(supply(), f.wallet, owner)
-          : f.sdk.execute(preview, f.wallet),
-      ).rejects.toBeInstanceOf(TransactionPendingError);
-      const reloaded = new EthereumClient(
-        f.sdk.publicClient,
-        "eip155:8453",
-        { address: a, runtimeCodeHash: keccak256("0x1234") },
-        storage,
-      );
-      if (phase === "approval")
-        await reloaded.approve(supply(), f.wallet, owner);
-      else await reloaded.recover(f.wallet, owner);
-      expect(f.writeContract).toHaveBeenCalledTimes(1);
-    },
-  );
-  it("does not interpret an unexecuted multisig proposal as confirmation", async () => {
+  it("waits for wallet batch execution before checking confirmations", async () => {
     const f = fixture();
     f.state.allowance = 0n;
     const preview = await f.sdk.preview(supply(), owner, { atomic: true });
-    await expect(
-      f.sdk.execute(preview, f.wallet, undefined, async () => "proposal"),
-    ).rejects.toBeInstanceOf(TransactionPendingError);
-    await expect(
-      f.sdk.recover(f.wallet, owner, undefined, {
-        ...batchStatus(),
-        receipts: [],
-      }),
-    ).rejects.toBeInstanceOf(TransactionPendingError);
+    const getStatus = vi
+      .spyOn(f.wallet, "getCallsStatus")
+      .mockResolvedValue(batchStatus("pending"));
+    const send = vi.fn(async () => "proposal");
+    const status = vi.fn();
+    const submitted = f.sdk.execute(preview, f.wallet, status, send);
+    await vi.waitFor(() => expect(getStatus).toHaveBeenCalled());
     expect(f.getTransactionReceipt).not.toHaveBeenCalled();
-  });
-  it("preserves an ambiguous send response and blocks all other actions", async () => {
-    const f = fixture();
-    const preview = await f.sdk.preview(supply(), owner);
-    f.writeContract.mockRejectedValueOnce(
-      new Error("Disconnected after submission"),
-    );
-    await expect(f.sdk.execute(preview, f.wallet)).rejects.toThrow(
-      "Disconnected",
-    );
-    await expect(f.sdk.execute(preview, f.wallet)).rejects.toThrow(
-      "outcome is unknown",
-    );
-    await expect(f.sdk.approve(supply(), f.wallet, owner)).rejects.toThrow(
-      "resolved first",
-    );
-    expect(f.writeContract).toHaveBeenCalledTimes(1);
-    expect(f.sdk.pending(owner)?.status).toBe("unknown");
-    f.sdk.operations.remove(owner);
-    await f.sdk.execute(preview, f.wallet);
-    expect(f.writeContract).toHaveBeenCalledTimes(2);
-  });
-  it("marks a pre-response operation unknown after reload without submitting", async () => {
-    const storage = memoryStorage();
-    const f = fixture(true, true, storage);
-    f.sdk.operations.put({
-      account: owner,
-      chainId: 8453,
-      action: supply(),
-      phase: "action",
-      identifier: "transaction",
-      status: "submitted",
-    });
-    const reloaded = new EthereumClient(
-      f.sdk.publicClient,
-      "eip155:8453",
-      { address: a, runtimeCodeHash: keccak256("0x1234") },
-      storage,
-    );
-    await expect(reloaded.recover(f.wallet, owner)).rejects.toThrow(
-      "may have been submitted",
-    );
-    expect(reloaded.pending(owner)).toMatchObject({
-      status: "unknown",
-    });
-    expect(reloaded.pending(owner)?.id).toBeUndefined();
-    expect(f.writeContract).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalledWith("confirmed", hash);
+    getStatus.mockResolvedValue(batchStatus());
+    await expect(submitted).resolves.toMatchObject({ hash });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(status).toHaveBeenLastCalledWith("confirmed", hash);
   });
   it.each([4001, 4200])(
     "allows retry after a known wallet failure (%s)",
@@ -788,39 +674,23 @@ describe("wallet batching and persisted operations", () => {
       await expect(f.sdk.execute(preview, f.wallet)).rejects.toThrow(
         "Wallet request failed",
       );
-      expect(f.sdk.pending(owner)).toBeUndefined();
       await f.sdk.execute(preview, f.wallet);
       expect(f.writeContract).toHaveBeenCalledTimes(2);
     },
   );
-  it("keeps batches unresolved when receipt verification is unavailable", async () => {
+  it("surfaces reverted wallet batches without reporting confirmation", async () => {
     const f = fixture();
     f.state.allowance = 0n;
     const preview = await f.sdk.preview(supply(), owner, { atomic: true });
+    vi.spyOn(f.wallet, "getCallsStatus").mockResolvedValue(
+      batchStatus("failure"),
+    );
+    const status = vi.fn();
     await expect(
-      f.sdk.execute(preview, f.wallet, undefined, async () => "batch"),
-    ).rejects.toBeInstanceOf(TransactionPendingError);
-    f.getTransactionReceipt.mockRejectedValueOnce(new Error("RPC lag"));
-    await expect(
-      f.sdk.recover(f.wallet, owner, undefined, batchStatus()),
-    ).rejects.toBeInstanceOf(TransactionPendingError);
-    await expect(
-      f.sdk.recover(f.wallet, owner, undefined, batchStatus()),
-    ).resolves.toMatchObject({ hash });
-  });
-  it("makes reverted batches terminal and requires a new preview", async () => {
-    const f = fixture();
-    f.state.allowance = 0n;
-    const preview = await f.sdk.preview(supply(), owner, { atomic: true });
-    await expect(
-      f.sdk.execute(preview, f.wallet, undefined, async () => "batch"),
-    ).rejects.toBeInstanceOf(TransactionPendingError);
-    await expect(
-      f.sdk.recover(f.wallet, owner, undefined, batchStatus("failure")),
+      f.sdk.execute(preview, f.wallet, status, async () => "batch"),
     ).rejects.toThrow("failed or reverted");
-    expect(f.sdk.pending(owner)?.status).toBe("reverted");
-    f.sdk.clearTerminal(owner);
-    expect(f.sdk.pending(owner)).toBeUndefined();
+    expect(f.getTransactionReceipt).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalledWith("confirmed", hash);
   });
   it("refreshes changed atomic calldata for review before any wallet submission", async () => {
     const f = fixture(false, false);
@@ -841,6 +711,12 @@ it("uses the installed Safe provider's capabilities and batch status through Vie
   const { createWalletClient, custom } = await import("viem");
   const { base } = await import("viem/chains");
   let executed = false;
+  const getBySafeTxHash = vi.fn(async () => ({
+    txStatus: executed
+      ? TransactionStatus.SUCCESS
+      : TransactionStatus.AWAITING_CONFIRMATIONS,
+    txHash: executed ? hash : undefined,
+  }));
   const send = vi.fn(async () => ({ safeTxHash: hash }));
   const provider = new SafeAppProvider(
     { safeAddress: owner, chainId: 8453 } as ConstructorParameters<
@@ -849,14 +725,10 @@ it("uses the installed Safe provider's capabilities and batch status through Vie
     {
       txs: {
         send,
-        getBySafeTxHash: async () => ({
-          txStatus: executed
-            ? TransactionStatus.SUCCESS
-            : TransactionStatus.AWAITING_CONFIRMATIONS,
-          txHash: executed ? hash : undefined,
-        }),
+        getBySafeTxHash,
       },
       eth: {
+        getBlockByNumber: async () => ({ number: "0x65" }),
         getTransactionReceipt: async () => ({
           blockNumber: "0x64",
           transactionHash: hash,
@@ -872,73 +744,29 @@ it("uses the installed Safe provider's capabilities and batch status through Vie
   const wallet = createWalletClient({
     account: owner,
     chain: base,
+    pollingInterval: 5,
     transport: custom(provider),
   });
   expect(supportsAtomic(await wallet.getCapabilities({ chainId: 8453 }))).toBe(
     true,
   );
   const f = fixture();
-  f.verifyReceipt.mockResolvedValue({
-    status: "success",
-    transactionHash: hash,
-    blockNumber: 100n,
-    logs: [],
-    blockHash: hash,
-    transactionIndex: 0,
-  } as never);
   f.state.allowance = 0n;
   const preview = await f.sdk.preview(supply(), owner, { atomic: true });
-  await expect(
-    f.sdk.execute(
-      preview,
-      wallet,
-      undefined,
-      async (calls) =>
-        (await wallet.sendCalls({ calls, forceAtomic: true })).id,
-    ),
-  ).rejects.toBeInstanceOf(TransactionPendingError);
-  await expect(
-    f.sdk.recover(
-      wallet,
-      owner,
-      undefined,
-      await wallet.getCallsStatus({ id: hash }),
-    ),
-  ).rejects.toBeInstanceOf(TransactionPendingError);
+  const submitted = f.sdk.execute(
+    preview,
+    wallet,
+    undefined,
+    async (calls) => (await wallet.sendCalls({ calls, forceAtomic: true })).id,
+  );
+  await vi.waitFor(() => expect(getBySafeTxHash).toHaveBeenCalled());
   expect(f.getTransactionReceipt).not.toHaveBeenCalled();
   executed = true;
-  await expect(
-    f.sdk.recover(
-      wallet,
-      owner,
-      undefined,
-      await wallet.getCallsStatus({ id: hash }),
-    ),
-  ).resolves.toMatchObject({ hash });
+  await expect(submitted).resolves.toMatchObject({ hash });
   expect(send).toHaveBeenCalledTimes(1);
   expect(send.mock.calls[0]).toEqual([
     { txs: preview.walletCalls!.map((call) => ({ ...call, value: "0x0" })) },
   ]);
-});
-
-it("checking a confirmed reset never submits the next approval", async () => {
-  const f = fixture();
-  f.state.allowance = 0n;
-  f.sdk.operations.put({
-    account: owner,
-    chainId: 8453,
-    action: supply(),
-    identifier: "transaction",
-    id: hash,
-    phase: "approval-reset",
-    approvalAmount: 0n,
-    approvalToken: a,
-    status: "pending",
-  });
-  await expect(f.sdk.recover(f.wallet, owner)).resolves.toEqual({
-    approvalBlock: 100n,
-  });
-  expect(f.writeContract).not.toHaveBeenCalled();
 });
 
 it.each(["supply", "use", "swap", "repay"] as const)(
@@ -983,95 +811,3 @@ it.each(["supply", "use", "swap", "repay"] as const)(
     expect(preview.plan.calls.at(-1)).toBe(actionData(action));
   },
 );
-
-it("recovers a Safe proposal through the wallet and resolves its canonical execution hash", async () => {
-  const { SafeAppProvider } = await import("@safe-global/safe-apps-provider");
-  const { TransactionStatus } = await import("@safe-global/safe-apps-sdk");
-  const { createWalletClient, custom, TransactionReceiptNotFoundError } =
-    await import("viem");
-  const { base } = await import("viem/chains");
-  const proposalId = `0x${"56".repeat(32)}` as Hex;
-  const f = fixture();
-  const publicReceipt = {
-    status: "success",
-    transactionHash: hash,
-    blockHash: hash,
-    transactionIndex: 0,
-    blockNumber: 100n,
-    logs: [],
-  };
-  const verifyReceipt = vi
-    .spyOn(f.sdk.publicClient, "getTransactionReceipt")
-    .mockImplementation(async ({ hash: requested }) => {
-      if (requested === proposalId)
-        throw new TransactionReceiptNotFoundError({ hash: requested });
-      return publicReceipt as never;
-    });
-  const getBlock = vi
-    .spyOn(f.sdk.publicClient, "getBlock")
-    .mockResolvedValue({ number: 100n, hash, transactions: [hash] } as never);
-  const providerReceipt = vi.fn(async ([requested]: [Hex]) =>
-    requested === hash
-      ? {
-          status: "0x1",
-          transactionHash: hash,
-          blockHash: hash,
-          transactionIndex: "0x0",
-          blockNumber: "0x64",
-          logs: [],
-          gasUsed: "0x64",
-        }
-      : null,
-  );
-  const provider = new SafeAppProvider(
-    { safeAddress: owner, chainId: 8453 } as ConstructorParameters<
-      typeof SafeAppProvider
-    >[0],
-    {
-      txs: {
-        getBySafeTxHash: async () => ({
-          txStatus: TransactionStatus.SUCCESS,
-          txHash: hash,
-        }),
-      },
-      eth: { getTransactionReceipt: providerReceipt },
-    } as unknown as ConstructorParameters<typeof SafeAppProvider>[1],
-  );
-  const wallet = createWalletClient({
-    account: owner,
-    chain: base,
-    transport: custom(provider),
-  });
-  f.sdk.operations.put({
-    account: owner,
-    chainId: 8453,
-    action: supply(),
-    phase: "action",
-    identifier: "transaction",
-    id: proposalId,
-    status: "unknown",
-  });
-  await expect(f.sdk.recover(wallet, owner)).resolves.toMatchObject({
-    hash,
-    blockNumber: 100n,
-  });
-  expect(providerReceipt).toHaveBeenCalledWith([hash]);
-  expect(getBlock).toHaveBeenCalledWith({ blockHash: hash });
-  expect(verifyReceipt).toHaveBeenLastCalledWith({ hash });
-  expect(f.sdk.pending(owner)?.id).toBe(proposalId);
-  expect(f.writeContract).not.toHaveBeenCalled();
-});
-
-it("keeps execution unresolved when the wallet receipt cannot be independently verified", async () => {
-  const f = fixture();
-  const preview = await f.sdk.preview(supply(), owner);
-  f.verifyReceipt.mockRejectedValueOnce(
-    new Error("RPC receipt has not synchronized"),
-  );
-  await expect(f.sdk.execute(preview, f.wallet)).rejects.toBeInstanceOf(
-    TransactionPendingError,
-  );
-  expect(f.sdk.pending(owner)?.status).toBe("unknown");
-  await expect(f.sdk.recover(f.wallet, owner)).resolves.toMatchObject({ hash });
-  expect(f.writeContract).toHaveBeenCalledTimes(1);
-});

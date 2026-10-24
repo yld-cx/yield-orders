@@ -11,9 +11,10 @@ import {
   type Token,
   type Duration,
 } from "@yld-cx/sdk";
-import { marginalYieldPercent, explainError } from "@yld-cx/sdk/ethereum";
+import { explainError } from "@yld-cx/sdk/ethereum";
 import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
+import { tickYieldText } from "@/lib/yield";
 import type { useYieldBook, BookLevel } from "@/hooks/use-yield-book";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
@@ -41,7 +42,7 @@ function BookRow({
   side: "ask" | "bid";
 }) {
   const estimatedYield =
-    level.status === "exists" ? marginalYieldPercent(level.state) : undefined;
+    level.status === "exists" ? tickYieldText(level.state, "term") : "—";
   const available = level.state?.availableSupply ?? 0n;
   const inUse = level.state?.activeWorking ?? 0n;
   const total = available + inUse;
@@ -76,7 +77,7 @@ function BookRow({
           : amountText(level.state?.activeWorking ?? 0n, asset.decimals)}
       </span>
       <span className={side === "ask" ? "text-ask" : "text-bid"}>
-        {estimatedYield !== undefined ? `${estimatedYield}%` : "—"}
+        {estimatedYield}
       </span>
       {utilization > 0 && (
         <span
@@ -206,7 +207,7 @@ export function YieldBook({
           <span>Price</span>
           <span>Available</span>
           <span>In use</span>
-          <span>Yield</span>
+          <span>Term Yield</span>
         </div>
         {discovery.isError && (
           <Message error>

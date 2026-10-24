@@ -218,6 +218,7 @@ export function ProviderCard({
           <TransactionFlow
             key={`withdraw/${tickId}/${percent}`}
             network={network}
+            showNetworkGuard={false}
             label="Preview Withdraw"
             asset={asset}
             quote={quote}
@@ -246,6 +247,7 @@ export function ProviderCard({
           />
           <TransactionFlow
             network={network}
+            showNetworkGuard={false}
             label="Preview Collect"
             asset={asset}
             quote={quote}
@@ -366,7 +368,7 @@ export function UseCard({
           <Metric label="Locked Quote">
             {amountText(position.quotePrincipal, quote.decimals)} {quote.symbol}
           </Metric>
-          <Metric label="Accrued Yield (estimated)">{a(accrued)}</Metric>
+          <Metric label="Accrued Yield">{a(accrued)}</Metric>
           <Metric label="Maturity">
             {mature
               ? "Matured"
@@ -382,6 +384,7 @@ export function UseCard({
         <TransactionFlow
           key={`${positionId}/${mature}`}
           network={network}
+          showNetworkGuard={false}
           label={mature ? "Preview Close" : "Preview Repay"}
           asset={asset}
           quote={quote}
