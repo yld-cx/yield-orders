@@ -414,6 +414,126 @@ test.beforeEach(async ({ page }) => {
   });
   await rpc(page);
 });
+
+test("APY and Term switch preserves 7D/30D Ask/Bid references without extra reads", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let reads = 0;
+  page.on("request", (request) => {
+    if (/mainnet\.base\.org|\/api\/|md\.yld\.cx/.test(request.url())) reads++;
+  });
+  await page.goto("/");
+  const row = page.getByRole("row").filter({
+    has: page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  });
+  const mode = page.getByRole("switch", { name: "Markets yield display" });
+  await expect(mode).toBeChecked();
+  for (const [days, apy, term] of [
+    [7, "3.7161%", "0.07%"],
+    [30, "3.7118%", "0.3%"],
+  ] as const) {
+    if (days === 30) {
+      await page
+        .getByRole("combobox", { name: "Market duration", exact: true })
+        .click();
+      await page.getByRole("option", { name: "30D", exact: true }).click();
+    }
+    await expect(row.getByText(apy, { exact: true })).toHaveCount(2);
+    await expect(row.getByText("Annualized", { exact: true })).toHaveCount(2);
+    for (const side of ["Ask", "Bid"])
+      await expect(
+        page.getByRole("columnheader", { name: `${side} APY`, exact: true }),
+      ).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    const before = reads;
+    await mode.click();
+    await expect(mode).not.toBeChecked();
+    await expect(row.getByText(term, { exact: true })).toHaveCount(2);
+    await expect(
+      row.getByText(`${days}D reference`, { exact: true }),
+    ).toHaveCount(2);
+    for (const side of ["Ask", "Bid"])
+      await expect(
+        page.getByRole("columnheader", { name: `${side} Yield`, exact: true }),
+      ).toBeVisible();
+    // Keyboard interaction returns to APY without changing discovery or fetching data.
+    await mode.press("Space");
+    await expect(mode).toBeChecked();
+    await expect(row.getByText(apy, { exact: true })).toHaveCount(2);
+    expect(reads).toBe(before);
+  }
+  const emptyRow = page.getByRole("row").filter({
+    has: page.getByRole("link", { name: "Open cbBTC / USDC", exact: true }),
+  });
+  for (let i = 0; i < 2; i++) {
+    await expect(
+      emptyRow.getByText("No liquidity yet", { exact: true }),
+    ).toHaveCount(2);
+    await expect(emptyRow.getByText("—", { exact: true })).toHaveCount(2);
+    await mode.click();
+  }
+});
+
+test("Provide shows APY without a switch while Rent retains its quoted Term Yield", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  const supply = page.getByLabel("Provide liquidity", { exact: true });
+  const rent = page
+    .getByRole("tabpanel")
+    .filter({ has: page.getByLabel("You receive") });
+  for (const [days, id, apy] of [
+    [7, id7, "3.7161%"],
+    [30, id30, "3.7118%"],
+  ] as const) {
+    if (days === 30)
+      await page
+        .getByRole("group", { name: "Book term", exact: true })
+        .getByRole("button", { name: "30D", exact: true })
+        .click();
+    await page.locator(`[data-tick-id="${id}"]`).click();
+    await supply.getByLabel("Amount", { exact: true }).fill("2");
+    await rent.getByLabel("You receive", { exact: true }).fill("1");
+    await expect(supply.getByRole("switch")).toHaveCount(0);
+    await expect(supply.getByText(apy, { exact: true })).toBeVisible();
+    await expect(
+      supply.getByText("Estimated APY", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const info = supply
+      .getByRole("button", { name: "About APY", exact: true })
+      .first();
+    await info.click();
+    await expect(page.getByRole("tooltip")).toHaveText(
+      "APY is indicative and assumes reinvestment at the same rate.",
+    );
+    await expect(page.getByRole("tooltip")).toHaveCSS(
+      "background-color",
+      "rgb(21, 26, 32)",
+    );
+    await expect(page.getByRole("tooltip")).toHaveCSS(
+      "color",
+      "rgb(245, 247, 246)",
+    );
+    await info.press("Escape");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await expect(rent.getByText("Term Yield", { exact: true })).toBeVisible();
+    await expect(rent.getByText("1%", { exact: true })).toBeVisible();
+    await expect(rent.getByText("0.01 WETH", { exact: true })).toBeVisible();
+    await expect(
+      rent.getByText(`Estimated borrowing cost for the ${days}D term.`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(supply.getByLabel("Amount", { exact: true })).toHaveValue("2");
+    await expect(rent.getByLabel("You receive", { exact: true })).toHaveValue(
+      "1",
+    );
+    await expect(rent.getByText("1%", { exact: true })).toBeVisible();
+  }
+});
+
 test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   const discovered = Array.from({ length: 23 }, (_, i) => {
     const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
@@ -1867,7 +1987,7 @@ test("market overview and inversion preserve canonical economics", async ({
   await expect(overview.getByLabel("WETH crowned token")).toBeVisible();
   await expect(overview.getByText("1,000 WETH", { exact: true })).toBeVisible();
   await expect(overview.getByText("1,000 USDC", { exact: true })).toBeVisible();
-  await expect(overview.getByText("0.07%", { exact: true })).toBeVisible();
+  await expect(overview.getByText("3.7161%", { exact: true })).toBeVisible();
   await page.locator(`[data-tick-id="${id7}"]`).click();
   await page.getByLabel("Amount", { exact: true }).fill("1");
   await page.getByText("Price details", { exact: true }).click();
@@ -2005,12 +2125,15 @@ test("row utilization, gold borders and overview Yield follow the selected side 
     await expect(row).toHaveCSS("border-color", "rgb(231, 185, 77)");
     await expect(row).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(
-      overview.getByText(`${side === "ask" ? "Ask" : "Bid"} Yield · 7D`, {
-        exact: true,
-      }),
+      overview.getByText(
+        `${side === "ask" ? "Ask" : "Bid"} APY · 7D reference`,
+        {
+          exact: true,
+        },
+      ),
     ).toBeVisible();
     await expect(
-      overview.getByText(side === "ask" ? "0.1782%" : "2.9935%", {
+      overview.getByText(side === "ask" ? "9.7328%" : "365.5444%", {
         exact: true,
       }),
     ).toBeVisible();
@@ -2025,20 +2148,20 @@ test("row utilization, gold borders and overview Yield follow the selected side 
   await page.getByRole("tab", { name: "Ask · WETH", exact: true }).click();
   await expect(empty).toHaveAttribute("aria-pressed", "false");
   await expect(
-    overview.getByText("Ask Yield · 7D", { exact: true }),
+    overview.getByText("Ask APY · 7D reference", { exact: true }),
   ).toBeVisible();
-  await expect(overview.getByText("0.1782%", { exact: true })).toBeVisible();
+  await expect(overview.getByText("9.7328%", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Bid · USDC", exact: true }).click();
   await expect(
-    overview.getByText("Bid Yield · 7D", { exact: true }),
+    overview.getByText("Bid APY · 7D reference", { exact: true }),
   ).toBeVisible();
-  await expect(overview.getByText("2.9935%", { exact: true })).toBeVisible();
+  await expect(overview.getByText("365.5444%", { exact: true })).toBeVisible();
   await bid.click();
   await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expect(
-    overview.getByText("Ask Yield · 7D", { exact: true }),
+    overview.getByText("Ask APY · 7D reference", { exact: true }),
   ).toBeVisible();
-  await expect(overview.getByText("2.9935%", { exact: true })).toBeVisible();
+  await expect(overview.getByText("365.5444%", { exact: true })).toBeVisible();
   await expect(bid.locator('span[aria-hidden="true"]')).toHaveAttribute(
     "style",
     /var\(--ask-surface\)/,
@@ -2075,7 +2198,7 @@ test("selected ticks refresh availability and Yield without losing entered amoun
   });
   await page.clock.fastForward(16000);
   await expect(usePanel.getByText("500 WETH", { exact: true })).toBeVisible();
-  await expect(supply.getByText("0.9362% / 7D", { exact: true })).toBeVisible();
+  await expect(supply.getByText("62.5664%", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("3");
   await expect(page.getByLabel("You receive")).toHaveValue("1");
 });
@@ -3144,6 +3267,125 @@ test("concurrent initialization refreshes the same preview and requires confirma
   await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
   expect(state.writes).toEqual([["supply"]]);
 });
+test("Rent and Swap Max use the selected level's exact available amount", async ({
+  page,
+}) => {
+  await rpc(
+    page,
+    true,
+    new Map([
+      [id7, { availableSupply: 2123456789012345678n }],
+      [bid7, { availableSupply: 8765432n }],
+    ]),
+  );
+  await page.goto(`/market/base/${key}`);
+  for (const [id, expected] of [
+    [id7, "2.123456789012345678"],
+    [bid7, "8.765432"],
+  ] as const) {
+    await page.locator(`[data-tick-id="${id}"]`).click();
+    for (const mode of ["Rent", "Swap now"] as const) {
+      await page.getByRole("tab", { name: mode, exact: true }).click();
+      const panel = page
+        .getByRole("tabpanel")
+        .filter({ has: page.getByLabel("You receive", { exact: true }) });
+      await panel.getByLabel("You receive", { exact: true }).fill("0.1");
+      await panel.getByRole("button", { name: "Max", exact: true }).click();
+      await expect(
+        panel.getByLabel("You receive", { exact: true }),
+      ).toHaveValue(expected);
+      await expect(
+        panel.getByLabel("Wallet balance", { exact: true }),
+      ).toHaveCount(0);
+    }
+  }
+});
+
+test("Provide Max fills the exact wallet balance for the selected token", async ({
+  page,
+  isMobile,
+}, testInfo) => {
+  const state = await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    balance: 2123456789012345678n,
+  });
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  const supply = page.getByLabel("Provide liquidity", { exact: true });
+  const input = supply.getByLabel("Amount", { exact: true });
+  for (const [side, symbol, displayBalance, exactBalance] of [
+    ["Ask", "WETH", "2.123456", "2.123456789012345678"],
+    ["Bid", "USDC", "2,123,456,789,012.345678", "2123456789012.345678"],
+  ] as const) {
+    await supply
+      .getByRole("tab", { name: `${side} · ${symbol}`, exact: true })
+      .click();
+    const balance = supply.getByLabel("Wallet balance", { exact: true });
+    await expect(balance).toBeVisible();
+    await expect(balance).toHaveText(displayBalance);
+    const max = supply.getByRole("button", { name: "Max", exact: true });
+    await expect(max).toBeEnabled();
+    if (!isMobile) {
+      await expect(max).toHaveCSS("color", "rgb(142, 152, 159)");
+      await max.hover();
+      await expect(max).toHaveCSS("color", "rgb(231, 185, 77)");
+    }
+    await max.click();
+    await expect(input).toHaveValue(exactBalance);
+    const [balanceBox, inputBox, labelBox] = await Promise.all([
+      balance.boundingBox(),
+      input.boundingBox(),
+      supply.getByText("Amount", { exact: true }).boundingBox(),
+    ]);
+    expect(balanceBox!.y + balanceBox!.height).toBeLessThanOrEqual(inputBox!.y);
+    expect(balanceBox!.x).toBeGreaterThan(labelBox!.x);
+  }
+  await supply.screenshot({ path: testInfo.outputPath("balance-max.png") });
+  expect(state.writes).toEqual([]);
+});
+
+test("Provide hides wallet balance when disconnected and disables Max for zero balance", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  const supply = page.getByLabel("Provide liquidity", { exact: true });
+  await expect(
+    supply.getByLabel("Wallet balance", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    supply.getByRole("button", { name: "Max", exact: true }),
+  ).toHaveCount(0);
+  await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    balance: 0n,
+    positions: {},
+  });
+  await expect(supply.getByLabel("Wallet balance", { exact: true })).toHaveText(
+    "0",
+  );
+  await expect(
+    supply.getByRole("button", { name: "Max", exact: true }),
+  ).toBeDisabled();
+});
+
+test("Provide preview shows APY without a yield switch", async ({ page }) => {
+  const state = await transactionRpc(page, { pair: true, tick: true });
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByText("Estimated APY", { exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByText("3.7161%", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("switch")).toHaveCount(0);
+  await expect(
+    dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
+  ).toBeVisible();
+  expect(state.writes).toEqual([]);
+});
+
 test("final simulation failure keeps the reviewed preview and retries only after confirmation", async ({
   page,
 }) => {
@@ -3158,7 +3400,7 @@ test("final simulation failure keeps the reviewed preview and retries only after
   await confirm.click();
   await expect(dialog.getByRole("alert")).toBeVisible();
   await expect(
-    dialog.getByText("Estimated Yield", { exact: true }),
+    dialog.getByText("Estimated APY", { exact: true }),
   ).toBeVisible();
   expect(state.writes).toHaveLength(0);
   state.fail = false;
@@ -3514,7 +3756,7 @@ test("reopening clears stale previews, approval state and errors before refreshi
     exact: true,
   });
   await expect(
-    dialog.getByText("Estimated Yield", { exact: true }),
+    dialog.getByText("Estimated APY", { exact: true }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   state.allowance = 0n;
@@ -3522,9 +3764,9 @@ test("reopening clears stale previews, approval state and errors before refreshi
   await expect(
     dialog.getByRole("button", { name: "Approve WETH", exact: true }),
   ).toBeVisible();
-  await expect(
-    dialog.getByText("Estimated Yield", { exact: true }),
-  ).toHaveCount(0);
+  await expect(dialog.getByText("Estimated APY", { exact: true })).toHaveCount(
+    0,
+  );
   state.reject = true;
   await dialog
     .getByRole("button", { name: "Approve WETH", exact: true })

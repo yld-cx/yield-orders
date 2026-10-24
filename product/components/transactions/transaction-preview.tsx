@@ -1,13 +1,15 @@
-import {
-  getNetwork,
-  humanPrice,
-  marginalYieldPercent,
-  type Preview,
-} from "@yld-cx/sdk/ethereum";
+import { getNetwork, humanPrice, type Preview } from "@yld-cx/sdk/ethereum";
 import { Q128, type Token } from "@yld-cx/sdk";
 import { Message, Metric } from "@/components/forms/financial-fields";
 import { amountText, timestampText, shortAddress } from "@/lib/utils";
 import { priceText } from "@/lib/market-values";
+import {
+  DEFAULT_YIELD_MODE,
+  formatYieldPercent,
+  termYieldFromAmounts,
+  tickYieldText,
+} from "@/lib/yield";
+import { ApyLabel } from "@/components/forms/yield-display";
 export function TransactionPreview({
   preview,
   asset,
@@ -75,9 +77,9 @@ export function TransactionPreview({
           <Metric label="Estimated Quote">
             {estimatedSupplyQuote === undefined ? "—" : q(estimatedSupplyQuote)}
           </Metric>
-          <Metric label="Estimated Yield">
+          <Metric label={<ApyLabel>Estimated APY</ApyLabel>}>
             {preview.tick
-              ? `${marginalYieldPercent(preview.tick) ?? "—"}%`
+              ? tickYieldText(preview.tick, DEFAULT_YIELD_MODE.provide)
               : "—"}
           </Metric>
           {preview.provider &&
@@ -106,6 +108,14 @@ export function TransactionPreview({
           </Metric>
           <Metric label="Maximum term Yield">
             {a(preview.position.fullTermYieldAsset)}
+          </Metric>
+          <Metric label="Term Yield">
+            {formatYieldPercent(
+              termYieldFromAmounts(
+                preview.position.fullTermYieldAsset,
+                preview.position.assetAmount,
+              ),
+            )}
           </Metric>
           <Metric label="Term end">
             {timestampText(preview.position.maturity)}

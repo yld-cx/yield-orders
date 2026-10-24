@@ -30,7 +30,7 @@ export function MarketPositions({ market }: { market: Market }) {
         <div>
           <h2>Your liquidity</h2>
           <p className="text-xs text-muted-foreground">
-            Provided positions for this market.
+            Provided positions in this market.
           </p>
         </div>
       </div>

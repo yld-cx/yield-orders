@@ -2,14 +2,17 @@
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useConnection } from "wagmi";
+import type { Address } from "viem";
 import { Droplets } from "lucide-react";
-import type { Duration, Market, Token } from "@yld-cx/sdk";
 import {
-  getNetwork,
-  tokenAmount,
-  explainError,
-  marginalYieldPercent,
-} from "@yld-cx/sdk/ethereum";
+  QUERY_TIMING,
+  type Duration,
+  type Market,
+  type Token,
+} from "@yld-cx/sdk";
+import { getNetwork, tokenAmount, explainError } from "@yld-cx/sdk/ethereum";
 import {
   AmountInput,
   DurationSelect,
@@ -19,6 +22,10 @@ import {
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { tickPrice } from "@/lib/market-values";
+import { ApyLabel } from "@/components/forms/yield-display";
+import { DEFAULT_YIELD_MODE, tickYieldText } from "@/lib/yield";
+import { queryKeys } from "@/lib/query-keys";
+import { getSdk } from "@/lib/rpc";
 import type { BookLevel } from "@/hooks/use-yield-book";
 import {
   Tabs,
@@ -48,6 +55,15 @@ export function SupplyForm({
   const side = assetAddress === display[0].address ? "ask" : "bid";
   const [asset, quote] = side === "ask" ? display : [display[1], display[0]];
   const network = getNetwork(market.network).slug;
+  const account = useConnection();
+  const connected = account.isConnected && !!account.address;
+  const balance = useQuery({
+    queryKey: queryKeys.balance(network, asset.address, account.address),
+    queryFn: () =>
+      getSdk(network).balance(asset.address as Address, account.address!),
+    enabled: connected,
+    refetchInterval: QUERY_TIMING.liveRefresh,
+  });
   const selected =
     selectedTick?.asset.toLowerCase() === asset.address.toLowerCase() &&
     selectedTick.durationDays === duration
@@ -62,8 +78,8 @@ export function SupplyForm({
   }
   const estimatedYield =
     selected?.status === "exists"
-      ? marginalYieldPercent(selected.state)
-      : undefined;
+      ? tickYieldText(selected.state, DEFAULT_YIELD_MODE.provide)
+      : "—";
   return (
     <Card className="min-w-0" aria-label="Provide liquidity">
       <CardContent className="space-y-4">
@@ -101,6 +117,16 @@ export function SupplyForm({
               symbol={asset.symbol}
               value={amount}
               onChange={setAmount}
+              balance={
+                connected
+                  ? {
+                      value: balance.data,
+                      decimals: asset.decimals,
+                      isPending: balance.isPending,
+                      isError: balance.isError,
+                    }
+                  : undefined
+              }
             />
             <Metric label="Price">
               {selected
@@ -118,11 +144,10 @@ export function SupplyForm({
                   <Metric label="You provide">
                     {amount || "0"} {asset.symbol}
                   </Metric>
-                  <Metric label="Estimated Yield">
-                    {estimatedYield !== undefined
-                      ? `${estimatedYield}% / ${selected.durationDays}D`
-                      : "—"}
+                  <Metric label={<ApyLabel>Estimated APY</ApyLabel>}>
+                    {estimatedYield}
                   </Metric>
+                  <p className="text-xs text-muted-foreground">Annualized</p>
                   <details className="space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
                     <summary>Price details</summary>
                     <Metric label="Price tick">{selected.priceTick}</Metric>

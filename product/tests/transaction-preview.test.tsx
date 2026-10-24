@@ -124,9 +124,12 @@ describe("action previews", () => {
         "Duration",
         "You supply",
         "Estimated Quote",
-        "Estimated Yield",
       ])
         expect(main).toContain(`>${label}</dt>`);
+      expect(main).toContain("3.7161%");
+      expect(main).toContain("Estimated APY");
+      expect(main).toContain('aria-label="About APY"');
+      expect(main).not.toContain("assumes reinvestment at the same rate");
       expect(main.includes("Your Active liquidity after")).toBe(existing);
       expect(main).toContain('data-slot="alert"');
       expect(main).toContain("lucide-info");

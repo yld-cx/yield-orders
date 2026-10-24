@@ -17,6 +17,7 @@ import {
   MAX_DECIMAL_INPUT_LENGTH,
   YIELD_CURVE,
   FORMAT_PRECISION,
+  PERCENT_SCALE,
 } from "../constants.ts";
 import { TICK_MULTIPLIERS } from "./tick-constants.ts";
 export { MIN_TICK, MAX_TICK, Q128, MAX_AMOUNT } from "../constants.ts";
@@ -71,21 +72,33 @@ export function formatRatio(
     .replace(/0+$/, "");
   return f ? `${whole}.${f}` : whole.toString();
 }
-export function marginalYieldPercent(
+/** Unrounded full-term yield as a fractional return (not a percentage). */
+export function marginalTermYieldRatio(
   tick: Pick<TickState, "availableSupply" | "activeWorking" | "durationDays">,
-): string | undefined {
+): readonly [bigint, bigint] | undefined {
   const { availableSupply, activeWorking, durationDays } = tick;
   if (availableSupply <= 0n || activeWorking < 0n || durationDays <= 0n)
     return undefined;
   const principalCubed =
     (availableSupply + activeWorking) ** YIELD_CURVE.exponent;
-  return formatRatio(
+  return [
     durationDays *
       (principalCubed +
         YIELD_CURVE.weight * activeWorking ** YIELD_CURVE.exponent),
-    YIELD_CURVE.divisor * principalCubed,
-    FORMAT_PRECISION.yieldPercent,
-  );
+    YIELD_CURVE.divisor * principalCubed * BigInt(PERCENT_SCALE),
+  ];
+}
+export function marginalYieldPercent(
+  tick: Pick<TickState, "availableSupply" | "activeWorking" | "durationDays">,
+): string | undefined {
+  const ratio = marginalTermYieldRatio(tick);
+  return ratio
+    ? formatRatio(
+        ratio[0] * BigInt(PERCENT_SCALE),
+        ratio[1],
+        FORMAT_PRECISION.yieldPercent,
+      )
+    : undefined;
 }
 export function humanPrice(
   priceX128: bigint,

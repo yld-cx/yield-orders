@@ -16,6 +16,11 @@ import { getNetwork, tokenAmount, explainError } from "@yld-cx/sdk/ethereum";
 import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
 import { tickPrice, priceText } from "@/lib/market-values";
+import {
+  termYieldFromAmounts,
+  yieldText,
+  DEFAULT_YIELD_MODE,
+} from "@/lib/yield";
 import type { BookLevel } from "@/hooks/use-yield-book";
 import {
   AmountInput,
@@ -166,6 +171,10 @@ export function UseForm({
                   symbol={asset.symbol}
                   value={amount}
                   onChange={setAmount}
+                  max={{
+                    value: tick.state.availableSupply,
+                    decimals: asset.decimals,
+                  }}
                 />
                 <Metric label="Price">
                   {priceText(tickPrice(tick, display))} {display[1].symbol} /{" "}
@@ -218,6 +227,17 @@ export function UseForm({
                         </Metric>
                         {mode === "use" && (
                           <>
+                            <Metric label="Term Yield">
+                              {yieldText(
+                                termYieldFromAmounts(query.data[1], raw),
+                                Number(tick.state.durationDays),
+                                DEFAULT_YIELD_MODE.rent,
+                              )}
+                            </Metric>
+                            <p className="text-xs text-muted-foreground">
+                              Estimated borrowing cost for the{" "}
+                              {tick.state.durationDays.toString()}D term.
+                            </p>
                             <Metric label="Full-term Yield">
                               {amountText(query.data[1], asset.decimals)}{" "}
                               {asset.symbol}

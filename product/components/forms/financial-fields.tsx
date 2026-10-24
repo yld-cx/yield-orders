@@ -1,6 +1,6 @@
 "use client";
 import { useId, type ReactNode } from "react";
-import { Info, LoaderIcon } from "lucide-react";
+import { Info, LoaderIcon, WalletIcon } from "lucide-react";
 import { DURATIONS, type Duration } from "@yld-cx/sdk";
 import { cn } from "@yld-cx/ui/lib/utils";
 import { Field, FieldLabel } from "@yld-cx/ui/components/ui/field";
@@ -18,21 +18,77 @@ import {
   SelectItem,
 } from "@yld-cx/ui/components/ui/select";
 import { Alert, AlertDescription } from "@yld-cx/ui/components/ui/alert";
+import { Button } from "@yld-cx/ui/components/ui/button";
+import { formatUnits } from "viem";
+import { amountText } from "@/lib/utils";
 export function AmountInput({
   label,
   value,
   onChange,
   symbol,
+  balance,
+  max,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   symbol: string;
+  balance?: {
+    value?: bigint;
+    decimals: number;
+    isPending?: boolean;
+    isError?: boolean;
+  };
+  max?: {
+    value: bigint;
+    decimals: number;
+  };
 }) {
   const id = useId();
+  const maximum = max ?? balance;
+  const maxDisabled = max
+    ? max.value <= 0n
+    : !balance ||
+      balance.isPending ||
+      balance.isError ||
+      balance.value === undefined ||
+      balance.value <= 0n;
   return (
     <Field className="my-4">
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <FieldLabel htmlFor={id}>{label}</FieldLabel>
+        {maximum && (
+          <div className="ml-auto flex min-w-0 items-center justify-end gap-2 text-xs text-muted-foreground">
+            {balance && (
+              <div
+                className="flex items-center gap-1 break-all text-right tabular-nums"
+                aria-live="polite"
+                aria-label="Wallet balance"
+              >
+                <WalletIcon className="size-3" aria-hidden="true" />
+                {balance.isPending
+                  ? "…"
+                  : balance.value !== undefined
+                    ? `${amountText(balance.value, balance.decimals)}`
+                    : "—"}
+              </div>
+            )}
+            <Button
+              type="button"
+              variant="link"
+              size="xs"
+              className="h-auto cursor-pointer px-0 py-0 text-muted-foreground font-bold hover:text-primary hover:no-underline"
+              disabled={maxDisabled}
+              onClick={() => {
+                if (maximum.value !== undefined)
+                  onChange(formatUnits(maximum.value, maximum.decimals));
+              }}
+            >
+              Max
+            </Button>
+          </div>
+        )}
+      </div>
       <InputGroup>
         <InputGroupInput
           id={id}
@@ -113,7 +169,7 @@ export function Metric({
   label,
   children,
 }: {
-  label: string;
+  label: ReactNode;
   children: ReactNode;
 }) {
   return (
