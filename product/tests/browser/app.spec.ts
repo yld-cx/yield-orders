@@ -1734,7 +1734,9 @@ for (const empty of ["ask", "bid", "both", "missing"] as const) {
 test("Orders connection and invalid pair validation", async ({ page }) => {
   await page.goto("/orders");
   await expect(
-    page.getByRole("heading", { name: "Connect to see your Orders" }),
+    page
+      .getByRole("main")
+      .getByText("Connect to see your Orders", { exact: true }),
   ).toBeVisible();
   await page.goto("/market/open");
   await page
@@ -2415,6 +2417,7 @@ async function transactionRpc(
     positions?: {
       provider?: Partial<ProviderPosition>;
       use?: Partial<UsePosition>;
+      tickIds?: bigint[];
     };
     balance?: bigint;
     atomic?: "supported" | "unsupported" | "missing" | "safe";
@@ -2589,7 +2592,7 @@ async function transactionRpc(
               functionName: decoded.functionName,
               result:
                 decoded.functionName === "getEarnPositions"
-                  ? [selectedId]
+                  ? (options.positions.tickIds ?? [selectedId])
                   : options.positions.use
                     ? [1n]
                     : [],
@@ -3196,10 +3199,20 @@ test("position cards share a compact responsive layout on Market and Orders", as
   page,
   isMobile,
 }) => {
-  await transactionRpc(page, { pair: true, tick: true, positions: {} });
+  await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: { tickIds: [id7, bid7] },
+  });
   for (const path of [`/market/base/${key}`, "/orders"]) {
     await page.goto(path);
-    const card = page.locator('[data-slot="position-card"]').first();
+    const positions =
+      path === "/orders"
+        ? page.getByRole("main")
+        : page.getByLabel("Your liquidity", { exact: true });
+    const cards = positions.locator('[data-slot="position-card"]');
+    await expect(cards).toHaveCount(2);
+    const card = cards.first();
     await expect(card.getByText("Available", { exact: true })).toBeVisible();
     await expect(
       card.getByRole("button", { name: "Preview Withdraw" }),
@@ -3232,9 +3245,13 @@ test("position cards share a compact responsive layout on Market and Orders", as
         window as unknown as { testWallet: { chain: (chain: string) => void } }
       ).testWallet.chain("0x1");
     });
-    const switchNetwork = card.getByRole("button", { name: "Switch network" });
+    const switchNetwork = positions.getByRole("button", {
+      name: "Switch network",
+    });
     await expect(switchNetwork).toHaveCount(1);
-    await expect(card.getByText("Your wallet is on Ethereum.")).toHaveCount(1);
+    await expect(
+      positions.getByText("Your wallet is on Ethereum."),
+    ).toHaveCount(1);
     await expect(
       card.getByRole("button", { name: "Preview Withdraw" }),
     ).toBeDisabled();

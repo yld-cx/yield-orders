@@ -2,6 +2,7 @@
 import { Badge } from "@yld-cx/ui/components/ui/badge";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { useState } from "react";
+import { Droplets } from "lucide-react";
 import type { Duration, Market, Token } from "@yld-cx/sdk";
 import {
   getNetwork,
@@ -160,7 +161,7 @@ export function SupplyForm({
               />
             ) : (
               <Button className="w-full" aria-label="Preview Provide" disabled>
-                <span aria-hidden="true">👀</span> Provide
+                <Droplets aria-hidden="true" data-icon="inline-start" /> Provide
               </Button>
             )}
           </TabsContent>

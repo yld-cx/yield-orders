@@ -1,6 +1,19 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import {
+  ArrowLeftRight,
+  ArrowUpFromLine,
+  CircleCheck,
+  CircleX,
+  Coins,
+  Crown,
+  Droplets,
+  Hourglass,
+  LockKeyholeOpen,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+import {
   useConnection,
   useWalletClient,
   useCapabilities,
@@ -35,6 +48,19 @@ import {
 } from "@yld-cx/ui/components/ui/dialog";
 import { NetworkGuard } from "@/components/wallet/wallet-connect";
 import { TransactionPreview } from "./transaction-preview";
+
+const ACTION_ICONS: Record<string, LucideIcon> = {
+  Provide: Droplets,
+  Rent: Hourglass,
+  Swap: ArrowLeftRight,
+  Withdraw: ArrowUpFromLine,
+  Collect: Coins,
+  Repay: LockKeyholeOpen,
+  Close: CircleX,
+  Settle: CircleCheck,
+  "Create Market": Crown,
+};
+
 export function TransactionFlow({
   network,
   label,
@@ -337,6 +363,7 @@ function TransactionSession({
     onSuccess?.(result);
   }
   const actionName = label.replace(/^(?:Preview|Review)\s+/i, "");
+  const ActionIcon = ACTION_ICONS[actionName] ?? Zap;
   const token = required
     ? [asset, quote].find(
         (t) => t?.address.toLowerCase() === required.token.toLowerCase(),
@@ -357,7 +384,8 @@ function TransactionSession({
         }
         onClick={() => void review()}
       >
-        <span aria-hidden="true">👀</span> {actionName}
+        <ActionIcon aria-hidden="true" data-icon="inline-start" />
+        {actionName}
       </Button>
       <Dialog
         open={open}

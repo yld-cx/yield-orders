@@ -26,6 +26,7 @@ import {
   MoveUpRight,
   ArrowLeftRight,
   RotateCcw,
+  LayersPlus,
 } from "lucide-react";
 import { displayTokens } from "@yld-cx/sdk/registry";
 import { marginalYieldPercent, getNetwork } from "@yld-cx/sdk/ethereum";
@@ -302,7 +303,7 @@ export function MarketTable() {
           </div>
           <div className="flex w-full min-w-0 items-center gap-3 sm:w-auto">
             <Button render={<Link href="/market/open" />} nativeButton={false}>
-              <Layers size={16} />
+              <LayersPlus size={16} />
               Open Market
             </Button>
             <div className="relative min-w-0 flex-1 sm:w-48 sm:flex-none [&>svg]:pointer-events-none [&>svg]:absolute [&>svg]:left-3 [&>svg]:top-2 [&>svg]:size-4 [&>svg]:text-muted-foreground [&>input]:pl-9">

@@ -28,7 +28,6 @@ import { priceText, tickPrice } from "@/lib/market-values";
 import { Metric, Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
-import { NetworkGuard } from "@/components/wallet/wallet-connect";
 import { Progress } from "@yld-cx/ui/components/ui/progress";
 import { Button } from "@yld-cx/ui/components/ui/button";
 
@@ -87,7 +86,6 @@ function PositionCardLayout({
         <div className="grid min-w-0 grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4 [&_dl]:my-0 [&_dl]:block [&_dl]:min-w-0 [&_dd]:mt-1 [&_dd]:max-w-none [&_dd]:text-left [&_dd]:break-all">
           {metrics}
         </div>
-        <NetworkGuard chainId={getNetwork(network).chain.id} />
         <div
           className="flex flex-wrap items-center gap-2"
           role="group"
