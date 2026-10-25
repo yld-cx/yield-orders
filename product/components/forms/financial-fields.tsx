@@ -102,7 +102,7 @@ export function AmountInput({
           placeholder="0.00"
           value={value}
           onChange={(event) => {
-            const next = event.target.value;
+            const next = event.target.value.replaceAll(",", ".");
             if (/^\d*(?:\.\d*)?$/.test(next)) onChange(next);
           }}
           className="tabular-nums"

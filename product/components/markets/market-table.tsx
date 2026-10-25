@@ -335,12 +335,14 @@ export function MarketTable() {
               value={duration}
               onChange={(duration) => updateFilters({ duration })}
             />
-            <YieldModeSwitch
-              label="Markets yield display"
-              termLabel="Term"
-              value={yieldMode}
-              onChange={setYieldMode}
-            />
+            <div className="w-full sm:w-auto">
+              <YieldModeSwitch
+                label="Markets yield display"
+                termLabel="Term"
+                value={yieldMode}
+                onChange={setYieldMode}
+              />
+            </div>
           </div>
         </div>
         <div

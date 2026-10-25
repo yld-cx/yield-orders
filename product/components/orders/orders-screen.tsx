@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useConnection } from "wagmi";
 import { usePortfolio } from "@/hooks/use-portfolio";
 import {
+  deploymentFor,
   explainError,
   getNetwork,
   type NetworkSlug,
@@ -26,7 +27,7 @@ import {
   TabsTrigger,
   TabsContent,
 } from "@yld-cx/ui/components/ui/tabs";
-import { RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw } from "lucide-react";
 
 const enum OrderTab {
   Provide = "provide",
@@ -134,14 +135,36 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
       ) : (
         <Tabs value={tab} onValueChange={(next) => setTab(next as OrderTab)}>
           <div className="my-4 flex flex-wrap items-center justify-between gap-4">
-            <TabsList aria-label="Orders tab" data-intent="term" variant="line">
-              <TabsTrigger value={OrderTab.Provide}>
-                Provide ({providers.length})
-              </TabsTrigger>
-              <TabsTrigger value={OrderTab.Use}>
-                Use ({uses.length})
-              </TabsTrigger>
-            </TabsList>
+            <div className="flex items-center gap-1">
+              <TabsList
+                aria-label="Orders tab"
+                data-intent="term"
+                variant="line"
+              >
+                <TabsTrigger value={OrderTab.Provide}>
+                  Provide ({providers.length})
+                </TabsTrigger>
+                <TabsTrigger value={OrderTab.Use}>
+                  Use ({uses.length})
+                </TabsTrigger>
+              </TabsList>
+              <Button
+                render={
+                  <a
+                    href={`${getNetwork(network).chain.blockExplorers.default.url}/address/${deploymentFor(getNetwork(network).id).address}?a=${account.address}#events`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  />
+                }
+                nativeButton={false}
+                role="link"
+                variant="ghost"
+                className="text-muted-foreground"
+              >
+                History
+                <ExternalLink size={14} aria-hidden="true" />
+              </Button>
+            </div>
             <div className="flex items-center gap-3">
               <Input
                 aria-label="Filter Orders by token or address"

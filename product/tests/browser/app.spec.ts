@@ -1317,6 +1317,80 @@ test("wallet options name a late discovered wallet without requesting access", a
   );
 });
 
+test("connected wallet shows header status and copies the full address", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await injectWallets(page);
+  await page.goto("/");
+  const header = page.getByRole("banner");
+  const connectedStatus = header.getByRole("status", {
+    name: "Wallet connected",
+  });
+  await expect(connectedStatus).toHaveCount(0);
+  await header
+    .getByRole("button", { name: "Connect wallet", exact: true })
+    .click();
+  await page.getByRole("button", { name: "MetaMask", exact: true }).click();
+  await expect(connectedStatus).toBeVisible();
+  const wallet = header.getByRole("button", { name: "0x0000…0001" });
+  await expect(wallet).toHaveAttribute(
+    "title",
+    "Wallet connected: 0x0000000000000000000000000000000000000001",
+  );
+  await wallet.click();
+  const dialog = page.getByRole("dialog");
+  const copy = dialog.getByRole("button", {
+    name: "Copy address",
+    exact: true,
+  });
+  await expect(copy).toBeVisible();
+  const copyIcon = copy.locator("svg.lucide-copy");
+  const checkIcon = copy.locator("svg.lucide-check");
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 1000));
+  await copy.click();
+  await expect(checkIcon).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "0x0000000000000000000000000000000000000001",
+  );
+  await page.evaluate(() => {
+    (
+      window as unknown as {
+        testWallet: { account: (address: string) => void };
+      }
+    ).testWallet.account("0x0000000000000000000000000000000000000003");
+  });
+  await expect(copyIcon).toBeVisible();
+  await copy.click();
+  await expect(checkIcon).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "0x0000000000000000000000000000000000000003",
+  );
+  await page.clock.fastForward(1000);
+  await copy.click();
+  await expect(checkIcon).toBeVisible();
+  await page.clock.fastForward(1999);
+  await expect(checkIcon).toBeVisible();
+  await page.clock.fastForward(1);
+  await expect(copyIcon).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, "writeText", {
+      value: async () => {
+        throw new Error("Clipboard access denied");
+      },
+    });
+  });
+  await copy.click();
+  await expect(copyIcon).toBeVisible();
+  await dialog.getByRole("button", { name: "Disconnect", exact: true }).click();
+  await expect(connectedStatus).toHaveCount(0);
+  await expect(
+    header.getByRole("button", { name: "Connect wallet", exact: true }),
+  ).toBeVisible();
+});
+
 test("multiple injected providers, wallet selection, account and network switching", async ({
   page,
 }) => {
@@ -2095,6 +2169,7 @@ test("row utilization, gold borders and overview Yield follow the selected side 
   const overview = page.getByRole("region", { name: "Market overview" });
   const ask = page.locator(`[data-tick-id="${id7}"]`);
   const bid = page.locator(`[data-tick-id="${bid7}"]`);
+  await expect(overview.getByText("7D", { exact: true })).toBeVisible();
   for (const [row, percentage, side] of [
     [ask, 25, "ask"],
     [bid, 75, "bid"],
@@ -2125,12 +2200,9 @@ test("row utilization, gold borders and overview Yield follow the selected side 
     await expect(row).toHaveCSS("border-color", "rgb(231, 185, 77)");
     await expect(row).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     await expect(
-      overview.getByText(
-        `${side === "ask" ? "Ask" : "Bid"} APY · 7D reference`,
-        {
-          exact: true,
-        },
-      ),
+      overview.getByText(`${side === "ask" ? "Ask" : "Bid"} APY`, {
+        exact: true,
+      }),
     ).toBeVisible();
     await expect(
       overview.getByText(side === "ask" ? "9.7328%" : "365.5444%", {
@@ -2147,20 +2219,14 @@ test("row utilization, gold borders and overview Yield follow the selected side 
   await expect(overview.getByText("—", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Ask · WETH", exact: true }).click();
   await expect(empty).toHaveAttribute("aria-pressed", "false");
-  await expect(
-    overview.getByText("Ask APY · 7D reference", { exact: true }),
-  ).toBeVisible();
+  await expect(overview.getByText("Ask APY", { exact: true })).toBeVisible();
   await expect(overview.getByText("9.7328%", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "Bid · USDC", exact: true }).click();
-  await expect(
-    overview.getByText("Bid APY · 7D reference", { exact: true }),
-  ).toBeVisible();
+  await expect(overview.getByText("Bid APY", { exact: true })).toBeVisible();
   await expect(overview.getByText("365.5444%", { exact: true })).toBeVisible();
   await bid.click();
   await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expect(
-    overview.getByText("Ask APY · 7D reference", { exact: true }),
-  ).toBeVisible();
+  await expect(overview.getByText("Ask APY", { exact: true })).toBeVisible();
   await expect(overview.getByText("365.5444%", { exact: true })).toBeVisible();
   await expect(bid.locator('span[aria-hidden="true"]')).toHaveAttribute(
     "style",
@@ -3164,6 +3230,9 @@ for (const direction of [0, 1] as const) {
       const state = await transactionRpc(page, { pair, tick, direction });
       const dialog = page.getByRole("dialog");
       await expect(
+        dialog.getByRole("button", { name: "Done", exact: true }),
+      ).toHaveCount(0);
+      await expect(
         dialog.getByRole("button", { name: "Confirm Provide", exact: true }),
       ).toBeVisible();
       expect(state.writes).toHaveLength(0);
@@ -3171,7 +3240,7 @@ for (const direction of [0, 1] as const) {
         .getByRole("button", { name: "Confirm Provide", exact: true })
         .click();
       await expect(
-        dialog.getByText("Confirmed ✅", { exact: true }),
+        dialog.getByRole("button", { name: "Done", exact: true }),
       ).toBeVisible();
       expect(state.writes).toEqual([
         [
@@ -3180,6 +3249,8 @@ for (const direction of [0, 1] as const) {
           "supply",
         ],
       ]);
+      await dialog.getByRole("button", { name: "Done", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
       await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1");
     });
   }
@@ -3218,7 +3289,9 @@ test("approval rejection and zero-first approval recover inside the same preview
   await dialog
     .getByRole("button", { name: "Confirm Provide", exact: true })
     .click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([
     ["approve"],
     ["approve"],
@@ -3264,7 +3337,9 @@ test("concurrent initialization refreshes the same preview and requires confirma
   );
   expect(state.writes).toHaveLength(0);
   await confirm.click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["supply"]]);
 });
 test("Rent and Swap Max use the selected level's exact available amount", async ({
@@ -3405,7 +3480,9 @@ test("final simulation failure keeps the reviewed preview and retries only after
   expect(state.writes).toHaveLength(0);
   state.fail = false;
   await confirm.click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["supply"]]);
 });
 for (const change of ["account", "network"]) {
@@ -3552,7 +3629,7 @@ test("all withdrawal percentages use fresh principal and submit zero minimum imm
       .getByRole("button", { name: "Confirm Withdraw", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed ✅", { exact: true }),
+      dialog.getByRole("button", { name: "Done", exact: true }),
     ).toBeVisible();
     expect(state.withdrawals.at(-1)?.slice(0, 3)).toEqual([
       id7,
@@ -3630,7 +3707,9 @@ test("claim-only and Resolving positions remain accessible and empty Collect is 
   state.settlement = true;
   await dialog.getByRole("button", { name: "Retry Collect" }).click();
   await dialog.getByRole("button", { name: "Confirm Collect" }).click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["collect"]]);
   state.settlement = false;
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
@@ -3640,7 +3719,9 @@ test("claim-only and Resolving positions remain accessible and empty Collect is 
   await page.reload();
   await card.getByRole("button", { name: "Preview Collect" }).click();
   await dialog.getByRole("button", { name: "Confirm Collect" }).click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["collect"], ["collect"]]);
 });
 
@@ -3670,7 +3751,9 @@ test("Use shows accrued Yield without balance or approval, then keeps approval a
   ).toBeVisible();
   expect(state.writes).toEqual([["approve"]]);
   await dialog.getByRole("button", { name: "Confirm Repay" }).click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["approve"], ["repay"]]);
 });
 
@@ -3701,7 +3784,9 @@ test("Use retains its estimate with insufficient Asset and changes to Close at m
   );
   await card.getByRole("button", { name: "Preview Close" }).click();
   await dialog.getByRole("button", { name: "Confirm Close" }).click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["close"]]);
 });
 
@@ -3840,9 +3925,9 @@ for (const submitted of ["approval", "transaction"] as const) {
     await expect(
       dialog.getByText("Waiting for onchain confirmation…", { exact: true }),
     ).toBeVisible();
-    await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
-      0,
-    );
+    await expect(
+      dialog.getByRole("button", { name: "Done", exact: true }),
+    ).toHaveCount(0);
     expect(state.writes).toEqual([
       [submitted === "approval" ? "approve" : "supply"],
     ]);
@@ -3850,7 +3935,7 @@ for (const submitted of ["approval", "transaction"] as const) {
     await expect(
       submitted === "approval"
         ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
-        : dialog.getByText("Confirmed ✅", { exact: true }),
+        : dialog.getByRole("button", { name: "Done", exact: true }),
     ).toBeVisible({ timeout: 10000 });
     expect(state.writes).toHaveLength(1);
   });
@@ -3871,17 +3956,26 @@ test("amount input accepts decimal editing and rejects invalid text", async ({
   for (const value of [
     "0",
     "0.",
+    "0,",
     ".5",
+    ",5",
     "1.",
+    "1,",
+    "1,000",
     "0.000000000000000001",
+    "0,000000000000000001",
     "9007199254740993.123456789123456789",
+    "9007199254740993,123456789123456789",
     "",
   ]) {
     await input.fill(value);
-    await expect(input).toHaveValue(value);
+    await expect(input).toHaveValue(value.replaceAll(",", "."));
   }
-  await input.pressSequentially("12.34");
-  await expect(input).toHaveValue("12.34");
+  for (const separator of [".", ","]) {
+    await input.fill("");
+    await input.pressSequentially(`12${separator}34`);
+    await expect(input).toHaveValue("12.34");
+  }
   // Replacing the value also exercises input from paste, without silently stripping text.
   for (const invalid of [
     "abc",
@@ -3891,7 +3985,9 @@ test("amount input accepts decimal editing and rejects invalid text", async ({
     "-1",
     "+1",
     "1.2.3",
-    "1,000",
+    "1,2,3",
+    "1.2,3",
+    "1,2.3",
     " 42 ",
     "NaN",
     "Infinity",
@@ -3899,7 +3995,7 @@ test("amount input accepts decimal editing and rejects invalid text", async ({
     await input.fill(invalid);
     await expect(input).toHaveValue("12.34");
   }
-  await input.pressSequentially("abcE+-.");
+  await input.pressSequentially("abcE+-.,");
   await expect(input).toHaveValue("12.34");
   await input.evaluate((node: HTMLInputElement) =>
     node.setSelectionRange(0, 2),
@@ -3928,25 +4024,61 @@ test("Yield slippage accepts percentages and disables autocomplete", async ({
   await expect(input).toHaveAttribute("autocorrect", "off");
   await expect(input).toHaveAttribute("autocapitalize", "none");
   await expect(input).toHaveAttribute("spellcheck", "false");
-  for (const invalid of ["abc", "1.2.3", "1e2", "-1", "+1", "0.5%", "1,000"]) {
+  for (const invalid of [
+    "abc",
+    "1.2.3",
+    "1,2,3",
+    "1.2,3",
+    "1,2.3",
+    "1e2",
+    "-1",
+    "+1",
+    "0.5%",
+    "0,5%",
+    " 0,5 ",
+  ]) {
     await input.fill(invalid);
     await expect(input).toHaveValue("0.5");
   }
   await input.fill("");
   await expect(input).toHaveValue("");
-  await input.pressSequentially("0.25abcE+-");
-  await expect(input).toHaveValue("0.25");
+  for (const separator of [".", ","]) {
+    await input.fill("");
+    await input.pressSequentially(`0${separator}25abcE+-.,`);
+    await expect(input).toHaveValue("0.25");
+  }
   await input.fill("0");
   await expect(input).toHaveValue("0");
-  for (const value of ["0.01", "0.29", "1.", ".5", "10"]) {
+  for (const value of [
+    "0.01",
+    "0,01",
+    "0.29",
+    "0,29",
+    "1.",
+    "1,",
+    ".5",
+    ",5",
+    "10",
+  ]) {
     await input.fill(value);
-    await expect(input).toHaveValue(value);
+    await expect(input).toHaveValue(value.replaceAll(",", "."));
     await expect(
       page.getByRole("alert").filter({ hasText: "Yield slippage must be" }),
     ).toHaveCount(0);
   }
-  for (const value of ["", ".", "10.01", "333", "0.001"]) {
+  for (const value of [
+    "",
+    ".",
+    ",",
+    "10.01",
+    "10,01",
+    "333",
+    "0.001",
+    "0,001",
+    "1,000",
+  ]) {
     await input.fill(value);
+    await expect(input).toHaveValue(value.replaceAll(",", "."));
     await expect(
       page
         .getByRole("alert")
@@ -3965,11 +4097,17 @@ test("Rent converts Yield slippage to exact basis-point caps", async ({
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByText("Yield slippage", { exact: true }).click();
-  await page.getByLabel("You receive", { exact: true }).fill("1");
+  await page.getByLabel("You receive", { exact: true }).fill("1,0");
+  await expect(page.getByLabel("You receive", { exact: true })).toHaveValue(
+    "1.0",
+  );
   for (const [percent, expectedCap] of [
     ["0.5", "0.01005 WETH"],
+    ["0,5", "0.01005 WETH"],
     ["0.29", "0.010029 WETH"],
+    ["0,29", "0.010029 WETH"],
     ["0.01", "0.010001 WETH"],
+    ["0,01", "0.010001 WETH"],
     ["0", "0.01 WETH"],
     ["10", "0.011 WETH"],
   ]) {
@@ -4022,7 +4160,7 @@ for (const direction of [0, 1] as const) {
         .getByRole("button", { name: "Confirm Swap", exact: true })
         .click();
       await expect(
-        dialog.getByText("Confirmed ✅", { exact: true }),
+        dialog.getByRole("button", { name: "Done", exact: true }),
       ).toBeVisible();
       expect(state.swaps.at(-1)).toEqual([
         direction === 0 ? id7 : bid7,
@@ -4050,7 +4188,7 @@ for (const atomic of ["supported", "safe"] as const) {
       .getByRole("button", { name: "Approve & Provide", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed ✅", { exact: true }),
+      dialog.getByRole("button", { name: "Done", exact: true }),
     ).toBeVisible();
     expect(state.batches).toHaveLength(1);
     expect(state.batches[0].atomicRequired).toBe(true);
@@ -4082,7 +4220,7 @@ for (const atomic of ["missing", "unsupported"] as const) {
       .getByRole("button", { name: "Confirm Provide", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed ✅", { exact: true }),
+      dialog.getByRole("button", { name: "Done", exact: true }),
     ).toBeVisible();
     expect(state.writes).toEqual([["approve"], ["supply"]]);
     expect(state.batches).toEqual([]);
@@ -4168,7 +4306,9 @@ test("Rent advances to Confirm Rent after two approval confirmations", async ({
   await dialog
     .getByRole("button", { name: "Confirm Rent", exact: true })
     .click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["approve"], ["use"]]);
 });
 test("pending atomic batch waits for wallet execution", async ({ page }) => {
@@ -4186,12 +4326,14 @@ test("pending atomic batch waits for wallet execution", async ({ page }) => {
   await expect(
     dialog.getByText("Waiting for onchain confirmation…", { exact: true }),
   ).toBeVisible();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toHaveCount(0);
   expect(state.batches).toHaveLength(1);
   state.batchPending = false;
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible({
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible({
     timeout: 10000,
   });
   expect(state.batches).toHaveLength(1);
@@ -4219,9 +4361,9 @@ test("batch rejection permits a deliberate retry and reverted batch requires a n
   await expect(
     dialog.getByRole("button", { name: "Retry Provide", exact: true }),
   ).toBeVisible();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toHaveCount(0);
   expect(state.batches).toHaveLength(1);
 });
 test("atomic zero-first approval resets then approves exactly once in the wallet batch", async ({
@@ -4238,7 +4380,9 @@ test("atomic zero-first approval resets then approves exactly once in the wallet
   await dialog
     .getByRole("button", { name: "Approve & Provide", exact: true })
     .click();
-  await expect(dialog.getByText("Confirmed ✅", { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Done", exact: true }),
+  ).toBeVisible();
   expect(state.writes).toEqual([["approve", "approve", "supply"]]);
   const amounts = state.batches[0].calls
     .slice(0, -1)
@@ -4273,7 +4417,7 @@ for (const failure of ["simulationUnsupported", "sendUnsupported"] as const) {
       .getByRole("button", { name: "Confirm Provide", exact: true })
       .click();
     await expect(
-      dialog.getByText("Confirmed ✅", { exact: true }),
+      dialog.getByRole("button", { name: "Done", exact: true }),
     ).toBeVisible();
     expect(state.writes).toEqual([["approve"], ["supply"]]);
     expect(state.batches).toEqual([]);
@@ -4299,7 +4443,7 @@ for (const atomic of [undefined, "supported"] as const) {
       button.click();
     });
     await expect(
-      dialog.getByText("Confirmed ✅", { exact: true }),
+      dialog.getByRole("button", { name: "Done", exact: true }),
     ).toBeVisible();
     expect(state.writes).toHaveLength(1);
   });
