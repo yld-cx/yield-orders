@@ -22,6 +22,8 @@ import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
 import { shortAddress } from "@/lib/utils";
 import { explainError } from "@yld-cx/sdk/ethereum";
+import { WalletDeepLinks } from "@/components/wallet/wallet-deep-links";
+
 export function distinctConnectors(
   connectors: readonly Connector[],
 ): Connector[] {
@@ -288,6 +290,10 @@ export function WalletConnect() {
                     onChoose={choose}
                   />
                 ))}
+                <WalletDeepLinks
+                  connectors={connectors}
+                  pending={connect.isPending}
+                />
               </div>
               {connect.isPending && (
                 <Message busy>Waiting for your wallet…</Message>

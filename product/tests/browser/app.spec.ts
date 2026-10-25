@@ -1195,6 +1195,7 @@ for (const rememberedWallet of [false, true]) {
 
 test("wallet options hide unavailable browser and Safe providers", async ({
   page,
+  isMobile,
 }) => {
   await page.goto("/");
   await page
@@ -1207,7 +1208,137 @@ test("wallet options hide unavailable browser and Safe providers", async ({
   await expect(
     dialog.getByRole("button", { name: /^(Injected|Browser wallet|Safe)$/ }),
   ).toHaveCount(0);
+  for (const wallet of ["Phantom", "MetaMask"])
+    await expect(
+      dialog.getByRole("button", { name: `Open in ${wallet}`, exact: true }),
+    ).toHaveCount(isMobile ? 1 : 0);
 });
+
+for (const wallet of ["Phantom", "MetaMask"] as const) {
+  test(`mobile ${wallet} link opens the yld.cx home page`, async ({
+    page,
+    isMobile,
+  }) => {
+    test.skip(!isMobile, "Deep links are available only on mobile");
+    await page.goto("/orders?ref=a%26b&search=WETH%20%2F%20USDC#positions");
+    await page
+      .getByRole("button", { name: "Connect wallet", exact: true })
+      .first()
+      .click();
+    const option = page
+      .getByRole("dialog")
+      .getByRole("button", { name: `Open in ${wallet}`, exact: true });
+    await expect(option).toBeVisible();
+    const expected =
+      wallet === "Phantom"
+        ? "https://phantom.com/ul/browse/https%3A%2F%2Fyld.cx?ref=https%3A%2F%2Fyld.cx"
+        : "https://link.metamask.io/dapp/yld.cx";
+    // Intercept the destination so the test never opens a real wallet or remote site.
+    await page.route(
+      wallet === "Phantom"
+        ? "https://phantom.com/ul/browse/**"
+        : "https://link.metamask.io/dapp/**",
+      (route) =>
+        route.fulfill({ contentType: "text/html", body: "Wallet browser" }),
+    );
+    await Promise.all([page.waitForURL(expected), option.click()]);
+    expect(page.url()).toBe(expected);
+  });
+
+  test(`mobile wallet links hide only the injected ${wallet} option and reuse EVM connection`, async ({
+    page,
+    isMobile,
+  }) => {
+    await page.goto("/orders?ref=a%26b&search=WETH%20%2F%20USDC");
+    await page
+      .getByRole("button", { name: "Connect wallet", exact: true })
+      .first()
+      .click();
+    const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByRole("button", { name: `Open in ${wallet}`, exact: true }),
+    ).toHaveCount(isMobile ? 1 : 0);
+    await page.evaluate((wallet) => {
+      window.dispatchEvent(
+        new CustomEvent("eip6963:announceProvider", {
+          detail: {
+            info: {
+              uuid: "00000000-0000-4000-8000-000000000004",
+              name: wallet,
+              rdns: wallet === "Phantom" ? "app.phantom" : "io.metamask",
+              icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
+            },
+            provider: {
+              request: async ({ method }: { method: string }) => {
+                if (
+                  method === "eth_requestAccounts" ||
+                  method === "eth_accounts"
+                )
+                  return ["0x0000000000000000000000000000000000000001"];
+                if (method === "eth_chainId") return "0x2105";
+                throw new Error(`Unsupported test method ${method}`);
+              },
+              on: () => {},
+              removeListener: () => {},
+            },
+          },
+        }),
+      );
+    }, wallet);
+    await expect(
+      dialog.getByRole("button", { name: `Open in ${wallet}`, exact: true }),
+    ).toHaveCount(0);
+    const other = wallet === "Phantom" ? "MetaMask" : "Phantom";
+    await expect(
+      dialog.getByRole("button", { name: `Open in ${other}`, exact: true }),
+    ).toHaveCount(isMobile ? 1 : 0);
+    await dialog.getByRole("button", { name: wallet, exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "0x0000…0001" }).first(),
+    ).toBeVisible();
+  });
+}
+
+for (const profile of [
+  {
+    name: "Android",
+    userAgent:
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/130.0.0.0 Mobile Safari/537.36",
+    platform: "Linux armv8l",
+    maxTouchPoints: 5,
+  },
+  {
+    name: "iPad with desktop user agent",
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15",
+    platform: "MacIntel",
+    maxTouchPoints: 5,
+  },
+  {
+    name: "desktop with narrow viewport",
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36",
+    platform: "MacIntel",
+    maxTouchPoints: 0,
+  },
+]) {
+  test(`wallet deep link visibility on ${profile.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.addInitScript((profile) => {
+      for (const key of ["userAgent", "platform", "maxTouchPoints"] as const)
+        Object.defineProperty(navigator, key, { get: () => profile[key] });
+    }, profile);
+    await page.goto("/");
+    await page
+      .getByRole("button", { name: "Connect wallet", exact: true })
+      .click();
+    await expect(
+      page
+        .getByRole("dialog")
+        .getByRole("button", { name: /^Open in (Phantom|MetaMask)$/ }),
+    ).toHaveCount(profile.maxTouchPoints ? 2 : 0);
+  });
+}
 
 test("wallet options name a late discovered wallet without requesting access", async ({
   page,
@@ -1407,6 +1538,9 @@ test("multiple injected providers, wallet selection, account and network switchi
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: /^(Injected|Browser wallet|Safe)$/ }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /^Open in (Phantom|MetaMask)$/ }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   await expect(page.getByRole("button", { name: "0x0000…0001" })).toBeVisible();
