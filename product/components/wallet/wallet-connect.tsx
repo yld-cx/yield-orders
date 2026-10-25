@@ -9,7 +9,7 @@ import {
   type Connector,
 } from "wagmi";
 import QRCode from "qrcode";
-import { Wallet, LogOut } from "lucide-react";
+import { Wallet, LogOut, Copy, Check } from "lucide-react";
 import {
   Dialog,
   DialogTrigger,
@@ -22,6 +22,8 @@ import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message } from "@/components/forms/financial-fields";
 import { shortAddress } from "@/lib/utils";
 import { explainError } from "@yld-cx/sdk/ethereum";
+import { WalletDeepLinks } from "@/components/wallet/wallet-deep-links";
+
 export function distinctConnectors(
   connectors: readonly Connector[],
 ): Connector[] {
@@ -102,12 +104,18 @@ function Qr({ uri }: { uri: string }) {
 export function WalletConnect() {
   const [open, setOpen] = useState(false),
     [error, setError] = useState(""),
-    [uri, setUri] = useState("");
+    [uri, setUri] = useState(""),
+    [copiedAddress, setCopiedAddress] = useState("");
   const connection = useConnection();
   const connect = useConnect();
   const connectors = useConnectors();
   const disconnect = useDisconnect();
   const safeAttempted = useRef(false);
+  const copyResetTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+
+  useEffect(() => () => clearTimeout(copyResetTimer.current), []);
 
   useEffect(() => {
     if (
@@ -160,7 +168,14 @@ export function WalletConnect() {
   }
   return (
     <>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          clearTimeout(copyResetTimer.current);
+          setCopiedAddress("");
+        }}
+      >
         <DialogTrigger
           render={<Button variant="outline" />}
           aria-label={
@@ -168,8 +183,22 @@ export function WalletConnect() {
               ? shortAddress(connection.address)
               : "Connect wallet"
           }
+          title={
+            connection.isConnected
+              ? `Wallet connected: ${connection.address}`
+              : "Connect wallet"
+          }
         >
-          <Wallet size={16} aria-hidden="true" />
+          <span className="relative">
+            <Wallet size={16} aria-hidden="true" />
+            {connection.isConnected && (
+              <span
+                role="status"
+                aria-label="Wallet connected"
+                className="absolute -right-1 -top-1 size-2 rounded-full bg-green-500 ring-2 ring-background"
+              />
+            )}
+          </span>
           <span className="hidden sm:inline">
             {connection.address
               ? shortAddress(connection.address)
@@ -195,15 +224,45 @@ export function WalletConnect() {
                   ? "Connected wallet"
                   : connection.connector?.name}
               </p>
-              <code
-                className="break-all bg-card p-1 rounded"
-                title={connection.address}
-              >
-                <span className="sm:hidden">
-                  {shortAddress(connection.address)}
-                </span>
-                <span className="hidden sm:inline">{connection.address}</span>
-              </code>
+              <div className="flex items-center gap-2">
+                <code
+                  className="text-center min-w-0 flex-1 break-all bg-card p-1 rounded"
+                  title={connection.address}
+                >
+                  <span className="sm:hidden">
+                    {shortAddress(connection.address)}
+                  </span>
+                  <span className="hidden sm:inline">{connection.address}</span>
+                </code>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Copy address"
+                  title="Copy address"
+                  onClick={async () => {
+                    const address = connection.address;
+                    if (!address) return;
+                    clearTimeout(copyResetTimer.current);
+                    setCopiedAddress("");
+                    try {
+                      await navigator.clipboard.writeText(address);
+                      setCopiedAddress(address);
+                      copyResetTimer.current = setTimeout(
+                        () => setCopiedAddress(""),
+                        2000,
+                      );
+                    } catch {
+                      setCopiedAddress("");
+                    }
+                  }}
+                >
+                  {copiedAddress === connection.address ? (
+                    <Check size={16} aria-hidden="true" />
+                  ) : (
+                    <Copy size={16} aria-hidden="true" />
+                  )}
+                </Button>
+              </div>
               <p>
                 Network:{" "}
                 {connection.chain?.name ??
@@ -231,6 +290,10 @@ export function WalletConnect() {
                     onChoose={choose}
                   />
                 ))}
+                <WalletDeepLinks
+                  connectors={connectors}
+                  pending={connect.isPending}
+                />
               </div>
               {connect.isPending && (
                 <Message busy>Waiting for your wallet…</Message>

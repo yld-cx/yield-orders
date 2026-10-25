@@ -199,7 +199,10 @@ export function UseForm({
                           spellCheck={false}
                           value={tolerance}
                           onChange={(event) => {
-                            const next = event.target.value;
+                            const next = event.target.value.replaceAll(
+                              ",",
+                              ".",
+                            );
                             if (/^\d*(?:\.\d*)?$/.test(next))
                               setTolerance(next);
                           }}

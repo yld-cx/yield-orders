@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   ArrowUpFromLine,
+  Check,
   CircleCheck,
   CircleX,
   Coins,
@@ -41,6 +42,7 @@ import { Button } from "@yld-cx/ui/components/ui/button";
 import { Message, Metric } from "@/components/forms/financial-fields";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogTitle,
   DialogDescription,
@@ -481,8 +483,13 @@ function TransactionSession({
               View transaction ↗
             </a>
           )}
-          {stage === "confirmed" && <Message>Confirmed ✅</Message>}
           {error && <Message error>{error}</Message>}
+          {stage === "confirmed" && (
+            <DialogClose render={<Button className="w-full" />}>
+              <Check aria-hidden="true" data-icon="inline-start" />
+              Done
+            </DialogClose>
+          )}
           {stage === "idle" && (
             <Button variant="outline" onClick={() => void review()}>
               Retry {actionName}

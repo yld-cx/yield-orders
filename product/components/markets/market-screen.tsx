@@ -225,12 +225,11 @@ function MarketContent({
           </div>
           <div>
             <dt>
-              <ApyLabel>{`${bidSelected ? "Bid" : "Ask"} APY · ${duration}D reference`}</ApyLabel>
+              <ApyLabel>{`${bidSelected ? "Bid" : "Ask"} APY`}</ApyLabel>
             </dt>
-            <dd className={bidSelected ? "text-bid" : "text-ask"}>
+            <dd className="text-primary">
               {incomplete ? "Incomplete" : estimatedYield}
             </dd>
-            <small className="text-xs text-muted-foreground">Annualized</small>
           </div>
           <div>
             <dt>Available · Bid</dt>
