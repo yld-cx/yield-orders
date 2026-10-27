@@ -271,8 +271,15 @@ export function MarketTable() {
     page,
     updateFilters,
   } = useMarketFilters();
-  const { markets, marketCount, loading, loadingLabel, error, empty } =
-    useMarketList({ network, tag: category, search });
+  const {
+    markets,
+    marketCount,
+    tokenCount,
+    loading,
+    loadingLabel,
+    error,
+    empty,
+  } = useMarketList({ network, tag: category, search });
   const failed = !!error;
   const pageCount = Math.max(1, Math.ceil(markets.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
@@ -302,6 +309,12 @@ export function MarketTable() {
               {marketCount.toString().padStart(2, "0")}
             </div>
             <div className="text-xs text-muted-foreground">Markets</div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-2xl font-semibold tabular-nums">
+              {tokenCount.toString().padStart(2, "0")}
+            </div>
+            <div className="text-xs text-muted-foreground">Tokens</div>
           </div>
         </div>
       </section>

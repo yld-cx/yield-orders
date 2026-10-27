@@ -45,6 +45,7 @@ export function useMarketList({
   return {
     markets,
     marketCount: sourceMarkets.length,
+    tokenCount: new Set(addresses).size,
     loading: trending && !!quoteAddress && discovery.isPending,
     loadingLabel: trending ? "Loading trending markets…" : "Loading markets…",
     error: failed
