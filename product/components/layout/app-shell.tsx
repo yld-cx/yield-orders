@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ArrowLink } from "@/components/arrow-link";
 import { AppHeader } from "@/components/layout/app-header";
+import { Badge } from "@/packages/ui/src/components/ui/badge";
 export function AppShell({ children }: { children: ReactNode }) {
   return (
     <>
@@ -15,6 +16,13 @@ export function AppShell({ children }: { children: ReactNode }) {
             yld˙ᶜˣ · Open. Permissionless. Immutable.
             <p>
               <span className="text-foreground">Time to yield</span> · ⩇⩇:⩇⩇
+              <Badge
+                variant="ghost"
+                className="text-green-500!"
+                title="Public Beta"
+              >
+                beta
+              </Badge>
             </p>
           </div>
           <div className="flex flex-wrap gap-4">

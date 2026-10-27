@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import { cookieToInitialState } from "wagmi";
-import { makeWagmiConfig } from "@/lib/wagmi";
+import { getWagmiConfig } from "@/lib/wagmi";
 import { Providers } from "@/components/layout/providers";
 import { AppShell } from "@/components/layout/app-shell";
 import { isNetworkSlug, ORIGIN } from "@/lib/registry";
@@ -42,7 +42,7 @@ export default async function RootLayout({
     jar = await cookies();
   const selected = jar.get("yld.network")?.value;
   const initialState = cookieToInitialState(
-    makeWagmiConfig(),
+    getWagmiConfig(),
     requestHeaders.get("cookie"),
   );
   return (

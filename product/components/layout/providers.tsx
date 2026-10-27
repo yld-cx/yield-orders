@@ -15,7 +15,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { WagmiProvider, type State } from "wagmi";
 import { getAddress, isAddress } from "viem";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { makeWagmiConfig } from "@/lib/wagmi";
+import { getWagmiConfig } from "@/lib/wagmi";
 import type { NetworkSlug } from "@yld-cx/sdk/ethereum";
 import { isNetworkSlug } from "@/lib/registry";
 const NetworkContext = createContext<{
@@ -38,7 +38,7 @@ export function Providers({
       ? getAddress(value)
       : undefined;
   });
-  const [config] = useState(() => makeWagmiConfig(spy));
+  const [config] = useState(() => getWagmiConfig(spy));
   const [queryClient] = useState(
     () =>
       new QueryClient({
