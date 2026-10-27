@@ -1,7 +1,7 @@
 "use client";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeftRight } from "lucide-react";
@@ -22,6 +22,13 @@ import { compactPriceText, discoveryBaseTick } from "@/lib/market-values";
 import { DEFAULT_YIELD_MODE, tickYieldText } from "@/lib/yield";
 import { ApyLabel } from "@/components/forms/yield-display";
 import { Button } from "@yld-cx/ui/components/ui/button";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@yld-cx/ui/components/ui/tabs";
+import { cn } from "@yld-cx/ui/lib/utils";
 import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
@@ -30,6 +37,12 @@ import { SupplyForm } from "./supply-form";
 import { UseForm } from "./use-form";
 import { TokenIcon } from "./token-icon";
 import { MarketPositions } from "./market-positions";
+
+enum MarketPanel {
+  Provide = "provide",
+  YieldBook = "book",
+  Use = "use",
+}
 
 export function MarketScreen({
   network,
@@ -68,6 +81,8 @@ function MarketContent({
   const [inverted, setInverted] = useState(false);
   const [duration, setDuration] = useState<Duration>(market.defaultDuration);
   const [selectedIdentity, setSelectedIdentity] = useState<TickIdentity>();
+  const [activePanel, setActivePanel] = useState(MarketPanel.YieldBook);
+  const panelsRef = useRef<HTMLDivElement>(null);
   const params = useSearchParams();
   // Capture the initial reference. Background metadata refreshes must not move
   // a user's discovery center or clear their selected price level.
@@ -179,7 +194,7 @@ function MarketContent({
           </div>
           <p className="text-muted-foreground my-3 text-sm">
             {exists
-              ? `Provide or rent ${display[0].symbol} or ${display[1].symbol} at your price.`
+              ? `Provide or use ${display[0].symbol} or ${display[1].symbol} at your price.`
               : "An open market, ready for its first provider."}
           </p>
           <div className="flex flex-wrap items-center gap-2">
@@ -242,45 +257,100 @@ function MarketContent({
           ⚠️ Unlisted token · Review token compatibility before interacting
         </Message>
       )}
-      <div className="my-4 grid items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]">
-        <SupplyForm
-          key={`supply/${supplyAsset}/${duration}/${selected?.id ?? "draft"}`}
-          market={market}
-          display={display}
-          duration={duration}
-          onDurationChange={changeDuration}
-          selectedTick={selected}
-          assetAddress={supplyAsset}
-          onAssetChange={(address) => {
-            if (address !== supplyAsset) {
-              setSupplyAsset(address);
-              setSelectedIdentity(undefined);
-            }
-          }}
-        />
-        <YieldBook
-          referencePrice={referencePrice}
-          stepTicks={market.stepTicks}
-          onBaseTickChange={changeBaseTick}
-          display={display}
-          duration={duration}
-          onDurationChange={changeDuration}
-          selected={selected}
-          onSelect={(level) => {
-            setSelectedIdentity(level);
-            setSupplyAsset(level.asset.toLowerCase());
-          }}
-          book={book}
-        />
-        <UseForm
-          key={`use/${selected?.id ?? "empty"}`}
-          market={market}
-          display={display}
-          tick={selected}
-          isPending={book.discovery.isPending}
-          isIncomplete={incomplete}
-        />
-      </div>
+      <Tabs
+        value={activePanel}
+        onValueChange={(value) => {
+          setActivePanel(value as MarketPanel);
+          requestAnimationFrame(() =>
+            panelsRef.current?.scrollIntoView({ block: "start" }),
+          );
+        }}
+        className="my-4 gap-4"
+      >
+        <div className="sticky top-16 z-10 bg-background/95 py-2 backdrop-blur lg:hidden">
+          <TabsList className="w-full" aria-label="Market sections">
+            <TabsTrigger value={MarketPanel.Provide}>Provide</TabsTrigger>
+            <TabsTrigger value={MarketPanel.YieldBook}>Yield Book</TabsTrigger>
+            <TabsTrigger value={MarketPanel.Use}>Use</TabsTrigger>
+          </TabsList>
+        </div>
+        <div
+          ref={panelsRef}
+          className="grid scroll-mt-32 items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]"
+        >
+          {/* CSS controls visibility so desktop always shows all three columns. */}
+          <TabsContent
+            value={MarketPanel.Provide}
+            keepMounted
+            hidden={false}
+            inert={false}
+            className={cn(
+              "min-w-0 lg:block",
+              activePanel !== MarketPanel.Provide && "hidden",
+            )}
+          >
+            <SupplyForm
+              key={`supply/${supplyAsset}/${duration}/${selected?.id ?? "draft"}`}
+              market={market}
+              display={display}
+              duration={duration}
+              onDurationChange={changeDuration}
+              selectedTick={selected}
+              assetAddress={supplyAsset}
+              onAssetChange={(address) => {
+                if (address !== supplyAsset) {
+                  setSupplyAsset(address);
+                  setSelectedIdentity(undefined);
+                }
+              }}
+            />
+          </TabsContent>
+          <TabsContent
+            value={MarketPanel.YieldBook}
+            keepMounted
+            hidden={false}
+            inert={false}
+            className={cn(
+              "min-w-0 lg:block",
+              activePanel !== MarketPanel.YieldBook && "hidden",
+            )}
+          >
+            <YieldBook
+              referencePrice={referencePrice}
+              stepTicks={market.stepTicks}
+              onBaseTickChange={changeBaseTick}
+              display={display}
+              duration={duration}
+              onDurationChange={changeDuration}
+              selected={selected}
+              onSelect={(level) => {
+                setSelectedIdentity(level);
+                setSupplyAsset(level.asset.toLowerCase());
+              }}
+              book={book}
+            />
+          </TabsContent>
+          <TabsContent
+            value={MarketPanel.Use}
+            keepMounted
+            hidden={false}
+            inert={false}
+            className={cn(
+              "min-w-0 lg:block",
+              activePanel !== MarketPanel.Use && "hidden",
+            )}
+          >
+            <UseForm
+              key={`use/${selected?.id ?? "empty"}`}
+              market={market}
+              display={display}
+              tick={selected}
+              isPending={book.discovery.isPending}
+              isIncomplete={incomplete}
+            />
+          </TabsContent>
+        </div>
+      </Tabs>
       <MarketPositions market={market} />
       {!exists && (
         <Card className="items-center text-center [&_h2]:text-xl [&_h3]:text-lg [&_p]:max-w-xl [&_p]:text-muted-foreground">
