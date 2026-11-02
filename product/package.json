@@ -10,7 +10,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "turbo run build:app",
+    "build": "npm audit --audit-level=high && turbo run build:app",
     "start": "next start",
     "typecheck": "turbo run typecheck:app",
     "lint": "eslint .",
