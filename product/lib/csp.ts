@@ -11,6 +11,8 @@ const walletConnections = [
   "https://keys.walletconnect.com",
   "https://keys.coinbase.com",
   "https://api.wallet.coinbase.com",
+  "https://chain-proxy.wallet.coinbase.com",
+  "https://rpc.wallet.coinbase.com",
 ];
 
 export function contentSecurityPolicy(

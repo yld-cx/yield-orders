@@ -39,12 +39,9 @@ const metadataRoute = /(?:https:\/\/md\.yld\.cx|\/api\/md)\/tokens\?/;
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   key = `${a}:${b}`;
+const configuredPairs = Object.keys(yieldList.markets["eip155:8453"]);
 const configuredAddresses = [
-  ...new Set(
-    Object.keys(yieldList.markets["eip155:8453"]).flatMap((pair) =>
-      pair.split(":"),
-    ),
-  ),
+  ...new Set(configuredPairs.flatMap((pair) => pair.split(":"))),
 ];
 const directId = tickIdFor(pairIdFor(a, b), 0, -196123, 7);
 const pairId = pairIdFor(a, b),
@@ -661,8 +658,18 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   await page.getByLabel("Search markets").clear();
   await pagination.getByRole("button", { name: "Next" }).click();
   await page.getByRole("button", { name: "YieldList", exact: true }).click();
-  await expect(links).toHaveCount(6);
-  await expect(pagination).toContainText("Page 1 of 1");
+  await expect
+    .poll(() =>
+      links.evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("href")),
+      ),
+    )
+    .toEqual(
+      configuredPairs.slice(0, 10).map((pair) => `/market/base/${pair}`),
+    );
+  await expect(pagination).toContainText(
+    `Page 1 of ${Math.ceil(configuredPairs.length / 10)}`,
+  );
   expect(new URL(page.url()).searchParams.has("page")).toBe(false);
 
   await page.getByRole("button", { name: "Trending", exact: true }).click();
@@ -1110,11 +1117,13 @@ test("market search, tags, network isolation and responsive layout", async ({
     .getByRole("region", { name: "Markets", exact: true })
     .getByRole("link", { name: /^Open / });
   await expect(memeMarkets).toHaveCount(memePairs.length);
-  expect(
-    await memeMarkets.evaluateAll((links) =>
-      links.map((link) => link.getAttribute("href")),
-    ),
-  ).toEqual(memePairs);
+  await expect
+    .poll(() =>
+      memeMarkets.evaluateAll((links) =>
+        links.map((link) => link.getAttribute("href")),
+      ),
+    )
+    .toEqual(memePairs);
   await page.getByLabel("Search markets").fill("WETH");
   await expect(page.getByText("No matching markets")).toBeVisible();
   await page.getByRole("button", { name: "YieldList", exact: true }).click();
