@@ -16,8 +16,16 @@
         "tags": ["defi"]
       },
       "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb2000000000000000000004c27f6523082f41d01": {
-        "stepTicks": 1000,
+        "stepTicks": 2000,
         "tags": ["meme"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xe34356dcd3d7bb991248f322e4ec31b5d60bc54e": {
+        "stepTicks": 2000,
+        "tags": ["meme"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb200000000000000000000d9192b6b456483c2e8": {
+        "stepTicks": 1000,
+        "tags": ["stock", "rwa"]
       },
       "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb20000000000000000000078ee7ce2fe4908108c": {
         "stepTicks": 1000,
