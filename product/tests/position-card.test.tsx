@@ -239,7 +239,7 @@ describe("compact shared position cards", () => {
       renderToStaticMarkup(<MarketPositions market={market} />),
     ]) {
       expect(html).toContain('data-slot="position-card"');
-      expect(html).toContain("grid grid-cols-1 gap-4");
+      expect(html).toContain("grid-cols-1 gap-4");
       expect(html).not.toContain("md:grid-cols-2");
       expect(html).toContain("Withdraw percentage");
     }
@@ -251,7 +251,7 @@ describe("compact shared position cards", () => {
       expect(html).toContain(label);
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain("Details</summary>");
-    expect(html).toContain("Total Active principal");
+    expect(html).toContain("Active Asset");
     expect(html).not.toMatch(
       /Settle|More actions|checkbox|Allow any immediate|Remaining liquidity/,
     );
@@ -367,6 +367,99 @@ describe("compact shared position cards", () => {
   });
 });
 
+describe("market positions", () => {
+  const market = {
+    ...registry.getMarket("eip155:8453", a, b)!,
+    token0: asset,
+    token1: quote,
+    baseTick: -196000,
+  };
+
+  it.each([false, true])(
+    "shows active rentals alongside Provide positions (rentals only: %s)",
+    (rentalsOnly) => {
+      if (rentalsOnly) {
+        mocks.portfolio.mockReturnValue({
+          data: {
+            pages: [
+              {
+                providers: [],
+                uses: [{ positionId: 2n, position: use, tick }],
+                timestamp: 150n,
+              },
+            ],
+          },
+        });
+      }
+      const html = renderToStaticMarkup(<MarketPositions market={market} />);
+      expect(html).toContain('aria-label="Your positions"');
+      expect(html).toContain('aria-label="Market positions tab"');
+      expect(html).toContain(`Provide (${rentalsOnly ? 0 : 1})`);
+      expect(html).toContain("Use (1)");
+      expect(html.match(/role="tabpanel"/g)).toHaveLength(2);
+      expect(html).toContain("Rented Asset");
+      expect(html).toContain("Preview Repay");
+      expect(html.includes("Preview Withdraw")).toBe(!rentalsOnly);
+      if (rentalsOnly)
+        expect(html).toContain("No Provide positions in this market.");
+    },
+  );
+
+  it("includes Ask and Bid rentals across pages and excludes other markets", () => {
+    const otherTick = {
+      ...tick,
+      quote: "0x0000000000000000000000000000000000000003" as const,
+    };
+    mocks.portfolio.mockReturnValue({
+      data: {
+        pages: [
+          {
+            providers: [{ tickId: 3n, position: provider, tick: otherTick }],
+            uses: [{ positionId: 2n, position: use, tick }],
+            timestamp: 150n,
+          },
+          {
+            providers: [],
+            uses: [
+              {
+                positionId: 4n,
+                position: use,
+                tick: { ...tick, asset: b, quote: a },
+              },
+              { positionId: 5n, position: use, tick: otherTick },
+            ],
+            timestamp: 150n,
+          },
+        ],
+      },
+    });
+    const html = renderToStaticMarkup(<MarketPositions market={market} />);
+    expect(html.match(/data-slot="position-card"/g)).toHaveLength(2);
+    expect(html).toContain("Ask ·");
+    expect(html).toContain("Bid ·");
+    expect(html).not.toContain("Preview Withdraw");
+    expect(html).not.toContain(otherTick.quote);
+  });
+
+  it("uses the portfolio block timestamp to offer Close for matured rentals", () => {
+    mocks.portfolio.mockReturnValue({
+      data: {
+        pages: [
+          {
+            providers: [],
+            uses: [{ positionId: 2n, position: use, tick }],
+            timestamp: use.maturity,
+          },
+        ],
+      },
+    });
+    const html = renderToStaticMarkup(<MarketPositions market={market} />);
+    expect(html).toContain("Matured");
+    expect(html).toContain("Preview Close");
+    expect(html).not.toContain("Preview Repay");
+  });
+});
+
 describe("Use information without execution simulation", () => {
   it.each([
     [99n, 1n],
@@ -409,7 +502,7 @@ describe("Use information without execution simulation", () => {
       expect(html.indexOf("Full-term Yield")).toBeGreaterThan(
         html.indexOf("<details"),
       );
-      expect(html.indexOf("Exact maturity")).toBeGreaterThan(
+      expect(html.indexOf("Full-term end")).toBeGreaterThan(
         html.indexOf("<details"),
       );
       expect(html).not.toContain("Requires approval");
@@ -442,10 +535,10 @@ it("keeps withdrawal outcomes and forfeited Yield in the transaction preview", (
     <TransactionPreview preview={preview} asset={asset} quote={quote} />,
   );
   for (const label of [
-    "Withdraw principal",
-    "Receive principal now",
+    "Withdraw Asset",
+    "Receive Asset now",
     "Move to Resolving",
-    "Unvested Yield forfeited",
+    "Unvested Yield",
   ])
     expect(html).toContain(label);
 });

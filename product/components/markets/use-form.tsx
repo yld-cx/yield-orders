@@ -237,10 +237,6 @@ export function UseForm({
                                 DEFAULT_YIELD_MODE.rent,
                               )}
                             </Metric>
-                            <p className="text-xs text-muted-foreground">
-                              Estimated borrowing cost for the{" "}
-                              {tick.state.durationDays.toString()}D term.
-                            </p>
                             <Metric label="Full-term Yield">
                               {amountText(query.data[1], asset.decimals)}{" "}
                               {asset.symbol}

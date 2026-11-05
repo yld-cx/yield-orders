@@ -168,7 +168,7 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
             <div className="flex items-center gap-3">
               <Input
                 aria-label="Filter Orders by token or address"
-                placeholder="Token, market or address"
+                placeholder="Token or market..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
               />

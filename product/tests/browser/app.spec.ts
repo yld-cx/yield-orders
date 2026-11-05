@@ -538,10 +538,14 @@ test("Provide shows APY without a switch while Rent retains its quoted Term Yiel
     await expect(rent.getByText("1%", { exact: true })).toBeVisible();
     await expect(rent.getByText("0.01 WETH", { exact: true })).toBeVisible();
     await expect(
-      rent.getByText(`Estimated borrowing cost for the ${days}D term.`, {
-        exact: true,
-      }),
+      rent.getByText("Full-term Yield", { exact: true }),
     ).toBeVisible();
+    await expect(
+      rent
+        .locator("dl")
+        .filter({ has: page.getByText("Term", { exact: true }) })
+        .locator("dd"),
+    ).toHaveText(`${days}D`);
     await expect(supply.getByLabel("Amount", { exact: true })).toHaveValue("2");
     await expect(rent.getByLabel("You receive", { exact: true })).toHaveValue(
       "1",
@@ -1192,9 +1196,9 @@ test("shared market filters restore after reload and browser history, with a cen
     ),
   ).toBeLessThan(2);
   for (const [title, color] of [
-    ["01 · Provide liquidity", "rgb(231, 185, 77)"],
-    ["02 · Rent or swap", "rgb(211, 195, 255)"],
-    ["03 · Earn or trade", "rgb(0, 255, 76)"],
+    ["Launch a market", "rgb(231, 185, 77)"],
+    ["Trade and Earn", "rgb(0, 255, 76)"],
+    ["Rent or swap", "rgb(211, 195, 255)"],
   ]) {
     await expect(
       page
@@ -1305,6 +1309,8 @@ for (const rememberedWallet of [false, true]) {
     const dialog = app.getByRole("dialog");
     await expect(dialog.getByText("Safe", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Network: Base")).toBeVisible();
+    // Finish proxied requests before Playwright closes the page.
+    await page.unrouteAll({ behavior: "wait" });
   });
 }
 
@@ -2371,7 +2377,7 @@ test("market overview and inversion preserve canonical economics", async ({
     .getAttribute("href");
   const overview = page.getByRole("region", { name: "Market overview" });
   await expect(
-    overview.getByText("Provide or use WETH or USDC at your price."),
+    overview.getByText("Trade and use WETH or USDC at your price."),
   ).toBeVisible();
   await expect(overview.getByLabel("WETH crowned token")).toBeVisible();
   await expect(overview.getByText("1,000 WETH", { exact: true })).toBeVisible();
@@ -2637,7 +2643,7 @@ test("selected missing levels become available for Supply after discovery refres
 test("home branding and market overview", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "Liquidity, on your terms." }),
+    page.getByRole("heading", { name: "Tokens, on your terms." }),
   ).toBeVisible();
   await expect(
     page.getByRole("img", { name: "yld.cx", exact: true }),
@@ -2755,7 +2761,7 @@ test("new markets allow Provide directly and retain standalone Create Market", a
   await page.goto(`/market/base/${key}`);
   const overview = page.getByRole("region", { name: "Market overview" });
   await expect(
-    overview.getByText("An open market, ready for its first provider."),
+    overview.getByText("Trade and use WETH or USDC at your price."),
   ).toBeVisible();
   await expect(overview.getByText("3.08K USDC", { exact: true })).toBeVisible();
   await expect(
@@ -2766,7 +2772,9 @@ test("new markets allow Provide directly and retain standalone Create Market", a
   ).toBeVisible();
   await showMarketSection(page, "Provide");
   await expect(
-    page.getByRole("heading", { name: "Provide liquidity" }),
+    page
+      .getByLabel("Provide liquidity", { exact: true })
+      .getByRole("heading", { name: "Sell and Earn", exact: true }),
   ).toBeVisible();
   await showMarketSection(page, "Use");
   await expect(
@@ -3883,7 +3891,7 @@ test("position cards share a compact responsive layout on Market and Orders", as
     const positions =
       path === "/orders"
         ? page.getByRole("main")
-        : page.getByLabel("Your liquidity", { exact: true });
+        : page.getByLabel("Your positions", { exact: true });
     const cards = positions.locator('[data-slot="position-card"]');
     await expect(cards).toHaveCount(2);
     const card = cards.first();
@@ -3891,7 +3899,7 @@ test("position cards share a compact responsive layout on Market and Orders", as
     await expect(
       card.getByRole("button", { name: "Preview Withdraw" }),
     ).toBeEnabled();
-    await expect(card.getByText("Total Active principal")).toBeHidden();
+    await expect(card.getByText("Active Asset")).toBeHidden();
     expect(
       await card.evaluate((node) => node.getBoundingClientRect().height),
     ).toBeLessThan(isMobile ? 400 : 260);
@@ -3910,10 +3918,10 @@ test("position cards share a compact responsive layout on Market and Orders", as
     const details = card.locator("summary");
     await details.focus();
     await page.keyboard.press("Enter");
-    await expect(card.getByText("Total Active principal")).toBeVisible();
+    await expect(card.getByText("Active Asset")).toBeVisible();
     await expect(card.getByText(a, { exact: true })).toBeVisible();
     await details.press("Enter");
-    await expect(card.getByText("Total Active principal")).toBeHidden();
+    await expect(card.getByText("Active Asset")).toBeHidden();
     await page.evaluate(() => {
       (
         window as unknown as { testWallet: { chain: (chain: string) => void } }
@@ -3939,6 +3947,56 @@ test("position cards share a compact responsive layout on Market and Orders", as
     ).toBeEnabled();
   }
 });
+
+for (const rentalsOnly of [false, true]) {
+  test(`market positions switch between Provide and Use tabs (rentals only: ${rentalsOnly})`, async ({
+    page,
+  }) => {
+    await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      positions: { tickIds: rentalsOnly ? [] : [id7], use: {} },
+    });
+    await page.goto(`/market/base/${key}`);
+    const positions = page.getByLabel("Your positions", { exact: true });
+    const provide = positions.getByRole("tab", {
+      name: `Provide (${rentalsOnly ? 0 : 1})`,
+      exact: true,
+    });
+    const use = positions.getByRole("tab", { name: "Use (1)", exact: true });
+    await expect(provide).toHaveAttribute("aria-selected", "true");
+    await expect(
+      positions.getByText("Rented Asset", { exact: true }),
+    ).toBeHidden();
+    if (rentalsOnly) {
+      await expect(
+        positions.getByText("No Provide positions in this market."),
+      ).toBeVisible();
+    } else {
+      await expect(
+        positions.getByRole("button", { name: "Preview Withdraw" }),
+      ).toBeVisible();
+    }
+    await use.click();
+    await expect(use).toHaveAttribute("aria-selected", "true");
+    await expect(
+      positions.getByText("Rented Asset", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      positions.getByRole("button", { name: "Preview Repay" }),
+    ).toBeVisible();
+    await expect(
+      positions.getByRole("button", { name: "Preview Withdraw" }),
+    ).toHaveCount(0);
+    await use.press("ArrowLeft");
+    await expect(provide).toBeFocused();
+    await provide.press("Enter");
+    await expect(provide).toHaveAttribute("aria-selected", "true");
+    await expect(
+      positions.getByText("Rented Asset", { exact: true }),
+    ).toBeHidden();
+  });
+}
 
 test("all withdrawal percentages use fresh principal and submit zero minimum immediate Asset", async ({
   page,
@@ -3973,10 +4031,10 @@ test("all withdrawal percentages use fresh principal and submit zero minimum imm
       dialog.getByRole("button", { name: "Confirm Withdraw", exact: true }),
     ).toBeVisible();
     for (const label of [
-      "Withdraw principal",
-      "Receive principal now",
+      "Withdraw Asset",
+      "Receive Asset now",
       "Move to Resolving",
-      "Unvested Yield forfeited",
+      "Unvested Yield",
     ])
       await expect(dialog.getByText(label, { exact: true })).toBeVisible();
     expect(state.simulations.length - simulations).toBe(1);
@@ -4166,7 +4224,7 @@ test("reopening Withdraw prepares fresh principal and simulates again before con
   await expect(
     dialog
       .locator("dl")
-      .filter({ has: page.getByText("Withdraw principal", { exact: true }) })
+      .filter({ has: page.getByText("Withdraw Asset", { exact: true }) })
       .locator("dd"),
   ).toHaveText("100 WETH");
   const simulations = state.simulations.length;
@@ -4176,7 +4234,7 @@ test("reopening Withdraw prepares fresh principal and simulates again before con
   await expect(
     dialog
       .locator("dl")
-      .filter({ has: page.getByText("Withdraw principal", { exact: true }) })
+      .filter({ has: page.getByText("Withdraw Asset", { exact: true }) })
       .locator("dd"),
   ).toHaveText("50 WETH");
   await expect(

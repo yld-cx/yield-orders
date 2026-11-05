@@ -113,7 +113,7 @@ export function SocialImage({
           Yield Orders {network ? `on ${network}` : ""} 👑
         </div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {logos && (
           <div style={{ display: "flex", gap: 20 }}>
             {logos.map((src, index) => (
@@ -136,18 +136,18 @@ export function SocialImage({
             letterSpacing: -2,
           }}
         >
-          {label ?? "Provide or rent tokens"}
+          {label ?? "Tokens, on your terms."}
         </div>
         <div
           style={{
             display: "flex",
-            fontSize: label ? 34 : 68,
+            fontSize: 34,
             fontWeight: 700,
             color: "#e7b94d",
             letterSpacing: -2,
           }}
         >
-          {label ? "Liquidity Rental Market" : "at your price."}
+          {label ? "Yield Market" : "Open Liquidity Markets"}
         </div>
       </div>
       <div
@@ -160,8 +160,7 @@ export function SocialImage({
       >
         <span>Asset moves. Quote locks.</span>
         <span>
-          yld.cx ·{" "}
-          {label ? "provide or use tokens at your price." : "time to yield."}
+          yld.cx · {label ? "put your tokens to work." : "time to yield."}
         </span>
       </div>
     </div>

@@ -277,7 +277,7 @@ export function ProviderCard({
         </>
       }
     >
-      <Metric label="Total Active principal">
+      <Metric label="Active Asset">
         {exactAsset(position.activePrincipal)}
       </Metric>
       <Metric label="Available Asset">
@@ -369,7 +369,7 @@ export function UseCard({
             {amountText(position.quotePrincipal, quote.decimals)} {quote.symbol}
           </Metric>
           <Metric label="Accrued Yield">{a(accrued)}</Metric>
-          <Metric label="Maturity">
+          <Metric label="Term end">
             {mature
               ? "Matured"
               : remaining >= 86400n
@@ -402,7 +402,7 @@ export function UseCard({
     >
       <Metric label="Full-term Yield">{a(position.fullTermYieldAsset)}</Metric>
       <Metric label="Opened">{timestampText(position.openedAt)}</Metric>
-      <Metric label="Exact maturity">{timestampText(position.maturity)}</Metric>
+      <Metric label="Full-term end">{timestampText(position.maturity)}</Metric>
       <Metric label="Position ID">{positionId.toString()}</Metric>
     </PositionCardLayout>
   );
