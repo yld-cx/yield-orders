@@ -1,6 +1,6 @@
 # Yield Orders v0.3 — Ethereum / EVM L2s
 
-> Provide or rent tokens at your price.
+> Trade or rent tokens at your price.
 
 Yield Orders is an immutable, permissionless protocol for supplying, using, or swapping ERC-20 tokens at a chosen price and duration. A user can return rented tokens with Yield before maturity or settle at the agreed price. There are no oracles, liquidations, or admin controls.
 
