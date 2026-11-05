@@ -140,10 +140,10 @@ export function TransactionPreview({
       )}
       {preview.withdraw && (
         <>
-          <Metric label="Withdraw principal">
+          <Metric label="Withdraw Asset">
             {a(preview.withdraw.principalAmount)}
           </Metric>
-          <Metric label="Receive principal now">
+          <Metric label="Receive Asset now">
             {a(preview.withdraw.availableAssetOut)}
           </Metric>
           <Metric label="Move to Resolving">
@@ -152,10 +152,10 @@ export function TransactionPreview({
           <Metric label="Collectible Yield out">
             {a(preview.withdraw.yieldAssetOut)}
           </Metric>
-          <Metric label="Unvested Yield forfeited">
+          <Metric label="Unvested Yield">
             {a(preview.withdraw.unvestedYield)}
           </Metric>
-          <Metric label="Minimum principal now">
+          <Metric label="Minimum Asset now">
             {action.kind === "withdraw" ? a(action.minImmediateAssetOut) : "—"}
           </Metric>
           <Message info className="text-xs">
@@ -187,7 +187,7 @@ export function TransactionPreview({
       )}
       {preview.repay && (
         <>
-          <Metric label="Return principal">
+          <Metric label="Return Asset">
             {a(preview.repay.assetPrincipal)}
           </Metric>
           <Metric label="Current Yield due">

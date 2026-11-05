@@ -193,9 +193,8 @@ function MarketContent({
             </Button>
           </div>
           <p className="text-muted-foreground my-3 text-sm">
-            {exists
-              ? `Provide or use ${display[0].symbol} or ${display[1].symbol} at your price.`
-              : "An open market, ready for its first provider."}
+            Trade and use {display[0].symbol} or {display[1].symbol} at your
+            price.
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline" data-intent="bid">

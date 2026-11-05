@@ -29,7 +29,7 @@ export async function GET(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          sql: "SELECT meta FROM tokens WHERE id LIKE ? AND json_extract(meta, '$.status') = 'available' AND json_extract(meta, '$.symbol') IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 100",
+          sql: "SELECT meta FROM tokens WHERE id LIKE ? AND json_extract(meta, '$.status') = 'available' AND json_extract(meta, '$.symbol') IS NOT NULL AND json_extract(meta, '$.coingeckoCoinId') IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 100",
           params: [`${chainId}:%`],
         }),
         cache: "no-store",
@@ -48,7 +48,12 @@ export async function GET(request: Request) {
     const tokens = result.results.slice(0, 100).flatMap((row) => {
       try {
         const token = compactToken(JSON.parse(row.meta), network.id);
-        if (!token || token.status !== "available" || seen.has(token.address))
+        if (
+          !token ||
+          token.status !== "available" ||
+          !token.coingeckoCoinId ||
+          seen.has(token.address)
+        )
           return [];
         seen.add(token.address);
         // Discovery is identity only. Prices come exclusively from the Worker.

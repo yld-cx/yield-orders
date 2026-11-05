@@ -85,10 +85,9 @@ export function SupplyForm({
       <CardContent className="space-y-4">
         <div className="flex items-center justify-between gap-3 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:font-semibold">
           <div>
-            <h2>Provide liquidity</h2>
+            <h2>{side === "ask" ? "Sell" : "Buy"} and Earn</h2>
             <p className="text-xs text-muted-foreground">
-              Choose a Yield Book price. Earn or{" "}
-              {side === "ask" ? "Sell" : "Buy"}.
+              Choose a Yield Book price.
             </p>
           </div>
           <Badge variant="outline" data-intent="term">

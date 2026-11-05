@@ -164,7 +164,13 @@ export function YieldBook({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <Badge variant="outline">Exact ticks</Badge>
+            <Badge
+              variant="outline"
+              className="otc-badge cursor-pointer"
+              title="Onchain ticks"
+            >
+              OTC
+            </Badge>
             <Button
               variant="ghost"
               size="icon-sm"

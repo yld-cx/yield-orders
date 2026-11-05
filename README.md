@@ -5,11 +5,11 @@
 [![Infra](https://github.com/yld-cx/yield-orders/actions/workflows/infra.yml/badge.svg?branch=main)](https://github.com/yld-cx/yield-orders/actions/workflows/infra.yml)
 
 > [yld.cx](https://yld.cx) — liquidity rental markets. \
->  **provide** or **rent** tokens at your price.
+>  **trade** or **rent** tokens at your price.
 
 **Open. Permissionless. Immutable.**
 
-- Earn yield on assets.
+- Earn yield on assets while trading.
 - Unlock liquidity without liquidations.
 
 ## Specification

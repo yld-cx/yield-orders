@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DatabaseSync } from "node:sqlite";
 import { GET } from "@/app/api/tokens/route";
 const address = "0x1111111111111111111111111111111111111111";
 const meta = {
@@ -7,6 +8,7 @@ const meta = {
   symbol: "ONE",
   name: "Token One",
   status: "available",
+  coingeckoCoinId: "token-one",
   imageUrl: "https://coin-images.coingecko.com/token.png",
   geckoTerminal: {
     attributes: { price_usd: "1", decimals: 18 },
@@ -52,7 +54,13 @@ describe("token discovery API", () => {
       );
       const body = await response.json();
       expect(body.tokens).toEqual([
-        { address, symbol: "ONE", name: "Token One", imageUrl: meta.imageUrl },
+        {
+          address,
+          symbol: "ONE",
+          name: "Token One",
+          imageUrl: meta.imageUrl,
+          coingeckoCoinId: meta.coingeckoCoinId,
+        },
       ]);
       expect(JSON.stringify(body)).not.toMatch(
         /private-|geckoTerminal|decimals|price_usd/,
@@ -113,6 +121,61 @@ describe("token discovery API", () => {
     const response = await GET(request());
     expect(await response.json()).toEqual({ tokens: [] });
     expect(response.headers.get("cache-control")).toContain("86400");
+  });
+  it.each([undefined, null, "", "   ", 123, false, {}, []])(
+    "excludes tokens with an invalid CoinGecko ID (%j)",
+    async (coingeckoCoinId) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(success([{ ...meta, coingeckoCoinId }])),
+      );
+      expect(await (await GET(request())).json()).toEqual({ tokens: [] });
+    },
+  );
+  it("excludes null and missing CoinGecko IDs in SQL before applying the token limit", async () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(
+        "CREATE TABLE tokens (id TEXT PRIMARY KEY, meta TEXT NOT NULL, timestamp INTEGER NOT NULL)",
+      );
+      const insert = db.prepare("INSERT INTO tokens VALUES (?, ?, ?)");
+      const missingIds = [undefined, null];
+      for (let i = 0; i < 220; i++) {
+        const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
+        insert.run(
+          `8453:${address}`,
+          JSON.stringify({
+            ...meta,
+            address,
+            coingeckoCoinId:
+              i < 110 ? missingIds[i % missingIds.length] : "one",
+          }),
+          220 - i,
+        );
+      }
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockImplementation((_url, options) => {
+          const { sql, params } = JSON.parse(options.body);
+          return Response.json({
+            success: true,
+            result: [
+              { success: true, results: db.prepare(sql).all(...params) },
+            ],
+          });
+        }),
+      );
+      const { tokens } = await (await GET(request())).json();
+      expect(tokens).toHaveLength(100);
+      expect(
+        tokens.every(
+          (token: { coingeckoCoinId: string }) =>
+            token.coingeckoCoinId === "one",
+        ),
+      ).toBe(true);
+    } finally {
+      db.close();
+    }
   });
   it.each(["CLOUDFLARE_ACCOUNT_ID", "YLD_D1_DATABASE_ID", "YLD_D1_READ_TOKEN"])(
     "handles missing %s without leaking configuration",

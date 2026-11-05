@@ -294,13 +294,13 @@ export function MarketTable() {
       <section className="flex flex-wrap items-end justify-between gap-6 py-10">
         <div>
           <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
-            Open liquidity rental markets
+            Open liquidity markets
           </p>
           <h1 className="text-4xl font-semibold tracking-tight md:text-5xl">
-            Liquidity, on your terms<span className="text-brand">.</span>
+            Tokens, on your terms<span className="text-brand">.</span>
           </h1>
           <p className="mt-3 max-w-2xl text-muted-foreground">
-            Provide and rent tokens. Earn yield or swap at the price you choose.
+            Place Yield Orders to trade and earn at your price.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-6">
@@ -323,7 +323,7 @@ export function MarketTable() {
           <div>
             <h2>Yield Markets</h2>
             <p className="text-muted-foreground text-xs">
-              Choose a market to provide liquidity or rent tokens.
+              Choose a market to put your tokens to work.
             </p>
           </div>
           <div className="flex w-full min-w-0 flex-wrap items-center gap-3 sm:w-auto">
@@ -476,7 +476,7 @@ export function MarketTable() {
             {markets.length > 0 && (
               <nav
                 aria-label="Market pagination"
-                className="flex flex-wrap items-center justify-between gap-3 border-t px-4 pt-4 text-sm"
+                className="flex flex-wrap items-center justify-between gap-3 border-t p-4 text-sm"
               >
                 <p className="text-muted-foreground" aria-live="polite">
                   {start + 1}–{Math.min(start + PAGE_SIZE, markets.length)} of{" "}
@@ -505,10 +505,6 @@ export function MarketTable() {
                 </div>
               </nav>
             )}
-            <div className="border-t p-4 text-xs leading-relaxed text-muted-foreground">
-              Estimated Yield is earned on Repay. Swap closes the position in
-              Quote.
-            </div>
           </CardContent>
         </Card>
       </section>
@@ -517,20 +513,20 @@ export function MarketTable() {
           {
             icon: MoveUpRight,
             color: "text-primary",
-            title: "01 · Provide liquidity",
-            text: "Open your Yield market and supply tokens.",
-          },
-          {
-            icon: ArrowLeftRight,
-            color: "text-rent",
-            title: "02 · Rent or swap",
-            text: "Use tokens at your price against locked Quote.",
+            title: "Launch a market",
+            text: "Open a Yield market for your favorite token.",
           },
           {
             icon: RotateCcw,
             color: "text-brand",
-            title: "03 · Earn or trade",
-            text: "Earn Yield on Repay or exchange tokens at your price.",
+            title: "Trade and Earn",
+            text: "Earn Yield while trading tokens at your price.",
+          },
+          {
+            icon: ArrowLeftRight,
+            color: "text-rent",
+            title: "Rent or swap",
+            text: "Use tokens at your price to go long or short.",
           },
         ].map(({ icon: Icon, color, title, text }) => (
           <Card key={title}>
