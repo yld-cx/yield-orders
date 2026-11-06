@@ -15,6 +15,10 @@
         "stepTicks": 1000,
         "tags": ["defi"]
       },
+      "0x22af33fe49fd1fa80c7149773dde5890d3c76f3b:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
+        "stepTicks": 1000,
+        "tags": ["defi"]
+      },
       "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb2000000000000000000004c27f6523082f41d01": {
         "stepTicks": 2000,
         "tags": ["meme"]

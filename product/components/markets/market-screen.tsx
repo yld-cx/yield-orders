@@ -1,7 +1,7 @@
 "use client";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Badge } from "@yld-cx/ui/components/ui/badge";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeftRight } from "lucide-react";
@@ -82,7 +82,6 @@ function MarketContent({
   const [duration, setDuration] = useState<Duration>(market.defaultDuration);
   const [selectedIdentity, setSelectedIdentity] = useState<TickIdentity>();
   const [activePanel, setActivePanel] = useState(MarketPanel.YieldBook);
-  const panelsRef = useRef<HTMLDivElement>(null);
   const params = useSearchParams();
   // Capture the initial reference. Background metadata refreshes must not move
   // a user's discovery center or clear their selected price level.
@@ -258,12 +257,7 @@ function MarketContent({
       )}
       <Tabs
         value={activePanel}
-        onValueChange={(value) => {
-          setActivePanel(value as MarketPanel);
-          requestAnimationFrame(() =>
-            panelsRef.current?.scrollIntoView({ block: "start" }),
-          );
-        }}
+        onValueChange={(value) => setActivePanel(value as MarketPanel)}
         className="my-4 gap-4"
       >
         <div className="sticky top-16 z-10 bg-background/95 py-2 backdrop-blur lg:hidden">
@@ -273,10 +267,7 @@ function MarketContent({
             <TabsTrigger value={MarketPanel.Use}>Use</TabsTrigger>
           </TabsList>
         </div>
-        <div
-          ref={panelsRef}
-          className="grid scroll-mt-32 items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]"
-        >
+        <div className="grid items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]">
           {/* CSS controls visibility so desktop always shows all three columns. */}
           <TabsContent
             value={MarketPanel.Provide}

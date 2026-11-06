@@ -22,6 +22,7 @@ import {
   tickCandidates,
   deploymentFor,
 } from "../../packages/sdk/src/ethereum/index.js";
+import { Registry } from "../../packages/sdk/src/registry/index.js";
 import {
   DISCOVERY_DEFAULTS,
   MAX_TICK,
@@ -39,10 +40,12 @@ const metadataRoute = /(?:https:\/\/md\.yld\.cx|\/api\/md)\/tokens\?/;
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   key = `${a}:${b}`;
-const configuredPairs = Object.keys(yieldList.markets["eip155:8453"]);
+const configuredMarkets = new Registry(yieldList).getMarkets("eip155:8453");
+const configuredPairs = configuredMarkets.map((market) => market.key);
 const configuredAddresses = [
   ...new Set(configuredPairs.flatMap((pair) => pair.split(":"))),
 ];
+const marketPageSize = 10;
 const directId = tickIdFor(pairIdFor(a, b), 0, -196123, 7);
 const pairId = pairIdFor(a, b),
   id7 = tickIdFor(pairId, 0, -196000, 7),
@@ -669,10 +672,12 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
       ),
     )
     .toEqual(
-      configuredPairs.slice(0, 10).map((pair) => `/market/base/${pair}`),
+      configuredPairs
+        .slice(0, marketPageSize)
+        .map((pair) => `/market/base/${pair}`),
     );
   await expect(pagination).toContainText(
-    `Page 1 of ${Math.ceil(configuredPairs.length / 10)}`,
+    `Page 1 of ${Math.ceil(configuredPairs.length / marketPageSize)}`,
   );
   expect(new URL(page.url()).searchParams.has("page")).toBe(false);
 
@@ -870,6 +875,51 @@ test("market tabs show one mobile column and preserve form drafts", async ({
   await expect(receive).toHaveValue("1");
 });
 
+test("mobile market tabs avoid forced scrolling and use the active panel height", async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(!isMobile, "Market section tabs are only shown on mobile");
+  await page.goto(`/market/base/${key}`);
+  const sections = page.getByRole("tablist", { name: "Market sections" });
+  const bookTab = sections.getByRole("tab", {
+    name: "Yield Book",
+    exact: true,
+  });
+  await expect(bookTab).toHaveAttribute("aria-selected", "true");
+  const initialTabs = await sections.boundingBox();
+
+  for (const top of [initialTabs!.y - 400, initialTabs!.y + 100]) {
+    await page.evaluate((top) => window.scrollTo(0, top), top);
+    for (const name of ["Provide", "Use", "Yield Book"]) {
+      const position = await page.evaluate(() => window.scrollY);
+      const tab = sections.getByRole("tab", { name, exact: true });
+      await tab.click();
+      await expect(tab).toHaveAttribute("aria-selected", "true");
+      // Let layout, scroll anchoring, and any scheduled scrolling finish.
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      const maxScroll = await page.evaluate(
+        () => document.documentElement.scrollHeight - window.innerHeight,
+      );
+      // Shorter panels may naturally clamp scrolling to the new page bottom.
+      expect(await page.evaluate(() => window.scrollY)).toBeCloseTo(
+        Math.min(position, maxScroll),
+        0,
+      );
+      const panel = page.getByRole("tabpanel", { name, exact: true });
+      expect((await panel.locator("..").boundingBox())!.height).toBeCloseTo(
+        (await panel.boundingBox())!.height,
+        0,
+      );
+    }
+  }
+});
+
 test("market keeps one spinner through initial reads and preserves content during refresh", async ({
   page,
 }) => {
@@ -1010,7 +1060,7 @@ test("market summary cells keep their positions when reads finish", async ({
   });
   await page.goto("/");
   const row = page.getByRole("row").filter({
-    has: page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+    has: page.locator(`a[href="/market/base/${configuredMarkets[0].key}"]`),
   });
   await expect(row.locator('[data-slot="skeleton"]').first()).toBeVisible();
   await expect(row.getByRole("status")).toHaveCount(0);
@@ -1026,17 +1076,17 @@ test("market summary cells keep their positions when reads finish", async ({
     ),
   ).toEqual(before);
   await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-  const configured = Object.entries(yieldList.markets["eip155:8453"]);
+  const configured = configuredMarkets.slice(0, marketPageSize);
   expect(requests.flat()).not.toContain("eth_getCode");
   expect(pairs).toHaveLength(configured.length);
   expect(new Set(pairs).size).toBe(configured.length);
   const expected = (duration: 7 | 30) =>
     configured
-      .flatMap(([key, config]) => {
-        const [tokenA, tokenB] = key.split(":") as [typeof a, typeof b];
+      .flatMap((config) => {
+        const [tokenA, tokenB] = config.key.split(":") as [typeof a, typeof b];
         return tickCandidates(
           pairIdFor(tokenA, tokenB),
-          "baseTick" in config ? config.baseTick : 0,
+          config.baseTick ?? DISCOVERY_DEFAULTS.baseTick,
           config.stepTicks,
         )
           .filter((tick) => tick.durationDays === duration)
@@ -1114,9 +1164,10 @@ test("market search, tags, network isolation and responsive layout", async ({
     page.getByRole("link", { name: "Open cbBTC / USDC", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Meme", exact: true }).click();
-  const memePairs = Object.entries(yieldList.markets["eip155:8453"])
-    .filter(([, config]) => config.tags.includes("meme"))
-    .map(([pair]) => `/market/base/${pair}`);
+  const memePairs = configuredMarkets
+    .filter((config) => config.tags?.some((tag) => tag === "meme"))
+    .slice(0, marketPageSize)
+    .map((config) => `/market/base/${config.key}`);
   const memeMarkets = page
     .getByRole("region", { name: "Markets", exact: true })
     .getByRole("link", { name: /^Open / });
