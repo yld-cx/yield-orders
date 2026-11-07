@@ -1,5 +1,6 @@
 "use client";
 import { useId } from "react";
+import { Import } from "lucide-react";
 import { useDiscoveryTokens } from "@/hooks/use-token-metadata";
 import { type NetworkSlug } from "@yld-cx/sdk/ethereum";
 import type { Token } from "@yld-cx/sdk";
@@ -34,7 +35,7 @@ export function TokenSelector({
     { tokens } = useDiscoveryTokens(network),
     inOptions = tokens.some((t) => t.address === value.toLowerCase());
   const items = [
-    { value: "custom", label: "Custom token address…" },
+    { value: "custom", label: "Import custom token" },
     ...tokens.map((t) => ({
       value: t.address,
       label: t.symbol,
@@ -55,13 +56,24 @@ export function TokenSelector({
           aria-label={`${label} selection`}
           className="w-full"
         >
-          {token && <TokenIcon token={token} size={24} />}
+          {!inOptions ? (
+            <Import aria-hidden="true" />
+          ) : (
+            token && <TokenIcon token={token} size={24} />
+          )}
           <SelectValue />
         </SelectTrigger>
         <SelectContent alignItemWithTrigger={false}>
-          {items.map((item) => (
-            <SelectItem key={item.value} value={item.value}>
-              {item.label}
+          <SelectItem value="custom">
+            <Import aria-hidden="true" />
+            Import custom token
+          </SelectItem>
+          {tokens.map((option) => (
+            <SelectItem key={option.address} value={option.address}>
+              <span aria-hidden="true" className="inline-flex shrink-0">
+                <TokenIcon token={option} size={20} />
+              </span>
+              {option.symbol}
             </SelectItem>
           ))}
         </SelectContent>
@@ -77,7 +89,10 @@ export function TokenSelector({
         />
       )}
       {token && !inOptions && (
-        <FieldDescription>{token.symbol}</FieldDescription>
+        <FieldDescription className="flex items-center gap-2">
+          <TokenIcon token={token} size={20} />
+          {token.symbol}
+        </FieldDescription>
       )}
     </Field>
   );

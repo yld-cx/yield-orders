@@ -11,6 +11,7 @@ import { canonicalPair } from "@yld-cx/sdk/registry";
 import { getNetwork, explainError } from "@yld-cx/sdk/ethereum";
 import { useNetwork } from "@/components/layout/providers";
 import { registry } from "@/lib/registry";
+import { USD_ADDRESSES } from "@/lib/trending-markets";
 import { getSdk } from "@/lib/rpc";
 import { TokenSelector } from "./token-selector";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
@@ -28,16 +29,24 @@ function OpenMarketForm({
 }: {
   network: ReturnType<typeof useNetwork>["network"];
 }) {
-  const tokens = registry.getTokens(getNetwork(network).id),
+  const networkId = getNetwork(network).id,
+    tokens = registry.getTokens(networkId),
+    quoteAddress = USD_ADDRESSES[networkId]?.toLowerCase(),
     router = useRouter();
-  const [a, setA] = useState(tokens[0]?.address ?? ""),
-    [b, setB] = useState(tokens[1]?.address ?? "");
+  const [a, setA] = useState(""),
+    [b, setB] = useState(
+      tokens.find((token) => token.address === quoteAddress)?.address ??
+        tokens[1]?.address ??
+        "",
+    );
   let key = "",
     validation = "";
-  try {
-    key = canonicalPair(getNetwork(network).id, a, b).join(":");
-  } catch (e) {
-    validation = explainError(e);
+  if (a && b) {
+    try {
+      key = canonicalPair(getNetwork(network).id, a, b).join(":");
+    } catch (e) {
+      validation = explainError(e);
+    }
   }
   const query = useQuery({
     queryKey: queryKeys.pair(network, key),
@@ -59,7 +68,7 @@ function OpenMarketForm({
           Your pair · Permissionless
         </p>
         <h1>
-          Open a market<span className="text-brand">.</span>
+          Launch a Yield market<span className="text-brand">.</span>
         </h1>
         <p>Select two tokens to view or create a liquidity rental market.</p>
       </div>
@@ -102,70 +111,72 @@ function OpenMarketForm({
             <Message error>{explainError(tokenB.error)}</Message>
           )}
           {validation && <Message>{validation}</Message>}
-          <div className="min-h-40" aria-busy={query.isLoading}>
-            {query.isLoading && (
-              <LoadingScreen
-                className="min-h-40 [&_svg]:size-16"
-                label="Checking market…"
-              />
-            )}
-            {query.isError && (
-              <Message error>{explainError(query.error)}</Message>
-            )}
-            {query.data &&
-              key &&
-              (query.data[3] ? (
-                <>
-                  <Message>
-                    <strong>Market found</strong>
-                    <br />
-                    {tokenA.data?.symbol ?? "Token A"} /{" "}
-                    {tokenB.data?.symbol ?? "Token B"} already exists on{" "}
-                    {getNetwork(network).name}.
-                  </Message>
-                  <Button
-                    className="w-full"
-                    render={<Link href={path} />}
-                    nativeButton={false}
-                  >
-                    View Market →
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Message>New market · Ready to create</Message>
-                  <TransactionFlow
-                    key={`${network}/${key}`}
-                    network={network}
-                    label="Preview Create Market"
-                    disabled={
-                      !tokenA.data ||
-                      !tokenB.data ||
-                      !!tokenA.error ||
-                      !!tokenB.error
-                    }
-                    prepare={async () => ({
-                      kind: "createPair",
-                      tokenA: a as Address,
-                      tokenB: b as Address,
-                    })}
-                    onSuccess={() => router.push(path)}
-                  />
-                  <Button
-                    className="mt-4 w-full"
-                    variant="outline"
-                    render={<Link href={path} />}
-                    nativeButton={false}
-                  >
-                    Preview Market →
-                  </Button>
-                </>
-              ))}
-          </div>
+          {key && (
+            <div className="min-h-40" aria-busy={query.isLoading}>
+              {query.isLoading && (
+                <LoadingScreen
+                  className="min-h-40 [&_svg]:size-16"
+                  label="Checking market…"
+                />
+              )}
+              {query.isError && (
+                <Message error>{explainError(query.error)}</Message>
+              )}
+              {query.data &&
+                key &&
+                (query.data[3] ? (
+                  <>
+                    <Message>
+                      <strong>Market found</strong>
+                      <br />
+                      {tokenA.data?.symbol ?? "Token A"} /{" "}
+                      {tokenB.data?.symbol ?? "Token B"} already exists on{" "}
+                      {getNetwork(network).name}.
+                    </Message>
+                    <Button
+                      className="w-full"
+                      render={<Link href={path} />}
+                      nativeButton={false}
+                    >
+                      View Market →
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Message>New market · Ready to create</Message>
+                    <TransactionFlow
+                      key={`${network}/${key}`}
+                      network={network}
+                      label="Preview Create Market"
+                      disabled={
+                        !tokenA.data ||
+                        !tokenB.data ||
+                        !!tokenA.error ||
+                        !!tokenB.error
+                      }
+                      prepare={async () => ({
+                        kind: "createPair",
+                        tokenA: a as Address,
+                        tokenB: b as Address,
+                      })}
+                      onSuccess={() => router.push(path)}
+                    />
+                    <Button
+                      className="mt-4 w-full"
+                      variant="outline"
+                      render={<Link href={path} />}
+                      nativeButton={false}
+                    >
+                      Preview Market →
+                    </Button>
+                  </>
+                ))}
+            </div>
+          )}
         </CardContent>
       </Card>
-      <p className="mx-auto mt-6 max-w-xl text-center text-xs leading-relaxed text-muted-foreground">
-        Creating a market unlocks liquidity for everyone to provide and use.
+      <p className="mx-auto mt-4 max-w-xl text-center text-xs leading-relaxed text-muted-foreground">
+        Creating a market unlocks trading and use of your token for everyone.
       </p>
     </div>
   );

@@ -1003,13 +1003,13 @@ test("market lookup reserves space while loading", async ({ page }) => {
     await route.fallback();
   });
   await page.goto("/market/open");
+  await page.getByRole("combobox", { name: "Token A selection" }).click();
+  await page.getByRole("option", { name: "WETH", exact: true }).click();
   const loading = page
     .getByRole("status")
     .filter({ hasText: "Checking market…" });
   await expect(loading).toBeVisible();
-  const description = page.getByText("Creating a market unlocks liquidity", {
-    exact: false,
-  });
+  const description = page.getByText(/^Creating a market /);
   const before = await description.boundingBox();
   release();
   await expect(
@@ -1190,6 +1190,10 @@ test("market search, tags, network isolation and responsive layout", async ({
   await expect(
     page.getByRole("combobox", { name: "Network", exact: true }),
   ).toContainText("Robinhood");
+  await expect(
+    page.getByRole("link", { name: "Open WETH / USDG", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Search markets").fill("missing-market");
   await expect(page.locator('[data-slot="empty"]')).toBeVisible();
   await expect(page.getByRole("table")).toHaveCount(0);
   const overflow = await page.evaluate(
@@ -2299,6 +2303,9 @@ test("Orders connection and invalid pair validation", async ({ page }) => {
       .getByText("Connect to see your Orders", { exact: true }),
   ).toBeVisible();
   await page.goto("/market/open");
+  await page.getByRole("combobox", { name: "Token A selection" }).click();
+  await page.getByRole("option", { name: "WETH", exact: true }).click();
+  await expect(page.getByRole("listbox")).toHaveCount(0);
   await page
     .getByRole("combobox", { name: "Token B selection", exact: true })
     .click();
@@ -4996,7 +5003,10 @@ test("token discovery prioritizes configured identities without reading decimals
   await page.goto("/market/open");
   await expect(
     page.getByRole("combobox", { name: "Token A selection" }),
-  ).toContainText("WETH");
+  ).toContainText("Import custom token");
+  await expect(
+    page.getByRole("textbox", { name: "Token A address" }),
+  ).toBeEmpty();
   await page.getByRole("combobox", { name: "Token A selection" }).click();
   const options = page.getByRole("option");
   const tokenCount = new Set([
@@ -5015,13 +5025,13 @@ test("token discovery prioritizes configured identities without reading decimals
   await expect(
     page.getByRole("option", { name: "CACHEDWETH", exact: true }),
   ).toHaveCount(0);
-  expect([...decimals].sort()).toEqual([a, b]);
+  expect([...decimals]).toEqual([b]);
   await page.getByRole("option", { name: "DISC0", exact: true }).click();
   await expect.poll(() => decimals.has(discovered[0].address)).toBe(true);
-  expect(decimals.size).toBe(3);
+  expect(decimals.size).toBe(2);
   await page.getByRole("combobox", { name: "Token A selection" }).click();
   await page
-    .getByRole("option", { name: "Custom token address…", exact: true })
+    .getByRole("option", { name: "Import custom token", exact: true })
     .click();
   await page
     .getByRole("textbox", { name: "Token A address" })

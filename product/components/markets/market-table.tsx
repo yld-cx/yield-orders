@@ -329,7 +329,7 @@ export function MarketTable() {
           <div className="flex w-full min-w-0 flex-wrap items-center gap-3 sm:w-auto">
             <Button render={<Link href="/market/open" />} nativeButton={false}>
               <LayersPlus size={16} />
-              Open Market
+              Launch Market
             </Button>
             <div className="relative min-w-0 flex-1 sm:w-48 sm:flex-none [&>svg]:pointer-events-none [&>svg]:absolute [&>svg]:left-3 [&>svg]:top-2 [&>svg]:size-4 [&>svg]:text-muted-foreground [&>input]:pl-9">
               <Search size={16} />
