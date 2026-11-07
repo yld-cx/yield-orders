@@ -40,8 +40,18 @@
         "tags": ["stock", "rwa"]
       }
     },
-    "eip155:1": {},
-    "eip155:4663": {},
+    "eip155:1": {
+      "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48:0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2": {
+        "stepTicks": 1000,
+        "tags": ["blue-chip", "stable"]
+      }
+    },
+    "eip155:4663": {
+      "0x0bd7d308f8e1639fab988df18a8011f41eacad73:0x5fc5360d0400a0fd4f2af552add042d716f1d168": {
+        "stepTicks": 1000,
+        "tags": ["blue-chip", "stable"]
+      }
+    },
     "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": {}
   }
 }
