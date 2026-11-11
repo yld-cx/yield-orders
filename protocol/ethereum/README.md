@@ -8,13 +8,13 @@ Visit [yld.cx](https://yld.cx) to learn about the product, or integrate directly
 
 ## Deployments
 
-The current v0.3 contract is deployed at **`0x0000014563b23D9ac3aC11Fe68D63cdfC19A43db`** on:
+The current v0.4 contract is deployed at **`0x00007e639751Af64b8b108c3E40b1Cd7faDdE627`** on:
 
 | Network         | Chain ID | Verified contract                                                                               |
 | --------------- | -------- | ----------------------------------------------------------------------------------------------- |
-| Ethereum        | `1`      | [Etherscan](https://etherscan.io/address/0x0000014563b23d9ac3ac11fe68d63cdfc19a43db#code)       |
-| Base            | `8453`   | [BaseScan](https://basescan.org/address/0x0000014563b23d9ac3ac11fe68d63cdfc19a43db#code)        |
-| Robinhood Chain | `4663`   | [RobinScan](https://robin.etherscan.io/address/0x0000014563b23d9ac3ac11fe68d63cdfc19a43db#code) |
+| Ethereum        | `1`      | [Etherscan](https://etherscan.io/address/0x00007e639751af64b8b108c3e40b1cd7fadde627#code)       |
+| Base            | `8453`   | [BaseScan](https://basescan.org/address/0x00007e639751af64b8b108c3e40b1cd7fadde627#code)        |
+| Robinhood Chain | `4663`   | [RobinScan](https://robin.etherscan.io/address/0x00007e639751af64b8b108c3e40b1cd7fadde627#code) |
 
 **Each chain has independent liquidity and positions.** Identify markets and positions by chain ID, contract address, and ID. A common contract address does not bridge funds between chains.
 
@@ -110,7 +110,7 @@ Anyone can call `createPair(tokenA, tokenB)` and then `createTick(pairId, direct
 - `priceTick`: integer from `-887272` to `887272`; raw Quote/Asset price is approximately `1.0001 ** priceTick`.
 - `durationDays`: positive whole days. One day is exactly `86400` seconds; the protocol enforces duration and maturity bounds.
 
-Compute the Tick ID locally, then call `getTick(tickId)` to check whether it exists:
+Compute the Tick ID locally, then call `getTick(tickId)` to read it. A missing Tick reverts with `NotFound`:
 
 ```ts
 function tickIdFor(pairId: bigint, direction: 0 | 1, priceTick: number, durationDays: bigint) {
@@ -279,7 +279,7 @@ Pin paginated reads to one block because positions can be removed and indices re
 
 Estimated **Yield and Quote proceeds** include the **1%** immutable protocol fee. On Withdraw, funded unvested Yield attributable to withdrawn principal also accrues to protocol fees. There are no additional protocol fees on Repay principal, Quote refunds, Withdraw principal, or Collect. Network gas fees are separate.
 
-Only **exact-transfer ERC-20 tokens** are supported. Use WETH rather than native ETH. Fee-on-transfer, rebasing, and callback/reentrant token behavior are unsupported. Permissionless market creation **does not certify token safety or compatibility**. The contract checks observable transfer amounts and tracked liabilities; direct token donations create no claim and there is no rescue function.
+Transfers must deliver **at least the requested amount**. Use WETH rather than native ETH. Donations, positive rebases, and excess from transfer rounding are collectible as protocol surplus. Outgoing rounding is tolerated while user liabilities remain fully backed. Fee-on-transfer underpayments, negative rebases causing deficits, and reentrant callbacks are unsupported. Permissionless market creation **does not certify token safety or compatibility**. The contract checks observable transfer amounts and tracked liabilities.
 
 `collectProtocolFees(address token, uint256 amount)` is permissionless and sends only to immutable `FEE_TO`. Calculate a positive amount offchain from the token balance minus `tokenLiability`; zero requests revert with `InvalidInput`. Partial collection can leave room for transfer rounding. `_push` verifies the treasury receives at least the requested amount, then `_reconcileLiability(token, 0, 0)` verifies all user backing remains intact. There is no separate pre-transfer balance read or onchain amount calculation. An unsafe stale/excessive request or extra outgoing debit reverts the entire call. `ProtocolFeesCollected` keeps its signature and reports the requested amount, which may include fees, donations or positive rebases. This function has no return value.
 
