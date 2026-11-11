@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import deployment from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
 import { ArrowLink } from "@/components/arrow-link";
 import { AppHeader } from "@/components/layout/app-header";
 import { Badge } from "@/packages/ui/src/components/ui/badge";
@@ -18,10 +19,10 @@ export function AppShell({ children }: { children: ReactNode }) {
               <span className="text-foreground">Time to yield</span> · ⩇⩇:⩇⩇
               <Badge
                 variant="ghost"
-                className="text-green-500!"
+                className="text-green-500! cursor-pointer"
                 title="Public Beta"
               >
-                beta
+                v{deployment.version}
               </Badge>
             </p>
           </div>

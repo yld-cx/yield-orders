@@ -255,25 +255,6 @@ export const protocolAbi = [
         type: "uint256",
       },
     ],
-    name: "ProtocolFeesAccrued",
-    type: "event",
-  },
-  {
-    anonymous: false,
-    inputs: [
-      {
-        indexed: true,
-        internalType: "address",
-        name: "token",
-        type: "address",
-      },
-      {
-        indexed: false,
-        internalType: "uint256",
-        name: "amount",
-        type: "uint256",
-      },
-    ],
     name: "ProtocolFeesCollected",
     type: "event",
   },
@@ -760,13 +741,6 @@ export const protocolAbi = [
     type: "function",
   },
   {
-    inputs: [{ internalType: "address", name: "", type: "address" }],
-    name: "accruedProtocolFees",
-    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
     inputs: [{ internalType: "uint256", name: "positionId", type: "uint256" }],
     name: "close",
     outputs: [
@@ -841,9 +815,12 @@ export const protocolAbi = [
     type: "function",
   },
   {
-    inputs: [{ internalType: "address", name: "token", type: "address" }],
+    inputs: [
+      { internalType: "address", name: "token", type: "address" },
+      { internalType: "uint256", name: "amount", type: "uint256" },
+    ],
     name: "collectProtocolFees",
-    outputs: [{ internalType: "uint256", name: "amount", type: "uint256" }],
+    outputs: [],
     stateMutability: "nonpayable",
     type: "function",
   },
