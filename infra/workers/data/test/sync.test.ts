@@ -30,22 +30,23 @@ test("every manifest network is configured, uses manifest address and permits an
     const configured = indexingNetwork(env, n);
     assert.equal(configured.address, manifest.address.toLowerCase());
     assert.equal(configured.startBlock, 10n);
-    assert.ok(configured.rpcUrl.startsWith("https://"));
+    assert.equal(configured.rpcUrls.length, 2);
+    assert.ok(configured.rpcUrls.every((url) => url.startsWith("https://")));
     assert.equal(
       indexingNetwork({ ...env, NETWORK_CONFIG: "{}" }, n).startBlock,
       undefined,
     );
-    assert.equal(
+    assert.deepEqual(
       indexingNetwork(
         {
           ...env,
           RPC_URLS: JSON.stringify({
-            [n.chainId]: "https://custom.test/secret",
+            [n.chainId]: ["https://custom.test/secret"],
           }),
         },
         n,
-      ).rpcUrl,
-      "https://custom.test/secret",
+      ).rpcUrls,
+      ["https://custom.test/secret"],
     );
   }
 });

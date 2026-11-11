@@ -1,3 +1,4 @@
+import { surplus } from "./helpers/custody.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
@@ -5,7 +6,7 @@ import { encodeAbiParameters, encodeFunctionData, getContract, keccak256, parseE
 import protocolAbiJson from "../abi/YieldOrders.json" with { type: "json" };
 import type { YieldOrders$Type } from "../artifacts/contracts/YieldOrders.sol/artifacts.js";
 import { mockERC20Abi } from "./abi/mocks.js";
-import { withSimulatedActions } from "./simulation.js";
+import { withSimulatedActions } from "./helpers/simulation.js";
 
 const abi = protocolAbiJson as unknown as YieldOrders$Type["abi"];
 const E = 10n ** 18n;
@@ -210,7 +211,7 @@ describe("provider Yield vesting", async () => {
     await fund();
     const before = await market.read.getEarnPosition([alice.account.address, tickId]);
     const sumBefore = (await market.read.getDomain([tickId, 0])).yieldSum;
-    const feeBefore = await market.read.accruedProtocolFees([ast.address]);
+    const feeBefore = await surplus(market, ast);
     const bobBefore = await market.read.getEarnPosition([bob.account.address, tickId]);
     const balanceBefore = await ast.read.balanceOf([alice.account.address]);
     const hash = await market.write.withdraw([tickId, 500n * E], { account: alice.account });
@@ -227,7 +228,7 @@ describe("provider Yield vesting", async () => {
     const after = await market.read.getEarnPosition([alice.account.address, tickId]);
     assert.equal(after.outstandingActiveYieldAsset, before.outstandingActiveYieldAsset - attributable);
     assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, sumBefore);
-    assert.equal((await market.read.accruedProtocolFees([ast.address])) - feeBefore, w.unvestedYield);
+    assert.equal((await surplus(market, ast)) - feeBefore, w.unvestedYield);
     assert.equal(
       (await market.read.getEarnPosition([bob.account.address, tickId])).outstandingActiveYieldAsset,
       bobBefore.outstandingActiveYieldAsset,
@@ -242,10 +243,7 @@ describe("provider Yield vesting", async () => {
     assert.equal(secondEvent.unvestedYield + secondEvent.yieldAssetOut, after.outstandingActiveYieldAsset);
     assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).activePrincipal, 0n);
     assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).outstandingActiveYieldAsset, 0n);
-    assert.equal(
-      (await market.read.accruedProtocolFees([ast.address])) - feeBefore,
-      w.unvestedYield + secondEvent.unvestedYield,
-    );
+    assert.equal((await surplus(market, ast)) - feeBefore, w.unvestedYield + secondEvent.unvestedYield);
     await checkAsset();
   });
 
@@ -260,16 +258,16 @@ describe("provider Yield vesting", async () => {
     });
     assert.equal((await market.read.getTick([tickId])).availableSupply, 0n);
     const liabilityBefore = await market.read.tokenLiability([ast.address]);
-    const feeBeforeWorking = await market.read.accruedProtocolFees([ast.address]);
+    const feeBeforeWorking = await surplus(market, ast);
     const sumBeforeWorking = (await market.read.getDomain([tickId, 0])).yieldSum;
     const hash = await market.write.withdraw([tickId, 100n * E], { account: alice.account });
     const w = await withdrawn(hash);
     assert.equal(w.availableAssetOut, 0n);
     assert.equal(w.workingToExit, 100n * E);
     assert.ok(w.unvestedYield > 0n);
-    assert.equal((await market.read.accruedProtocolFees([ast.address])) - feeBeforeWorking, w.unvestedYield);
+    assert.equal((await surplus(market, ast)) - feeBeforeWorking, w.unvestedYield);
     assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, sumBeforeWorking);
-    assert.equal(await market.read.tokenLiability([ast.address]), liabilityBefore - w.yieldAssetOut);
+    assert.equal(await market.read.tokenLiability([ast.address]), liabilityBefore - w.yieldAssetOut - w.unvestedYield);
     assert.ok((await market.read.getEarnPosition([bob.account.address, tickId])).outstandingActiveYieldAsset > 0n);
     await checkAsset();
     const p = await market.read.getPosition([2n]);
@@ -286,11 +284,11 @@ describe("provider Yield vesting", async () => {
     const solo = await networkHelpers.loadFixture(setup);
     await solo.market.write.supply([solo.tickId, 100n * E, zeroAddress], { account: alice.account });
     await solo.fund(50n * E);
-    const feeBefore = await solo.market.read.accruedProtocolFees([solo.ast.address]);
+    const feeBefore = await surplus(solo.market, solo.ast);
     const soloHash = await solo.market.write.withdraw([solo.tickId, MAX], { account: alice.account });
     const unvested = (await solo.withdrawn(soloHash)).unvestedYield;
     assert.ok(unvested > 0n);
-    assert.equal((await solo.market.read.accruedProtocolFees([solo.ast.address])) - feeBefore, unvested);
+    assert.equal((await surplus(solo.market, solo.ast)) - feeBefore, unvested);
     await solo.checkAsset();
   });
 
@@ -348,7 +346,7 @@ describe("provider Yield vesting", async () => {
     const prior = await market.read.getEarnPosition([alice.account.address, tickId]);
     assert.notEqual(prior.activePrincipalX36 % X, 0n);
     const feeBefore = await ast.read.balanceOf([fee.account.address]);
-    const accruedBefore = await market.read.accruedProtocolFees([ast.address]);
+    const accruedBefore = await surplus(market, ast);
     const liabilityBefore = await market.read.tokenLiability([ast.address]);
     const sumBefore = (await market.read.getDomain([tickId, 0])).yieldSum;
     const hash = await market.write.withdraw([tickId, 1n * E], { account: alice.account });
@@ -357,12 +355,12 @@ describe("provider Yield vesting", async () => {
     const d = await market.read.getDomain([tickId, 0]);
     assert.ok(w.unvestedYield > 0n);
     assert.equal(d.yieldSum, sumBefore);
-    assert.equal((await market.read.accruedProtocolFees([ast.address])) - accruedBefore, w.unvestedYield);
+    assert.equal((await surplus(market, ast)) - accruedBefore, w.unvestedYield);
     assert.equal(after.activePrincipalX36, prior.activePrincipalX36 - E * X);
     assert.equal(await ast.read.balanceOf([fee.account.address]), feeBefore);
     assert.equal(
       await market.read.tokenLiability([ast.address]),
-      liabilityBefore - w.availableAssetOut - w.yieldAssetOut,
+      liabilityBefore - w.availableAssetOut - w.yieldAssetOut - w.unvestedYield,
     );
     await checkAsset();
   });

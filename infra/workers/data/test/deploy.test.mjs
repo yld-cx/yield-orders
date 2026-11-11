@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deploy, readConfig } from "../scripts/deploy.mjs";
+import { supportedNetworks } from "../src/networks.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const configuration = () => ({
@@ -108,10 +109,21 @@ test("public RPCs are configured for every supported production network with no 
     fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)),
   );
   assert.deepEqual(JSON.parse(config.vars.RPC_URLS), {
-    1: "https://ethereum-rpc.publicnode.com",
-    8453: "https://mainnet.base.org",
-    4663: "https://rpc.mainnet.chain.robinhood.com",
+    ethereum: [
+      "https://ethereum-rpc.publicnode.com",
+      "https://gateway.tenderly.co/public/mainnet",
+    ],
+    base: ["https://mainnet.base.org", "https://base-rpc.publicnode.com"],
+    robinhood: [
+      "https://rpc.mainnet.chain.robinhood.com",
+      "https://robinhood-rpc.publicnode.com",
+    ],
   });
+  for (const network of supportedNetworks)
+    assert.deepEqual(
+      network.rpcUrls,
+      JSON.parse(config.vars.RPC_URLS)[network.name],
+    );
   assert.equal("SYNC_ENABLED" in config.vars, false);
 });
 

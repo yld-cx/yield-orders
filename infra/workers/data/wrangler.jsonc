@@ -15,7 +15,7 @@
   "observability": { "enabled": true },
   "vars": {
     "CORS_ORIGINS": "https://yld.cx",
-    "RPC_URLS": "{\"1\":\"https://ethereum-rpc.publicnode.com\",\"8453\":\"https://mainnet.base.org\",\"4663\":\"https://rpc.mainnet.chain.robinhood.com\"}",
+    "RPC_URLS": "{\"ethereum\":[\"https://ethereum-rpc.publicnode.com\",\"https://gateway.tenderly.co/public/mainnet\"],\"base\":[\"https://mainnet.base.org\",\"https://base-rpc.publicnode.com\"],\"robinhood\":[\"https://rpc.mainnet.chain.robinhood.com\",\"https://robinhood-rpc.publicnode.com\"]}",
     // Optional startBlock enables backfill. Otherwise snapshot the first observed head.
     "NETWORK_CONFIG": "{}",
     "MAX_SYNC_DURATION_MS": "120000",

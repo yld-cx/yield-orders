@@ -1,3 +1,4 @@
+import { surplus } from "./helpers/custody.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
@@ -83,7 +84,9 @@ describe("Withdraw Unvested Yield fee reclassification across the accounting amo
       if (boundary === "above") assert.ok(expected > M);
       await networkHelpers.time.setNextBlockTimestamp(Number(nextTime));
       const sumBefore = (await market.read.getDomain([id, 0])).yieldSum;
-      const feeBefore = await market.read.accruedProtocolFees([asset.address]);
+      const feeBefore = await surplus(market, asset);
+      const liabilityBefore = await market.read.tokenLiability([asset.address]);
+      const quoteLiabilityBefore = await market.read.tokenLiability([quote.address]);
       const hash = await market.write.withdraw([id, amount, 0n, UNLIMITED], { account: alice.account });
       const event = parseEventLogs({
         abi: market.abi,
@@ -92,9 +95,12 @@ describe("Withdraw Unvested Yield fee reclassification across the accounting amo
       })[0].args;
       assert.equal(event.unvestedYield, expected);
       assert.equal((await market.read.getDomain([id, 0])).yieldSum, sumBefore);
-      assert.equal((await market.read.accruedProtocolFees([asset.address])) - feeBefore, expected);
-      assert.equal(await asset.read.balanceOf([market.address]), await market.read.tokenLiability([asset.address]));
-      assert.equal(await quote.read.balanceOf([market.address]), await market.read.tokenLiability([quote.address]));
+      assert.equal((await surplus(market, asset)) - feeBefore, expected);
+      assert.equal(
+        await market.read.tokenLiability([asset.address]),
+        liabilityBefore - event.availableAssetOut - event.yieldAssetOut - expected,
+      );
+      assert.equal(await market.read.tokenLiability([quote.address]), quoteLiabilityBefore);
       await networkHelpers.time.increase(Number(300n * DAY));
       const claim = await market.read.getEarnPosition([alice.account.address, id]);
       assert.equal(claim.claimableActiveYieldAsset, claim.outstandingActiveYieldAsset);

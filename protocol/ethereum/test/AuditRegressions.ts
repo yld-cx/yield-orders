@@ -1,3 +1,4 @@
+import { surplus } from "./helpers/custody.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
@@ -105,10 +106,10 @@ describe("audit regressions", async () => {
     const grossYield = (fullYield * elapsed + DAY - 1n) / DAY;
     const repayFee = grossYield / 100n;
     const netYield = grossYield - repayFee;
-    assert.equal(await market.read.accruedProtocolFees([asset.address]), repayFee);
+    assert.equal(await surplus(market, asset), repayFee);
     assert.equal(
       (await market.read.tokenLiability([asset.address])) - (await market.read.getTick([tickId])).availableSupply,
-      grossYield,
+      netYield,
     );
     await assert.rejects(market.read.getPosition([positionId]), /NotFound/);
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), []);
@@ -122,7 +123,7 @@ describe("audit regressions", async () => {
       eventName: "Withdrawn",
     })[0].args;
     assert.ok(w.unvestedYield > 0n);
-    assert.equal((await market.read.accruedProtocolFees([asset.address])) - repayFee, w.unvestedYield);
+    assert.equal((await surplus(market, asset)) - repayFee, w.unvestedYield);
     assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, sumBefore);
     assert.equal(w.principalAmount, principal.activePrincipal);
     assert.equal(w.availableAssetOut, principal.activePrincipal);
@@ -136,12 +137,14 @@ describe("audit regressions", async () => {
     assert.equal(claim.resolvingPrincipal, 0n);
     assert.equal(claim.outstandingActiveYieldAsset + claim.outstandingExitYieldAsset, 0n);
     assert.equal(claim.claimableExitAsset + claim.claimableActiveQuote + claim.claimableExitQuote, 0n);
-    const fees = await market.read.accruedProtocolFees([asset.address]);
+    const fees = await surplus(market, asset);
     const feeBalanceBefore = await asset.read.balanceOf([fee.account.address]);
-    await market.write.collectProtocolFees([asset.address]);
-    await market.write.collectProtocolFees([quote.address]);
+    if ((await surplus(market, asset)) > 0n)
+      await market.write.collectProtocolFees([asset.address, await surplus(market, asset)]);
+    if ((await surplus(market, quote)) > 0n)
+      await market.write.collectProtocolFees([quote.address, await surplus(market, quote)]);
     assert.equal((await asset.read.balanceOf([fee.account.address])) - feeBalanceBefore, fees);
-    assert.equal(await market.read.accruedProtocolFees([asset.address]), 0n);
+    assert.equal(await surplus(market, asset), 0n);
 
     // Claimant conservation: exclude remaining principal, then bound the unclaimed Yield itself.
     // This check uses independently calculated funding and actual provider/fee payouts, not the reference model.
@@ -207,14 +210,14 @@ describe("audit regressions", async () => {
     const { market, quote, tickId, deadline, backed } = await setup();
     await market.write.supply([tickId, 10_000n, zeroAddress], { account: alice.account });
     await market.write.swap([tickId, 10_000n, 10_000n, await deadline(), zeroAddress], { account: taker.account });
-    assert.equal(await market.read.accruedProtocolFees([quote.address]), 100n);
-    assert.equal(await market.read.tokenLiability([quote.address]), 10_000n);
+    assert.equal(await surplus(market, quote), 100n);
+    assert.equal(await market.read.tokenLiability([quote.address]), 9_900n);
     const before = await quote.read.balanceOf([fee.account.address]);
-    await market.write.collectProtocolFees([quote.address], { account: keeper.account });
+    await market.write.collectProtocolFees([quote.address, await surplus(market, quote)], { account: keeper.account });
     assert.equal(await quote.read.balanceOf([fee.account.address]), before + 100n);
     assert.equal(await quote.read.balanceOf([market.address]), 9_900n);
     assert.equal(await market.read.tokenLiability([quote.address]), 9_900n);
-    assert.equal(await market.read.accruedProtocolFees([quote.address]), 0n);
+    assert.equal(await surplus(market, quote), 0n);
     await backed();
   });
 
@@ -222,9 +225,9 @@ describe("audit regressions", async () => {
     const { market, quote, tickId, deadline } = await setup("reducingQuote");
     await market.write.supply([tickId, 10_000n, zeroAddress], { account: alice.account });
     await market.write.swap([tickId, 10_000n, 10_000n, await deadline(), zeroAddress], { account: taker.account });
-    await quote.write.reduceBalance([market.address, 1n]);
+    await quote.write.reduceBalance([market.address, 101n]);
     const balances = async () => ({
-      fees: await market.read.accruedProtocolFees([quote.address]),
+      fees: await surplus(market, quote),
       liability: await market.read.tokenLiability([quote.address]),
       protocol: await quote.read.balanceOf([market.address]),
       recipient: await quote.read.balanceOf([fee.account.address]),
@@ -232,11 +235,11 @@ describe("audit regressions", async () => {
       supply: await quote.read.totalSupply(),
     });
     const before = await balances();
-    assert.equal(before.fees, 100n);
-    assert.equal(before.liability, 10_000n);
-    assert.equal(before.protocol, 9_999n);
+    assert.equal(before.fees, -1n);
+    assert.equal(before.liability, 9_900n);
+    assert.equal(before.protocol, 9_899n);
     await assert.rejects(
-      market.write.collectProtocolFees([quote.address], { account: keeper.account, gas: 1_000_000n }),
+      market.write.collectProtocolFees([quote.address, 1n], { account: keeper.account, gas: 1_000_000n }),
       /Invariant/,
     );
     assert.deepEqual(await balances(), before);
@@ -268,19 +271,20 @@ describe("audit regressions", async () => {
       1,
     );
     await market.write.collect([tickId], { account: alice.account });
-    assert.equal(await market.read.accruedProtocolFees([quote.address]), 3n * E);
+    assert.equal(await surplus(market, quote), 3n * E);
     await backed();
     const liability = await market.read.tokenLiability([quote.address]);
-    await assert.rejects(market.write.collectProtocolFees([quote.address]));
+    await assert.rejects(market.write.collectProtocolFees([quote.address, await surplus(market, quote)]));
     assert.equal(await market.read.tokenLiability([quote.address]), liability);
-    assert.equal(await market.read.accruedProtocolFees([quote.address]), 3n * E);
+    assert.equal(await surplus(market, quote), 3n * E);
     await market.write.supply([secondTick, 1n * E, zeroAddress], { account: bob.account });
     await backed();
     await quote.write.setBlocking([false]);
     const before = await quote.read.balanceOf([fee.account.address]);
-    await market.write.collectProtocolFees([quote.address]);
+    if ((await surplus(market, quote)) > 0n)
+      await market.write.collectProtocolFees([quote.address, await surplus(market, quote)]);
     assert.equal((await quote.read.balanceOf([fee.account.address])) - before, 3n * E);
-    assert.equal(await market.read.accruedProtocolFees([quote.address]), 0n);
+    assert.equal(await surplus(market, quote), 0n);
     await backed();
     assert.ok((await asset.read.balanceOf([market.address])) >= (await market.read.tokenLiability([asset.address])));
   });
@@ -305,14 +309,15 @@ describe("audit regressions", async () => {
       eventName: "Withdrawn",
     })[0].args.unvestedYield;
     assert.ok(unvested > 0n);
-    assert.equal(await market.read.accruedProtocolFees([asset.address]), feeOnRepay + unvested);
+    assert.equal(await surplus(market, asset), feeOnRepay + unvested);
     await backed();
-    await assert.rejects(market.write.collectProtocolFees([asset.address]));
+    await assert.rejects(market.write.collectProtocolFees([asset.address, await surplus(market, asset)]));
     await market.write.collect([tickId], { account: alice.account });
     await backed();
     await asset.write.setBlocking([false]);
     const before = await asset.read.balanceOf([fee.account.address]);
-    await market.write.collectProtocolFees([asset.address]);
+    if ((await surplus(market, asset)) > 0n)
+      await market.write.collectProtocolFees([asset.address, await surplus(market, asset)]);
     assert.equal((await asset.read.balanceOf([fee.account.address])) - before, feeOnRepay + unvested);
     await backed();
   });

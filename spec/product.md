@@ -1,7 +1,7 @@
 # yld.cx — Yield Orders
 
 **Product Specification**  
-**Version:** 0.3
+**Version:** 0.4
 **Targets:** Ethereum / EVM + Solana
 **Depends on:** `spec/protocol.md`
 
@@ -13,6 +13,8 @@
 > **trade or rent tokens at your price.**
 
 The product presents Yield Orders as its own trading/liquidity primitive, not conventional lending.
+
+Yield Orders unlocks OTC-style trading for more tokens: limit orders that can earn Yield while waiting, and liquidity rentals for long or short positions.
 
 Supplier:
 
@@ -42,7 +44,7 @@ Core protocol framing:
 
 # 2. Internal accounting is invisible
 
-v0.3 retains Product-Sum pooled accounting internally.
+Yield Orders retains Product-Sum pooled accounting internally.
 
 Users MUST NOT see:
 
@@ -56,7 +58,7 @@ fixed-point principal remainder
 historical scale state
 ```
 
-There are no provider shares in v0.3.
+There are no provider shares.
 
 The product deals only with economic amounts:
 
@@ -141,7 +143,7 @@ Canonical rule:
 
 # 5. Duration
 
-Official v0.3 UI durations:
+Official UI durations:
 
 ```text
 7D | 30D
@@ -823,7 +825,7 @@ Current ACTIVE Uses MUST remain discoverable from canonical onchain state withou
 
 # 26. Token compatibility risk
 
-The product MUST not imply that immutable YLD can rescue incompatible token behavior. Supported markets assume exact-transfer, non-rebasing token semantics. If an admitted token later rebases, blacklists required protocol/user accounts, or changes transfer behavior incompatibly, affected actions may become unavailable for that Tick. There is no mutable admin rescue path.
+The product MUST not imply that immutable YLD can rescue incompatible token behavior. Negative rebases, blacklists, transfer taxes or other incompatible behavior may block affected actions. There is no mutable admin rescue path.
 
 This is product risk disclosure only; it does not change protocol economics or add governance.
 

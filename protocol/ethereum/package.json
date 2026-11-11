@@ -1,6 +1,6 @@
 {
   "name": "@yld-cx/ethereum-protocol",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "description": "yld.cx — Ethereum / EVM L2s Yield Orders Protocol",
   "keywords": [
     "ethereum",
@@ -32,7 +32,7 @@
   "files": [
     "README.md",
     "abi/YieldOrders.json",
-    "vectors/golden-v03.json",
+    "vectors/golden.json",
     "deployments/config.json",
     "contracts/YieldOrders.sol",
     "contracts/libraries/ProductSumMath.sol",
@@ -45,7 +45,7 @@
   },
   "scripts": {
     "build": "hardhat build && npm run abi:export",
-    "build:production": "npm run size && npm run abi:export",
+    "build:production": "npm audit --audit-level=high && npm run size && npm run abi:export",
     "size": "hardhat build --build-profile production && node scripts/check-size.mjs",
     "test": "hardhat test",
     "test:solidity": "hardhat test solidity",
@@ -64,20 +64,25 @@
     "verify:ethereum": "YLD_NETWORK=ethereum hardhat --build-profile production --network ethereum run scripts/verify.ts",
     "verify:base": "YLD_NETWORK=base hardhat --build-profile production --network base run scripts/verify.ts",
     "verify:robinhood": "YLD_NETWORK=robinhood hardhat --build-profile production --network robinhood run scripts/verify.ts",
-    "prepack": "npm run build:production"
+    "prepack": "npm run build:production",
+    "test:gas": "hardhat --build-profile production test nodejs test/Gas.ts"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.7.0"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
-    "@nomicfoundation/hardhat-verify": "^3.0.22",
-    "@types/node": "^22.20.1",
-    "dotenv": "^18.0.6",
-    "hardhat": "^3.12.0",
-    "prettier": "^3.9.6",
-    "prettier-plugin-solidity": "^2.4.0",
-    "typescript": "~6.0.3",
-    "viem": "^2.55.11"
+    "@nomicfoundation/hardhat-verify": "^3.1.4",
+    "@types/node": "^26.6.6",
+    "dotenv": "^18.0.10",
+    "hardhat": "^3.21.2",
+    "prettier": "^3.9.10",
+    "prettier-plugin-solidity": "^2.4.1",
+    "typescript": "~7.0.2",
+    "viem": "^2.57.17"
+  },
+  "overrides": {
+    "zod": "4.6.7",
+    "minimatch@10": "11.0.4"
   }
 }

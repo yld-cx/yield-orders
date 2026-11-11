@@ -288,16 +288,9 @@ export class TickModel {
     this.activeQuoteReserve += proceeds - eq;
   }
   assetLiability() {
-    return (
-      this.available +
-      this.exitAssetReserve +
-      this.fundedYield -
-      this.paidYield -
-      this.unvestedYieldFees +
-      this.assetFees
-    );
+    return this.available + this.exitAssetReserve + this.fundedYield - this.paidYield - this.unvestedYieldFees;
   }
   quoteLiability() {
-    return this.quoteEscrow + this.activeQuoteReserve + this.exitQuoteReserve + this.quoteFees;
+    return this.quoteEscrow + this.activeQuoteReserve + this.exitQuoteReserve;
   }
 }

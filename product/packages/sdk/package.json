@@ -24,7 +24,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@yld-cx/ethereum-protocol": "0.3.1",
+    "@yld-cx/ethereum-protocol": "0.4.1",
     "viem": "2.57.6",
     "zod": "4.6.7"
   }

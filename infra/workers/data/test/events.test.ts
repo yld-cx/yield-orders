@@ -28,7 +28,6 @@ test("ABI is authoritative and contains every expected emitted event", () => {
     "ImmediateSwap",
     "DomainScaleChanged",
     "DomainGenerationFinalized",
-    "ProtocolFeesAccrued",
     "ProtocolFeesCollected",
   ]) {
     assert.ok(eventNames.includes(name), name);
