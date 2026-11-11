@@ -10,6 +10,7 @@ await writeFile(
 await mkdir(new URL("../test/abi/", import.meta.url), { recursive: true });
 
 const mockArtifacts = {
+  adversarialToken: "../artifacts/contracts/test/AdversarialToken.sol/AdversarialToken.json",
   mockERC20: "../artifacts/contracts/test/MockERC20.sol/MockERC20.json",
   feeOnTransferToken: "../artifacts/contracts/test/MockERC20.sol/FeeOnTransferToken.json",
   reentrantToken: "../artifacts/contracts/test/MockERC20.sol/ReentrantToken.json",

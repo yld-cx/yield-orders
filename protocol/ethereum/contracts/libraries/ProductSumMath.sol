@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.36;
+pragma solidity ^0.8.38;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Uint512} from "./Uint512.sol";

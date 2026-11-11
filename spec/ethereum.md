@@ -1,7 +1,7 @@
 # yld.cx — Yield Orders Protocol
 
 **Ethereum / EVM Implementation Specification**  
-**Version:** 0.3
+**Version:** 0.4
 **Depends on:** `spec/protocol.md`
 
 ---
@@ -37,7 +37,7 @@ Any bytecode/configuration change, including `FEE_TO`, invalidates previously co
 Reference:
 
 ```text
-Solidity 0.8.36
+Solidity 0.8.38
 EVM Cancun
 optimizer enabled
 optimizer runs 200
@@ -497,7 +497,7 @@ collect(
 )
 
 quoteUse(uint256 tickId, uint256 assetAmount)
-collectProtocolFees(address token)
+collectProtocolFees(address token, uint256 amount)
 
 use(
     uint256 tickId,
@@ -749,7 +749,7 @@ Transfer:
 ```text
 Asset principal + gross Yield in
 full Quote Principal out
-Yield fee accrued in Asset-denominated protocol fees
+Yield fee retained as Asset-denominated protocol surplus
 ```
 
 Exit domain:
@@ -873,9 +873,9 @@ After any mutation:
 physical token balance >= aggregate token liability
 ```
 
-Unexpected donations create no claim.
+Unexpected donations and positive balance rebases create no user claim and may be collected as protocol surplus.
 
-Accrued protocol fees are additional global per-token liabilities, **not** part of any Tick's Asset/Quote reserve. For each token, the accounting identity is `tokenLiability[token] = Σ all Tick liabilities denominated in token + accruedProtocolFees[token]`. When the same token acts as Asset in one Tick and Quote in another, include both. `collectProtocolFees(token)` reduces the accrued balance and aggregate liability before paying immutable `FEE_TO`; any transfer failure atomically restores both.
+`tokenLiability[token]` includes **only user liabilities**, equal to the sum of all Tick Asset/Quote reserves denominated in that token, even when the token serves both roles in different Ticks. Protocol fees are not included. `collectProtocolFees(token, amount)` accepts a positive amount calculated offchain and transfers it only to immutable `FEE_TO`. After `_push` verifies the treasury receipt, `_reconcileLiability(token, 0, 0)` checks the live contract balance against unchanged user liabilities; a payout that leaves a deficit reverts atomically. There is no separate pre-transfer balance check or automatic amount calculation. Collection must leave every user claim fully backed; a failed transfer atomically restores the transaction. No `accruedProtocolFees` storage or getter is required.
 
 ---
 
@@ -887,17 +887,17 @@ Unsupported:
 
 ```text
 native ETH
-fee-on-transfer
-rebasing
+transfers delivering less than the requested amount
+negative rebases that leave user liabilities undercollateralized
 callback/reentrant transfer semantics
-non-exact token transfers
+dishonest or incompatible balance reporting
 ```
 
 Use WETH for ETH.
 
-Exact transfer balance checks are required where necessary.
+For `_pull`, the protocol MUST receive at least the requested amount and credit only that amount to user accounting; any excess is surplus. For `_push`, the recipient MUST receive at least the requested amount, and the post-action protocol balance MUST cover updated user liabilities, even if the protocol's actual debit differs due to rounding. Positive balance rebases may create collectible surplus. This does not guarantee universal rebasing-token or fee-on-transfer support.
 
-There is no rescue/admin bypass for an incompatible token. A token rejecting transfers to `FEE_TO` affects only `collectProtocolFees(token)` and MUST NOT prevent settlement, Swap, Repay, Withdraw, or Collect. A token blocking the protocol or user transfers can still stop those actions.
+There is no rescue/admin bypass for an incompatible token. A token rejecting transfers to `FEE_TO` affects only `collectProtocolFees(token, amount)` and MUST NOT prevent settlement, Swap, Repay, Withdraw, or Collect. A token blocking the protocol or user transfers can still stop those actions.
 
 ---
 
@@ -997,7 +997,6 @@ Freeze at least:
 ```text
 PairCreated
 TickCreated
-ProtocolFeesAccrued
 ProtocolFeesCollected
 
 Supplied(
@@ -1109,7 +1108,7 @@ Scale/generation events are accounting metadata, not product actions.
 
 # 25. Views and product simulations
 
-Required views include `getPair`, `getTick`, `getEarnPosition`, `getPosition`, `getEarnPositions`, `getUsePositions`, `getDomain`, `nextPositionId`, `tokenLiability`, `accruedProtocolFees`, and `quoteUse`.
+Required views include `getPair`, `getTick`, `getEarnPosition`, `getPosition`, `getEarnPositions`, `getUsePositions`, `getDomain`, `nextPositionId`, `tokenLiability`, and `quoteUse`.
 
 `getPosition(positionId)` exposes only an ACTIVE Term Position. Resolved IDs have no retained Term Position state. `getUsePositions(owner, ...)` enumerates ACTIVE position IDs only and MUST use O(1) add/remove bookkeeping; it is not a historical ledger.
 
@@ -1133,7 +1132,7 @@ The call must use the intended caller and sufficient token balances and allowanc
 
 `quoteUse(tickId, assetAmount)` provides only current-state Quote Principal and full-term Yield before approval. It does not project an expired cursor Close. Market state can change between quotation, simulation, and execution; retain all execution-time limits and deadlines. `withdraw(tickId, principalAmount, minImmediateAssetOut, deadline)` may use zero minimum and a permissive deadline for unrestricted execution.
 
-`collectProtocolFees(token)` is permissionless and sends the entire accrued balance only to immutable `FEE_TO`. `accruedProtocolFees(token)` is a separate, fully backed global token liability, never double-counted in Tick reserves. A failed claim reverts only that claim.
+`collectProtocolFees(token, amount)` is permissionless, rejects `amount == 0` with `InvalidInput`, and sends only to immutable `FEE_TO`. Callers calculate an amount offchain from token balance minus user liabilities and may request a partial collection to leave a transfer-rounding buffer. `_push` MUST verify at least the requested treasury receipt; `_reconcileLiability(token, 0, 0)` MUST then verify post-transfer backing. Stale or excessive requests that underfund liabilities revert the entire call, including the token transfer. There is no return value. `ProtocolFeesCollected` retains its existing signature and records the positive requested amount; economic action events continue to expose their explicit fee amounts.
 
 `getEarnPosition` exposes economic values:
 
@@ -1215,8 +1214,11 @@ Withdraw remains available after adversarial Exit resolutions
 Supply and Collect reset timestamp; same-timestamp Withdraw rejected
 Collect time-weighted Active/Exit Yield, retains remainder and resets timestamp
 Collect before top-up / top-up without Collect
-partial/full Withdraw Yield release and Unvested Yield accrued as Asset protocol fees
-all Working yet Active > 0; Unvested Yield -> accrued Asset protocol fee
+partial/full Withdraw Yield release and Unvested Yield retained as Asset surplus
+all Working yet Active > 0; Unvested Yield -> Asset surplus
+_pull accepts at least requested net input and credits only requested amount
+_push delivers at least requested output with post-action user-liability backing
+donations, positive/negative rebases, rounding debits and surplus collection cannot consume user reserves
 Swap/Close exhaust Active; outstanding Yield still vests
 partial withdrawal cannot reclaim Unvested Yield through withdrawing position's residual principal
 Withdraw Unvested Yield leaves Active Yield sums and all provider timestamps unchanged

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.36;
+pragma solidity ^0.8.38;
 
 /// @dev Checked two-limb unsigned arithmetic for the bounded Product-Sum recurrence.
 library Uint512 {

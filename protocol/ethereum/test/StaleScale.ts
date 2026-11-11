@@ -1,3 +1,4 @@
+import { surplus } from "./helpers/custody.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
@@ -92,7 +93,8 @@ describe("passive provider beyond the eight-scale gain span", async () => {
       ((await quote.read.balanceOf([active.account.address])) as bigint) - activeBefore,
       activeClaim.claimableActiveQuote,
     );
-    await market.write.collectProtocolFees([quote.address]);
+    if ((await surplus(market, quote)) > 0n)
+      await market.write.collectProtocolFees([quote.address, await surplus(market, quote)]);
     const residualQuote = await market.read.tokenLiability([quote.address]);
     assert.equal(await quote.read.balanceOf([market.address]), residualQuote);
     assert.ok(residualQuote <= 8n, "only bounded fixed-point dust remains after funded Quote claims");

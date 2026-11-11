@@ -1,3 +1,4 @@
+import { surplus } from "./helpers/custody.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
@@ -8,8 +9,8 @@ import { SALT_NAMESPACE } from "../hardhat.config.js";
 import { feeOnTransferTokenAbi, mockERC20Abi, reentrantTokenAbi } from "./abi/mocks.js";
 import { TickModel, X, P0, F, MAX, fullTermYield } from "./reference.js";
 import { candidateSalt, guardSalt, NETWORKS, predict, readArtifact } from "../scripts/deployment.js";
-import { withSimulatedActions } from "./simulation.js";
-import v03 from "../vectors/golden-v03.json" with { type: "json" };
+import { withSimulatedActions } from "./helpers/simulation.js";
+import vectors from "../vectors/golden.json" with { type: "json" };
 
 const abi = protocolAbiJson as unknown as YieldOrders$Type["abi"];
 const E = 10n ** 18n;
@@ -166,12 +167,12 @@ describe("Yield Orders Product-Sum", async () => {
       args: [3n, max],
       account: taker.account,
     });
-    assert.equal(simulated.result.positionId, BigInt(v03.terminalRepay.positionId));
+    assert.equal(simulated.result.positionId, BigInt(vectors.terminalRepay.positionId));
     assert.equal(simulated.result.tickId, tickId);
-    assert.equal(simulated.result.tickSeq, BigInt(v03.terminalRepay.tickSeq));
-    assert.equal(simulated.result.assetPrincipal, BigInt(v03.terminalRepay.assetPrincipal));
-    assert.equal(simulated.result.exitFill, BigInt(v03.terminalRepay.exitFill));
-    assert.equal(simulated.result.activeReturn, BigInt(v03.terminalRepay.activeReturn));
+    assert.equal(simulated.result.tickSeq, BigInt(vectors.terminalRepay.tickSeq));
+    assert.equal(simulated.result.assetPrincipal, BigInt(vectors.terminalRepay.assetPrincipal));
+    assert.equal(simulated.result.exitFill, BigInt(vectors.terminalRepay.exitFill));
+    assert.equal(simulated.result.activeReturn, BigInt(vectors.terminalRepay.activeReturn));
     assert.equal(simulated.result.yieldFeeAsset, simulated.result.grossYieldAsset / 100n);
     assert.equal(simulated.result.totalAssetIn, simulated.result.assetPrincipal + simulated.result.grossYieldAsset);
     assert.equal(simulated.result.exitFill + simulated.result.activeReturn, simulated.result.assetPrincipal);
@@ -187,11 +188,11 @@ describe("Yield Orders Product-Sum", async () => {
     assert.equal(event.exitFill, simulated.result.exitFill);
     assert.equal(event.activeReturn, simulated.result.activeReturn);
     await assert.rejects(market.read.getPosition([3n]), /NotFound/);
-    assert.equal(await market.read.tickPositionId([tickId, 2n]), BigInt(v03.terminalRepay.deletedTickPositionId));
+    assert.equal(await market.read.tickPositionId([tickId, 2n]), BigInt(vectors.terminalRepay.deletedTickPositionId));
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [1n, 2n, 5n, 4n]);
     assert.equal(
       (await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.terminalRepay.cursorAfterOutOfOrder),
+      BigInt(vectors.terminalRepay.cursorAfterOutOfOrder),
       "live, non-mature cursor stays put",
     );
 
@@ -200,7 +201,7 @@ describe("Yield Orders Product-Sum", async () => {
     await market.write.repay([1n, max], { account: taker.account });
     assert.equal(
       (await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.deletedCursorGaps.afterCursorTargetRepay),
+      BigInt(vectors.deletedCursorGaps.afterCursorTargetRepay),
       "cursor-target Repay advances directly",
     );
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [5n]);
@@ -210,7 +211,7 @@ describe("Yield Orders Product-Sum", async () => {
     );
     assert.equal(
       (await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.deletedCursorGaps.afterOneGapSkip),
+      BigInt(vectors.deletedCursorGaps.afterOneGapSkip),
       "Multicall Supply skips one deleted entry",
     );
     await market.write.multicall([[encodeFunctionData({ abi, functionName: "collect", args: [tickId] })]], {
@@ -218,18 +219,21 @@ describe("Yield Orders Product-Sum", async () => {
     });
     assert.equal(
       (await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.deletedCursorGaps.afterSecondGapSkip),
+      BigInt(vectors.deletedCursorGaps.afterSecondGapSkip),
       "Multicall Collect skips one deleted entry",
     );
     await market.write.repay([5n, max], { account: taker.account });
     assert.equal(
       (await market.read.getTick([tickId])).settleCursor,
-      BigInt(v03.deletedCursorGaps.afterNonCursorRepay),
+      BigInt(vectors.deletedCursorGaps.afterNonCursorRepay),
       "non-cursor Repay skips one gap before resolving its target",
     );
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), []);
     await market.write.settle([tickId]);
-    assert.equal((await market.read.getTick([tickId])).settleCursor, BigInt(v03.deletedCursorGaps.afterFinalGapSkip));
+    assert.equal(
+      (await market.read.getTick([tickId])).settleCursor,
+      BigInt(vectors.deletedCursorGaps.afterFinalGapSkip),
+    );
     await market.write.use([tickId, 10n * E, max, await deadline(), zeroAddress], { account: taker.account });
     assert.equal(await market.read.nextPositionId(), 7n);
     assert.equal((await market.read.getPosition([6n])).tickSeq, 5n);
@@ -250,11 +254,11 @@ describe("Yield Orders Product-Sum", async () => {
       args: [3n],
       account: keeper.account,
     });
-    assert.equal(simulated.result.positionId, BigInt(v03.terminalClose.positionId));
+    assert.equal(simulated.result.positionId, BigInt(vectors.terminalClose.positionId));
     assert.equal(simulated.result.tickId, tickId);
-    assert.equal(simulated.result.tickSeq, BigInt(v03.terminalClose.tickSeq));
-    assert.equal(simulated.result.exitFill, BigInt(v03.terminalClose.exitFill));
-    assert.equal(simulated.result.activeFill, BigInt(v03.terminalClose.activeFill));
+    assert.equal(simulated.result.tickSeq, BigInt(vectors.terminalClose.tickSeq));
+    assert.equal(simulated.result.exitFill, BigInt(vectors.terminalClose.exitFill));
+    assert.equal(simulated.result.activeFill, BigInt(vectors.terminalClose.activeFill));
     assert.equal(simulated.result.exitFill + simulated.result.activeFill, 10n * E);
     assert.equal(simulated.result.exitQuote + simulated.result.activeQuote, simulated.result.providerSwapProceeds);
     const hash = await market.write.close([3n], { account: keeper.account });
@@ -276,7 +280,10 @@ describe("Yield Orders Product-Sum", async () => {
       [3n, 2n],
     ] as const) {
       await assert.rejects(market.read.getPosition([id]), /NotFound/);
-      assert.equal(await market.read.tickPositionId([tickId, seq]), BigInt(v03.terminalClose.deletedTickPositionId));
+      assert.equal(
+        await market.read.tickPositionId([tickId, seq]),
+        BigInt(vectors.terminalClose.deletedTickPositionId),
+      );
     }
     assert.deepEqual(await market.read.getUsePositions([taker.account.address, 0n, 10n]), [2n]);
     await market.write.close([2n], { account: keeper.account });
@@ -375,7 +382,7 @@ describe("Yield Orders Product-Sum", async () => {
     await market.write.repay([1n, useQuote.fullTermYieldAsset], { account: taker.account });
     assert.equal((await market.read.getDomain([tickId, 0])).P, P0);
     assert.equal((await market.read.getDomain([tickId, 1])).generation, 1n);
-    assert.ok((await market.read.accruedProtocolFees([ast.address])) >= repay.yieldFeeAsset);
+    assert.ok((await surplus(market, ast)) >= repay.yieldFeeAsset);
     const claim = await market.simulate.previewCollect([tickId, a.account.address]);
     assert.equal(claim.exitAsset, 200n * E);
     assert.ok(claim.activeYieldAsset + claim.exitYieldAsset > 0n);
@@ -528,7 +535,7 @@ describe("Yield Orders Product-Sum", async () => {
       account: taker.account,
     });
     assert.equal(swap.swapFee, 1n * E);
-    assert.equal(await market.read.accruedProtocolFees([quo.address]), swap.swapFee);
+    assert.equal(await surplus(market, quo), swap.swapFee);
     const q = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
@@ -538,19 +545,19 @@ describe("Yield Orders Product-Sum", async () => {
     await market.write.repay([1n, q.fullTermYieldAsset], { account: taker.account });
     const afterAsset = await ast.read.balanceOf([taker.account.address]);
     const gross = beforeAsset - afterAsset - 100n * E;
-    assert.equal(await market.read.accruedProtocolFees([ast.address]), gross / 100n);
+    assert.equal(await surplus(market, ast), gross / 100n);
     const q2 = await market.simulate.previewUse([tickId, 100n * E]);
     await market.write.use([tickId, 100n * E, q2.fullTermYieldAsset, await deadline(), zeroAddress], {
       account: taker.account,
     });
     await networkHelpers.time.increase(Number(DAY));
     await market.write.close([2n], { account: keeper.account });
-    assert.equal(await market.read.accruedProtocolFees([quo.address]), 2n * E);
-    const feeAsset = await market.read.accruedProtocolFees([ast.address]);
-    const feeQuote = await market.read.accruedProtocolFees([quo.address]);
+    assert.equal(await surplus(market, quo), 2n * E);
+    const feeAsset = await surplus(market, ast);
+    const feeQuote = await surplus(market, quo);
     await market.write.collect([tickId], { account: a.account });
-    assert.equal(await market.read.accruedProtocolFees([ast.address]), feeAsset);
-    assert.equal(await market.read.accruedProtocolFees([quo.address]), feeQuote);
+    assert.equal(await surplus(market, ast), feeAsset);
+    assert.equal(await surplus(market, quo), feeQuote);
   });
 
   it("gives a supplier joining after Repay no historical Yield", async () => {
@@ -793,12 +800,12 @@ describe("Yield Orders Product-Sum", async () => {
         }
         assert.ok(activeX36 <= model.active.principal * X);
         assert.ok(exitX36 <= model.exit.principal * X);
-        assert.equal(await market.read.accruedProtocolFees([ast.address]), model.assetFees);
-        assert.equal(await market.read.accruedProtocolFees([quo.address]), model.quoteFees);
+        assert.equal(await surplus(market, ast), model.assetFees);
+        assert.equal(await surplus(market, quo), model.quoteFees);
         assert.equal(await market.read.tokenLiability([ast.address]), model.assetLiability());
         assert.equal(await market.read.tokenLiability([quo.address]), model.quoteLiability());
-        assert.equal(await ast.read.balanceOf([market.address]), model.assetLiability());
-        assert.equal(await quo.read.balanceOf([market.address]), model.quoteLiability());
+        assert.equal(await ast.read.balanceOf([market.address]), model.assetLiability() + model.assetFees);
+        assert.equal(await quo.read.balanceOf([market.address]), model.quoteLiability() + model.quoteFees);
         await checkCustody();
       }
       for (const [who, amount] of [
@@ -1010,9 +1017,11 @@ describe("Yield Orders Product-Sum", async () => {
           );
           await check();
         }
-        await market.write.collectProtocolFees([ast.address]);
+        if ((await surplus(market, ast)) > 0n)
+          await market.write.collectProtocolFees([ast.address, await surplus(market, ast)]);
         model.assetFees = 0n;
-        await market.write.collectProtocolFees([quo.address]);
+        if ((await surplus(market, quo)) > 0n)
+          await market.write.collectProtocolFees([quo.address, await surplus(market, quo)]);
         model.quoteFees = 0n;
         await check();
         const tick = await market.read.getTick([tickId]);

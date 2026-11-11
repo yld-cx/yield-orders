@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.36;
+pragma solidity ^0.8.38;
 
 import {ProductSumMath} from "../libraries/ProductSumMath.sol";
 import {Uint512} from "../libraries/Uint512.sol";

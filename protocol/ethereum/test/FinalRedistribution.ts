@@ -1,3 +1,4 @@
+import { surplus } from "./helpers/custody.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { network } from "hardhat";
@@ -6,7 +7,7 @@ import protocolAbiJson from "../abi/YieldOrders.json" with { type: "json" };
 import type { YieldOrders$Type } from "../artifacts/contracts/YieldOrders.sol/artifacts.js";
 import { mockERC20Abi } from "./abi/mocks.js";
 import { TickModel, X } from "./reference.js";
-import vectors from "../vectors/golden-v03.json" with { type: "json" };
+import vectors from "../vectors/golden.json" with { type: "json" };
 
 const abi = protocolAbiJson as unknown as YieldOrders$Type["abi"];
 const MAX = 2n ** 256n - 1n;
@@ -134,8 +135,8 @@ describe("X36 withdrawal Unvested Yield accounting", async () => {
       assert.equal(actual.quotePrincipal, quotes[0][0]);
       assert.equal(actual.swapFee, quotes[0][0] / 100n);
     }
-    assert.equal(await market.read.accruedProtocolFees([ast.address]), quotes[0][0] / 100n);
-    assert.equal(await market.read.accruedProtocolFees([quo.address]), quotes[0][0] / 100n);
+    assert.equal(await surplus(market, ast), quotes[0][0] / 100n);
+    assert.equal(await surplus(market, quo), quotes[0][0] / 100n);
   });
 
   it("resolves out-of-order Repay and Close through the pooled Exit before advancing the cursor", async () => {
@@ -210,7 +211,7 @@ describe("X36 withdrawal Unvested Yield accounting", async () => {
     model.assetFees += repayFee;
     model.repay(useAmount, gross - repayFee);
     await assert.rejects(market.read.getPosition([1n]), /NotFound/);
-    assert.equal(await market.read.accruedProtocolFees([f.ast.address]), repayFee);
+    assert.equal(await surplus(market, f.ast), repayFee);
     const swapAmount = TOTAL - remaining;
     const swapFee = swapAmount / 100n;
     model.swap(swapAmount, swapAmount - swapFee);
@@ -246,7 +247,7 @@ describe("X36 withdrawal Unvested Yield accounting", async () => {
     assert.equal(event.unvestedYield, predicted.unvested);
     assert.ok(predicted.unvested > 0n);
     assert.equal(model.active.sums.yield, beforeSum);
-    assert.equal(await market.read.accruedProtocolFees([ast.address]), repayFee + predicted.unvested);
+    assert.equal(await surplus(market, ast), repayFee + predicted.unvested);
     assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
     assert.equal((await market.read.getEarnPosition([alice.account.address, tickId])).activePrincipalX36, X / 2n);
     assert.equal(
@@ -284,9 +285,9 @@ describe("X36 withdrawal Unvested Yield accounting", async () => {
     }
     const remainingYield = model.fundedYield - model.paidYield - model.unvestedYieldFees;
     assert.ok(remainingYield >= 0n && remainingYield <= 3n, `unassigned funded Yield: ${remainingYield}`);
-    assert.equal(await market.read.tokenLiability([ast.address]), model.assetFees + model.available + remainingYield);
-    assert.equal(await market.read.accruedProtocolFees([ast.address]), repayFee + predicted.unvested);
-    assert.equal(await ast.read.balanceOf([market.address]), await market.read.tokenLiability([ast.address]));
+    assert.equal(await market.read.tokenLiability([ast.address]), model.available + remainingYield);
+    assert.equal(await surplus(market, ast), repayFee + predicted.unvested);
+    assert.equal(await ast.read.balanceOf([market.address]), model.assetLiability() + model.assetFees);
   });
 
   for (const [remaining, withdrawal] of [
@@ -307,11 +308,11 @@ describe("X36 withdrawal Unvested Yield accounting", async () => {
       assert.ok(expected.unvested > 0n);
       assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
       assert.equal(model.active.sums.yield, beforeSum);
-      assert.equal(await market.read.accruedProtocolFees([ast.address]), model.assetFees);
+      assert.equal(await surplus(market, ast), model.assetFees);
       assert.equal(model.assetFees, repayFee + expected.unvested);
       assert.equal(
         await market.read.tokenLiability([ast.address]),
-        model.available + model.fundedYield - model.paidYield + repayFee,
+        model.available + model.fundedYield - model.paidYield - model.unvestedYieldFees,
       );
     });
   }
@@ -331,7 +332,7 @@ describe("X36 withdrawal Unvested Yield accounting", async () => {
       assert.equal((await market.read.getDomain([tickId, 0])).yieldSum, model.active.sums.yield);
       assert.equal(model.active.sums.yield, before);
       assert.equal(model.unvestedYieldFees, expected.unvested);
-      assert.equal(await market.read.accruedProtocolFees([ast.address]), model.assetFees);
+      assert.equal(await surplus(market, ast), model.assetFees);
       assert.equal(await market.read.tokenLiability([ast.address]), model.assetLiability());
     });
   }

@@ -2,9 +2,9 @@ import "dotenv/config";
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
 import { configVariable, defineConfig } from "hardhat/config";
 
-export const PROTOCOL_VERSION = "0.3" as const;
+export const PROTOCOL_VERSION = "0.4" as const;
 export const SALT_NAMESPACE = `yld.cx-v${PROTOCOL_VERSION}` as const;
-export const SOLC_VERSION = "0.8.36" as const;
+export const SOLC_VERSION = "0.8.38" as const;
 export const SOLC_SETTINGS = { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 }, viaIR: true } as const;
 export const COMPILER_DESCRIPTION =
   `solc ${SOLC_VERSION}; ${SOLC_SETTINGS.evmVersion}; optimizer ${SOLC_SETTINGS.optimizer.enabled ? SOLC_SETTINGS.optimizer.runs : "disabled"}; ${SOLC_SETTINGS.viaIR ? "viaIR" : "no viaIR"}` as const;

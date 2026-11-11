@@ -1,7 +1,7 @@
 # yld.cx — Yield Orders Protocol
 
 **Solana / Anchor Implementation Specification**  
-**Version:** 0.3
+**Version:** 0.4
 **Depends on:** `spec/protocol.md`
 
 ---
@@ -14,7 +14,7 @@ No Solana-specific feature may alter Yield pricing, the 1% fee model, Product-Su
 
 The Solana implementation is architecturally independent from the EVM implementation. Cross-chain parity applies to canonical economic results and invariants, not to storage layout, instruction internals, custody granularity, account lifecycle, or arithmetic library choice.
 
-v0.3 uses active-only TermPosition PDAs and protocol-enforced one-sequence settlement. Resolved TermPosition PDAs are closed rather than retained as historical state.
+TermPosition PDAs are active-only, with protocol-enforced one-sequence settlement. Resolved TermPosition PDAs are closed rather than retained as historical state.
 
 ---
 
@@ -146,10 +146,6 @@ exit_asset_sum
 exit_yield_sum
 exit_quote_sum
 
-// independently backed fee balances, held in this Tick's existing vaults
-accrued_asset_protocol_fees   // Asset Vault
-accrued_quote_protocol_fees   // Quote Proceeds Vault
-
 next_position_seq
 settle_cursor
 
@@ -215,7 +211,7 @@ bump
 
 No shares. No Exit shares.
 
-ProviderPosition remains persistent in v0.3 while it may contain principal, claims, historical entitlement, or fractional carry. The single non-negative `timestamp` replaces the slot cooldown field; Supply and Collect reset it from `Clock.unix_timestamp`, and Withdraw requires the current Unix timestamp to be strictly greater.
+ProviderPosition remains persistent while it may contain principal, claims, historical entitlement, or fractional carry. The single non-negative `timestamp` replaces the slot cooldown field; Supply and Collect reset it from `Clock.unix_timestamp`, and Withdraw requires the current Unix timestamp to be strictly greater.
 
 `*_initial_principal_x36` is Asset principal in `PRINCIPAL_PRECISION = 1e36` sub-raw units. It is not a share balance and has no global supply denominator. Positive sub-raw principal remains snapshotted even when its whole-raw-unit preview is zero. Each `fractional_gain_x36` element holds a value in `[0, 1e36)` and therefore fits `u128`; compounded principal and the Product-Sum history still require wider integer types. Preserve nonzero carry even if principal and whole-raw claims reach zero. A residual principal that finally rounds below one fixed-point unit is below `1e-36` raw Asset and, under the shared funded-gain bound, can receive less than `1e-6` raw units from any one funded distribution.
 
@@ -389,30 +385,31 @@ Working Asset is held by Use users.
 
 Quote Escrow holds ACTIVE Position Quote Principal.
 
-Quote Proceeds holds active and Exit Swap/Close claims **plus this Tick's accrued Quote protocol fees**, which are tracked separately and are never provider claims. The Asset Vault also holds this Tick's accrued Asset protocol fees in addition to provider liquidity and funded claims. The Quote Escrow Vault holds **only** full Quote Principal locked by ACTIVE Uses; it holds no claimable protocol fee after Close.
+Quote Proceeds holds active and Exit Swap/Close claims; any balance above those user reserves is protocol surplus. The Asset Vault likewise holds provider liquidity and funded claims, with any excess treated as surplus. The Quote Escrow Vault backs full Quote Principal locked by ACTIVE Uses and accrues no protocol fees.
 
-### 10.1 Fee accrual and exact vault flows
+### 10.1 Surplus and exact vault flows
 
-The Tick stores `accrued_asset_protocol_fees` and `accrued_quote_protocol_fees`; there is no global custody account, additional fee vault, or requirement to touch another Tick's vault. A token used in multiple Ticks or in different directions has independent fee balances in each Tick. Any protocol-level per-mint total is an offchain sum of the corresponding Tick fields.
+The Tick stores no accrued-fee counters. Surplus is calculated independently for each Tick's vault from its actual token balance minus user reserves, without global custody or cross-Tick accounting. Any protocol-level per-mint total is an offchain sum of the relevant vault surpluses.
 
-- **Repay:** the taker's Asset principal plus gross Yield enters this Tick's Asset Vault. Fund only net Yield for providers; increment `accrued_asset_protocol_fees` by the Asset-denominated 1% Yield fee.
-- **Withdraw Unvested Yield:** transfer the already-funded Unvested Yield from provider Yield liability to `accrued_asset_protocol_fees` in the *same* Asset Vault. No additional token transfer or newly funded liability is created.
-- **Swap:** the taker's entire Quote Principal enters this Tick's Quote Proceeds Vault. Provider net Quote is reserved for providers; the Quote fee increments `accrued_quote_protocol_fees`.
-- **Close:** move the full frozen Quote Principal from this Tick's Quote Escrow Vault to its Quote Proceeds Vault. Reserve only provider net Quote for providers; increment `accrued_quote_protocol_fees` by the frozen Close fee. Do not transfer any fee to `FEE_TO` during Close or automatic settlement.
+- **Repay:** the taker's Asset principal plus gross Yield enters this Tick's Asset Vault. Fund only net Yield for providers; the Asset-denominated 1% Yield fee remains as surplus.
+- **Withdraw Unvested Yield:** reduce the funded provider Yield reserve by the Unvested Yield in the *same* Asset Vault, leaving that amount as surplus without another token transfer.
+- **Swap:** the taker's entire Quote Principal enters this Tick's Quote Proceeds Vault. Reserve only provider net Quote; the Quote fee remains as surplus.
+- **Close:** move the full frozen Quote Principal from Quote Escrow to Quote Proceeds, reserving only provider net Quote. The frozen Close fee remains as surplus. Do not transfer any fee to `FEE_TO` during Close or automatic settlement.
 
 The following per-Tick vault backing conditions MUST hold after each successful instruction:
 
 ```text
 Asset Vault balance >= available_supply + exit_asset_reserve
-                     + yield_asset_reserve + accrued_asset_protocol_fees
+                     + yield_asset_reserve
 Quote Escrow Vault balance >= quote_escrow
 Quote Proceeds Vault balance >= active_quote_reserve + exit_quote_reserve
-                              + accrued_quote_protocol_fees
 ```
 
-### 10.2 Permissionless fee claim
+Surplus is the nonnegative difference between the relevant Asset or Quote Proceeds Vault balance and its user reserves. Quote Escrow donations are not included in fee collection. Any vault deficit MUST reject collection and actions that would leave user claims unbacked.
 
-Implement `collect_protocol_fees(tick, denomination)` for exactly one Tick and either its Asset or Quote mint. The caller may be anyone, but the recipient MUST be immutable `FEE_TO`'s validated associated token account for the correct mint and token program. Claim the entire accrued balance for the selected denomination from the corresponding Asset or Quote Proceeds Vault, decrement the Tick's accrued balance, and preserve the vault backing invariant. A failed transfer or absent/uncreatable recipient ATA reverts only this claim transaction and leaves fees fully backed; it MUST NOT block settlement, Repay, Swap, Withdraw, Collect, or Close. ATA creation, if supported, occurs only during this claim.
+### 10.2 Permissionless surplus collection
+
+Implement `collect_protocol_fees(tick, denomination)` for exactly one Tick and either its Asset or Quote mint. The caller may be anyone, but the recipient MUST be immutable `FEE_TO`'s validated associated token account for the correct mint and token program. Transfer only the selected Asset or Quote Proceeds Vault's collectible surplus while preserving all user reserves; do not decrement any fee counter. A failed transfer or absent/uncreatable recipient ATA reverts only this collection transaction; it MUST NOT block settlement, Repay, Swap, Withdraw, Collect, or Close. ATA creation, if supported, occurs only during collection.
 
 No provider loop, cross-Tick loop, or direct fee-recipient transfer occurs during economic actions.
 
@@ -437,6 +434,8 @@ default frozen/account-state behavior
 pausable transfer behavior
 equivalent future extensions
 ```
+
+Token-2022 interest-bearing and scaled-UI extensions change displayed amounts, not raw vault balances; they are not automatically supported without separate compatibility review. Transfer fees that reduce the recipient's raw amount remain unsupported. Every successful instruction MUST leave the relevant vaults fully backed.
 
 Every supplied account validates:
 
@@ -609,7 +608,7 @@ unvested_yield = yield_for_withdraw - yield_asset_out
 owed_active_yield_asset -= yield_for_withdraw
 ```
 
-Any positive Unvested Yield attributable to withdrawn principal is reclassified as Asset protocol fees. It is not redistributed through the Active Product-Sum domain. Reduce the funded Yield reserve by `unvested_yield` and increase this Tick's `accrued_asset_protocol_fees` equally. No additional funded liability, fee-recipient ATA or vesting state is created. Preserve outstanding Exit Yield and do not reset `timestamp`.
+Any positive Unvested Yield attributable to withdrawn principal becomes Asset protocol surplus. It is not redistributed through the Active Product-Sum domain. Reduce the funded Yield reserve by `unvested_yield`, leaving the same amount unreserved in the Asset Vault. No additional funded liability, fee-recipient ATA or vesting state is created. Preserve outstanding Exit Yield and do not reset `timestamp`.
 
 Transfer `available_out + yield_asset_out` from Asset Vault. Previews and events MUST surface `yield_asset_out` and `unvested_yield`.
 
@@ -680,7 +679,7 @@ Transfer exact Asset principal + gross Yield to Asset Vault.
 
 Return full Quote Principal.
 
-Accrue the Yield fee as this Tick's `accrued_asset_protocol_fees` in the Asset Vault, separately from provider Yield reserves. No `FEE_TO` account is needed for Repay.
+Leave the Yield fee as surplus in this Tick's Asset Vault, outside provider Yield reserves. No `FEE_TO` account is needed for Repay.
 
 Exit:
 
@@ -729,7 +728,7 @@ then reduce principal
 then update P / scale / generation
 ```
 
-Move the **entire** Quote Principal from the Quote Escrow Vault into this Tick's Quote Proceeds Vault. Reserve provider net Quote there and accrue the frozen fee as `accrued_quote_protocol_fees` in the same vault. After this movement no fee remains in Escrow. No `FEE_TO` account is required for direct or automatic Close.
+Move the **entire** Quote Principal from the Quote Escrow Vault into this Tick's Quote Proceeds Vault. Reserve only provider net Quote there; the frozen fee remains as surplus. After this movement no fee remains in Escrow. No `FEE_TO` account is required for direct or automatic Close.
 
 The Close instruction return/event data MUST expose at least `exit_fill`, `active_fill`, `exit_quote`, and `active_quote` together with the position identity/sequence and frozen Close fee, so terminal history can be reconstructed after the TermPosition PDA is closed.
 
@@ -770,7 +769,7 @@ Transfer:
 Asset Vault → taker
 taker full Quote Principal → this Tick's Quote Proceeds Vault
     provider net Quote → provider proceeds reserve
-    Quote fee → accrued_quote_protocol_fees in the same vault
+    Quote fee → surplus in the same vault
 ```
 
 Exit is untouched.
@@ -934,7 +933,6 @@ cursor TermPosition PDA
 caller / settlement signer
 Quote Escrow Vault
 Quote Proceeds Vault
-Tick's accrued_quote_protocol_fees field (no additional fee PDA)
 
 any ActiveScaleState required by scale transition
 any ExitScaleState required by scale transition
@@ -973,7 +971,7 @@ Repay → floor(gross Asset Yield × 1%)
 
 Principal is fee-free.
 
-Collect is fee-free. Fees are accrued and claimed **per Tick and denomination**, not from a global multi-Tick vault: Asset fees remain in that Tick's Asset Vault, Quote fees in its Quote Proceeds Vault. `collect_protocol_fees(tick, denomination)` pays only the immutable recipient and cannot drain provider reserves. Claim failure affects only that claim.
+Collect is fee-free. Surplus is derived and collected **per Tick and denomination**, not from a global multi-Tick vault: Asset surplus remains in that Tick's Asset Vault, Quote surplus in its Quote Proceeds Vault. `collect_protocol_fees(tick, denomination)` pays only the immutable recipient and cannot drain provider reserves. Collection failure affects only that call.
 
 ---
 
@@ -996,7 +994,7 @@ provider compounded principal
 provider realized gains
 Yield vesting / Withdraw Unvested Yield / protocol fees
 Withdraw min-immediate-Asset and deadline semantics
-per-Tick protocol-fee amounts and claimable backing, aggregated to equivalent per-mint economics
+per-Tick protocol-fee amounts, vault surplus and user backing, aggregated to equivalent per-mint economics
 
 Exit split
 maturity
@@ -1042,8 +1040,8 @@ Product-Sum rounding remainder cannot affect Withdraw Unvested Yield accounting
 one provider timestamp per Tick; Supply and Collect reset it
 same-timestamp Withdraw rejection
 partial/full-term Collect and repeat Collect at same timestamp
-partial/full Withdraw Yield release and Unvested Yield accrued as Asset protocol fees
-Active entirely Working, Unvested Yield -> accrued Asset protocol fee
+partial/full Withdraw Yield release and Unvested Yield retained as Asset surplus
+Active entirely Working, Unvested Yield -> Asset surplus
 repeated partial Withdraw cannot reclaim Unvested Yield through residual Active
 historical Yield collectible after Swap/Close and generation rollover
 cross-chain vesting/Unvested Yield/rounding golden vectors
@@ -1060,7 +1058,9 @@ fractional-only ProviderPosition stays discoverable and can combine carry with l
 Withdraw minimum-immediate-output and deadline front-run protection
 Close moves full escrowed Quote Principal into Quote Proceeds including accrued fee
 blocked FEE_TO ATA causes fee-claim failure only, never settlement failure
-multiple Ticks with the same mint retain independent fully backed fee claims
+multiple Ticks with the same mint retain independent fully backed user reserves and collectible surplus
+Asset/Quote Proceeds donations and positive surplus collected only to FEE_TO
+vault deficits and recipient-underpaying transfers revert without spending user reserves
 
 TermPosition PDA exists only while ACTIVE
 Repay closes target PDA and refunds lamports to stored rent_payer

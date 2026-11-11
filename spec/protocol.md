@@ -1,7 +1,7 @@
 # yld.cx — Yield Orders Protocol
 
 **Canonical Cross-Chain Economic & Accounting Specification**  
-**Version:** 0.3
+**Version:** 0.4
 **Targets:** Ethereum / EVM-compatible chains + Solana
 
 ---
@@ -54,7 +54,7 @@ generation → reset when a principal domain reaches zero
 
 There are **no active shares, Exit shares, MAX_SHARES, share mint formulas, or share-cap admission failures**.
 
-v0.3 also makes Term Positions **active-state only**. A Use stores its Term Position only while it is economically active. Successful Repay or Close emits the canonical terminal event and removes the Term Position state. Position identities and per-Tick sequences are monotonically increasing and never reused; historical activity comes from events / transaction history rather than permanent Term Position storage.
+Term Positions are **active-state only**. A Use stores its Term Position only while it is economically active. Successful Repay or Close emits the canonical terminal event and removes the Term Position state. Position identities and per-Tick sequences are monotonically increasing and never reused; historical activity comes from events / transaction history rather than permanent Term Position storage.
 
 The Product-Sum approach is adapted to YLD's separate active and Exit domains.
 
@@ -958,25 +958,25 @@ Therefore:
 ```text
 Swap/Close:
     ≥99% Quote → providers
-    ≤1% Quote  → accrued protocol fees, claimable only to FEE_TO
+    ≤1% Quote  → protocol surplus, claimable only to FEE_TO
 
 Repay:
     100% Asset principal → providers
     ≥99% Asset Yield     → providers
-    ≤1% Asset Yield      → accrued protocol fees, claimable only to FEE_TO
+    ≤1% Asset Yield      → protocol surplus, claimable only to FEE_TO
     100% Quote Principal → taker
 ```
 
 No minimum fee.
 
-### 15.1 Accrual and collection across chains
+### 15.1 Fee attribution and surplus collection across chains
 
-Protocol fees accrue as separately backed claims; no economic action transfers a fee to `FEE_TO`. Fee-claim failure MUST affect only that claim, not settlement or unrelated supplier actions. Fee custody and collection granularity differ by chain without changing fee calculation or ownership:
+Protocol fees remain as surplus above user liabilities; no economic action transfers a fee to `FEE_TO`. Surplus-collection failure MUST affect only that claim, not settlement or unrelated supplier actions. Custody and collection granularity differ by chain without changing fee calculation or ownership:
 
-- **EVM:** `accruedProtocolFees[token]` aggregates the protocol's claim across all Ticks sharing that token. `collectProtocolFees(token)` transfers the entire accrued amount to immutable `FEE_TO` from the protocol's shared token balance. Aggregate token liability includes the fee balance exactly once, outside Tick reserves.
-- **Solana:** each Tick maintains `accrued_asset_protocol_fees` and `accrued_quote_protocol_fees`, backed respectively by its existing Asset Vault and Quote Proceeds Vault. `collect_protocol_fees(tick, denomination)` claims the full accrued balance of that Tick and denomination to immutable `FEE_TO`'s validated associated token account. The Quote Escrow Vault holds only active Use escrow: Swap deposits the full Quote Principal into Quote Proceeds, and Close moves the full Quote Principal there before separately accounting for provider proceeds and fees. No extra fee vault or cross-Tick fee-claim loop is required. A per-mint aggregate, if displayed, is the sum of per-Tick claims.
+- **EVM:** `tokenLiability[token]` aggregates only user liabilities across all Ticks sharing that token. `collectProtocolFees(token, amount)` accepts a positive amount calculated offchain from `balanceOf(protocol) - tokenLiability[token]` and transfers it only to immutable `FEE_TO`. The recipient must receive at least the requested amount and final reconciliation must leave every user liability fully backed; otherwise the transfer reverts atomically. Partial collection is allowed, and zero requests revert. No separate accrued-fee storage or getter is needed.
+- **Solana:** each Tick derives collectible surplus separately from its Asset Vault (`balance - available_supply - exit_asset_reserve - yield_asset_reserve`) and Quote Proceeds Vault (`balance - active_quote_reserve - exit_quote_reserve`). `collect_protocol_fees(tick, denomination)` transfers only the relevant vault's surplus to immutable `FEE_TO`'s validated associated token account. The Quote Escrow Vault backs active Use escrow and holds no protocol fees: Swap deposits full Quote Principal into Quote Proceeds, and Close moves full Quote Principal there before reserving provider proceeds. No extra fee vault or cross-Tick collection loop is required.
 
-On either chain, already-funded Withdraw Yield transferred into the protocol-fee balance is reclassified from provider Yield liability, not funded again. A shared token may be Asset in some Ticks and Quote in others; claims remain fully backed and do not consume another Tick's provider funds.
+On either chain, already-funded Unvested Withdraw Yield is removed from provider Yield liability and becomes surplus without an additional transfer or funding. Direct donations to collectible custody and positive raw-balance changes also become surplus; negative balance changes can cause a deficit, in which case collection and unsafe actions must revert. A shared token may be Asset in some Ticks and Quote in others; collection cannot consume another Tick's user funds.
 
 ---
 
@@ -1167,7 +1167,7 @@ Transfers:
 ```text
 Asset → taker
 QuotePrincipal from taker
-SwapFee → accrued Quote protocol fees
+SwapFee → Quote protocol surplus
 providerQuote → Quote proceeds custody
 ```
 
@@ -1295,10 +1295,10 @@ Any positive Unvested Yield attributable to withdrawn principal is reclassified 
 ```text
 if unvestedYield > 0:
     fundedYieldReserve -= unvestedYield
-    accrued Asset protocol fees += unvestedYield
+    Asset surplus increases by unvestedYield
 ```
 
-Unvested Yield is already funded. Reclassification reduces the funded Yield reserve and increases the Asset protocol-fee liability by the same amount, without creating a new liability or vesting clock. The Active Yield sum is unchanged; no provider eligibility calculation or single-distribution amount bound applies to reclassification.
+Unvested Yield is already funded. Reclassification reduces user Yield liability while leaving the physical Asset balance unchanged, increasing protocol surplus without creating a new liability or vesting clock. The Active Yield sum is unchanged; no provider eligibility calculation or single-distribution amount bound applies to reclassification.
 
 `workingToExit` retains the existing Exit-first resolution rules. Future Yield funded into Exit after Withdraw follows ordinary provider Yield vesting. A provider with no Active principal can still Collect outstanding Yield, including Yield allocated before Swap/Close.
 
@@ -1345,7 +1345,7 @@ Transfers:
 ```text
 Asset principal + grossYield from taker → protocol
 Quote Principal → taker
-yieldFee Asset → accrued Asset protocol fees
+yieldFee Asset → Asset protocol surplus
 ```
 
 Global state:
@@ -1538,11 +1538,11 @@ Quote proceeds
 
 Use/Swap may consume only `availableSupply`.
 
-Funded claims are never active liquidity. Outstanding, not-yet-collectible Yield remains covered by the existing funded Yield liability. Withdraw Unvested Yield moves that liability to Asset protocol fees without creating a second claim.
+Funded claims are never active liquidity. Outstanding, not-yet-collectible Yield remains covered by the existing funded Yield liability. Withdraw Unvested Yield reduces that liability and leaves the released Asset as protocol surplus.
 
-Protocol fees accrue as independent, fully backed claims and are not mixed with active liquidity or supplier proceeds. On EVM they are separate global per-token liabilities, additional to the sum of Tick reserves. On Solana, each Tick's accrued Asset and Quote fees are held in its existing Asset and Quote Proceeds vaults respectively, additional to that Tick's supplier liabilities. The Solana Quote Escrow vault holds only active Use principal. Both chains claim fees separately to immutable `FEE_TO`; a failed fee claim does not affect ordinary market actions or settlement. No returned principal or unlocked Quote is charged.
+Protocol fees are surplus outside user liabilities, not active liquidity or supplier proceeds. EVM surplus is the shared token balance minus aggregate user liabilities; Solana surplus is derived independently from each Tick's Asset and Quote Proceeds vault balances minus their user reserves. The Solana Quote Escrow vault holds active Use principal and accrues no fees. Surplus is collectible only to immutable `FEE_TO`; failed collection does not affect ordinary market actions or settlement. No returned principal or unlocked Quote is charged.
 
-Production has no rescue / admin bypass for token-specific transfer failures. Exact-transfer balance checks only observe transfers when an action executes: a later token rebase or change in balance/transfer semantics may leave liabilities undercollateralized or halt affected actions without a preceding failed transfer. If an admitted token later changes behavior, blacklists required accounts, or otherwise violates the frozen exact-transfer assumptions, affected actions may become permanently unavailable for that Tick. **Stuck is stuck; no mutable rescue backdoor is introduced.**
+Production has no rescue / admin bypass for token-specific transfer failures. EVM inflows must deliver at least the requested amount, outflows must deliver at least the recipient's entitlement, and every completed action must leave user liabilities fully backed. Solana enforces the equivalent per-vault backing conditions. A negative rebase, blacklist, or incompatible token behavior may still halt affected actions without a preceding failed transfer. **Stuck is stuck; no mutable rescue backdoor is introduced.**
 
 ---
 
@@ -1746,17 +1746,17 @@ At minimum:
 23. Repay principal and Quote refund are fee-free.
 24. Collect is fee-free.
 25. Custody covers funded liabilities.
-26. For admitted exact-transfer, non-rebasing tokens, every successful action preserves its post-action custody invariant. Unsupported rebases, blacklists, mutable transfer behavior, or dishonest balance reporting can later create deficits or block actions; they are outside the supported-token security guarantee and there is no mutable rescue authority.
+26. Every successful action preserves post-action user-liability backing; EVM transfers must meet the requested inbound and recipient-outbound amounts. Negative rebases, blacklists, mutable transfer behavior, or dishonest balance reporting can later create deficits or block actions; there is no mutable rescue authority.
 27. Provider synchronization is bounded by scale limits, not provider count.
 28. EVM/Solana/SDK integer results match for equivalent representable inputs.
 
 29. Provider `timestamp` is reset by every Supply and Collect; Withdraw requires `now > timestamp` and does not reset it.
 30. Only funded Asset Yield vests; principal and Quote proceeds remain unrestricted by vesting.
 31. Collect releases at most the canonical time-weighted portion and cannot be compounded through repeated calls.
-32. Withdraw releases only vested Yield attributable to the withdrawn principal. All positive Unvested Yield is reclassified as a backed Asset protocol fee, without funding the Active Product-Sum domain or creating a new custody liability.
+32. Withdraw releases only vested Yield attributable to the withdrawn principal. All positive Unvested Yield is released from user liabilities into Asset protocol surplus, without funding the Active Product-Sum domain or creating a new custody liability.
 33. Historical Yield remains collectible after active principal depletion and generation rollover, subject to its timestamp.
 34. Every positive fractional-gain carry persists across zero-value Collect and principal changes, and keeps the provider Tick discoverable even when whole-raw principal and whole-raw claims are zero.
-35. Fee accrual and collection cannot consume another Tick's funded provider claims; Solana segregates each Tick's fees in its existing Asset and Quote Proceeds vaults.
+35. Fee attribution and surplus collection cannot consume another Tick's funded provider claims; Solana segregates each Tick's surplus in its existing Asset and Quote Proceeds vaults.
 36. Successful Repay and Close remove the resolved Term Position state; position identities / sequences are never reused.
 37. Every settlement step processes at most one cursor sequence. A removed cursor entry advances the cursor once and stops; no action scans for the next live position.
 38. Repay and Close participate in cursor progress: a cursor target resolves directly and advances once; a non-cursor target first attempts exactly one cursor step.
@@ -1836,7 +1836,9 @@ Collect 0h / partial term / full term / repeated same timestamp
 Collect then Supply; Supply without Collect restarts outstanding vesting
 partial and full Withdraw release attributable vested Yield and accrue all Unvested Yield as Asset protocol fees
 remaining Active with 0 Available (all liquidity Working)
-all Unvested Withdraw Yield -> accrued Asset protocol fee
+all Unvested Withdraw Yield -> Asset protocol surplus
+direct token donations and positive raw-balance changes -> collectible surplus only after full user backing
+negative rebases and transfer rounding -> no collection or user payment may leave a backing deficit
 partial Withdraw cannot reclaim its own Unvested Yield through retained principal
 Withdraw to Exit; later Exit Repay/Close; later Collect
 Swap/Close exhaust Active but outstanding Yield remains collectible

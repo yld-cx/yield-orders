@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.36;
+// YOLO — Yield Orders License Onchain © yld.cx
+pragma solidity ^0.8.38;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -10,7 +11,7 @@ import {TickMath} from "./libraries/TickMath.sol";
 import {ProductSumMath, Invariant} from "./libraries/ProductSumMath.sol";
 import {YieldMath} from "./libraries/YieldMath.sol";
 
-/// @notice yld.cx v0.3 exact-tick, fixed-term Product-Sum liquidity protocol.
+/// @notice yld.cx v0.4 exact-tick, fixed-term Product-Sum liquidity protocol.
 contract YieldOrders is Multicall, ReentrancyGuard {
     using SafeERC20 for IERC20;
     uint256 public constant BPS = 10_000;
@@ -223,7 +224,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     mapping(uint256 => Pair) public pairs;
     mapping(uint256 => Position) private _positions;
     mapping(address => uint256) public tokenLiability;
-    mapping(address => uint256) public accruedProtocolFees;
     mapping(uint256 => mapping(uint8 => mapping(uint64 => mapping(uint64 => ScaleSums)))) public scaleSums;
     mapping(uint256 => mapping(uint8 => mapping(uint64 => GenerationMeta))) public generationMeta;
     mapping(uint256 => mapping(uint64 => uint256)) public tickPositionId;
@@ -333,7 +333,6 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         uint64 generation,
         uint64 finalScale
     );
-    event ProtocolFeesAccrued(address indexed token, uint256 amount);
     event ProtocolFeesCollected(address indexed token, uint256 amount);
 
     constructor(address feeTo) {
@@ -493,15 +492,9 @@ contract YieldOrders is Multicall, ReentrancyGuard {
             revert Invariant();
         }
     }
-    function _accrueFee(address token, uint256 amount) internal {
-        accruedProtocolFees[token] += amount;
-        tokenLiability[token] += amount;
-        emit ProtocolFeesAccrued(token, amount);
-    }
-    function collectProtocolFees(address token) external nonReentrant returns (uint256 amount) {
-        amount = accruedProtocolFees[token];
-        accruedProtocolFees[token] = 0;
-        tokenLiability[token] -= amount;
+    /// @notice Collect protocol live surplus: fees, donations and positive rebases.
+    function collectProtocolFees(address token, uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidInput();
         _push(IERC20(token), FEE_TO, amount);
         _reconcileLiability(token, 0, 0);
         emit ProtocolFeesCollected(token, amount);
@@ -516,10 +509,16 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _reconcileLiability(t.quote, _tickQuoteLiability[id], current);
         _tickQuoteLiability[id] = current;
     }
+    /// @dev Reconcile after all reserve mutations and transfers, never against stale liabilities.
+    function _checkTick(uint256 id, Tick storage t) internal {
+        _checkAsset(id, t);
+        _checkQuote(id, t);
+    }
     function _pull(IERC20 token, address from, uint256 amount) internal {
         uint256 beforeBalance = token.balanceOf(address(this));
         token.safeTransferFrom(from, address(this), amount);
-        if (token.balanceOf(address(this)) - beforeBalance != amount) {
+        uint256 afterBalance = token.balanceOf(address(this));
+        if (afterBalance < beforeBalance || afterBalance - beforeBalance < amount) {
             revert UnsupportedToken();
         }
     }
@@ -527,10 +526,10 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (amount == 0) {
             return;
         }
-        uint256 beforeFrom = token.balanceOf(address(this));
         uint256 beforeTo = token.balanceOf(to);
         token.safeTransfer(to, amount);
-        if (beforeFrom - token.balanceOf(address(this)) != amount || token.balanceOf(to) - beforeTo != amount) {
+        uint256 afterTo = token.balanceOf(to);
+        if (afterTo < beforeTo || afterTo - beforeTo < amount) {
             revert UnsupportedToken();
         }
     }
@@ -822,6 +821,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
     function settle(uint256 id) external nonReentrant {
         Tick storage t = _requireTick(id);
         _settleOne(id, t);
+        _checkTick(id, t);
     }
 
     function supply(uint256 id, uint256 assetAmount, address referrer) external nonReentrant {
@@ -843,7 +843,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _snapshotStorage(p.active, t.active, principalX36);
         p.timestamp = block.timestamp;
         _addEarn(msg.sender, id);
-        _checkAsset(id, t);
+        _checkTick(id, t);
         emit Supplied(id, msg.sender, assetAmount, referrer);
     }
     // Provider vesting, withdrawal allocation, and collection.
@@ -938,13 +938,12 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         }
         if (q.unvestedYield != 0) {
             t.yieldAssetReserve -= q.unvestedYield;
-            _accrueFee(t.asset, q.unvestedYield);
         }
         q.resolvingPrincipal = p.exit.initialPrincipalX36 / PRINCIPAL_PRECISION;
         t.yieldAssetReserve -= q.yieldAssetOut;
         _push(IERC20(t.asset), msg.sender, q.availableAssetOut + q.yieldAssetOut);
         _pruneEarn(msg.sender, id);
-        _checkAsset(id, t);
+        _checkTick(id, t);
         emit Withdrawn(
             id,
             msg.sender,
@@ -993,8 +992,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         _pruneEarn(msg.sender, id);
         _push(IERC20(t.asset), msg.sender, q.totalAssetOut);
         _push(IERC20(t.quote), msg.sender, q.totalQuoteOut);
-        _checkAsset(id, t);
-        _checkQuote(id, t);
+        _checkTick(id, t);
         emit Collected(
             id,
             msg.sender,
@@ -1054,8 +1052,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         t.quoteEscrow += q.quotePrincipal;
         _pull(IERC20(t.quote), msg.sender, q.quotePrincipal);
         _push(IERC20(t.asset), msg.sender, assetAmount);
-        _checkAsset(id, t);
-        _checkQuote(id, t);
+        _checkTick(id, t);
         emit UseOpened(
             positionId,
             id,
@@ -1145,10 +1142,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (q.exitFill != 0) {
             _deplete(pm.tickId, DomainKind.Exit, t.exit, oldExit, t.exitWorking);
         }
-        _accrueFee(t.asset, q.yieldFeeAsset);
         _push(IERC20(t.quote), msg.sender, pm.quotePrincipal);
-        _checkAsset(pm.tickId, t);
-        _checkQuote(pm.tickId, t);
+        _checkTick(pm.tickId, t);
         emit TermRepaid(
             positionId,
             pm.tickId,
@@ -1189,10 +1184,8 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         t.availableSupply -= assetAmount;
         t.activeQuoteReserve += q.providerSwapProceeds;
         _deplete(id, DomainKind.Active, t.active, oldActive, oldActive - assetAmount);
-        _accrueFee(t.quote, q.swapFee);
         _push(IERC20(t.asset), msg.sender, assetAmount);
-        _checkAsset(id, t);
-        _checkQuote(id, t);
+        _checkTick(id, t);
         emit ImmediateSwap(id, msg.sender, assetAmount, q.quotePrincipal, q.swapFee, q.providerSwapProceeds, referrer);
     }
     /// @dev Shared by direct and automatic Close execution.
@@ -1247,9 +1240,7 @@ contract YieldOrders is Multicall, ReentrancyGuard {
         if (amounts.activeFill != 0) {
             _deplete(pm.tickId, DomainKind.Active, t.active, oldActive, oldActive - amounts.activeFill);
         }
-        _accrueFee(t.quote, pm.closeFee);
-        _checkAsset(pm.tickId, t);
-        _checkQuote(pm.tickId, t);
+        _checkTick(pm.tickId, t);
         emit TermClosed(
             positionId,
             pm.tickId,

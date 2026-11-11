@@ -1,4 +1,4 @@
-# Yield Orders v0.3 — Ethereum / EVM L2s
+# Yield Orders v0.4 — Ethereum / EVM L2s
 
 > Trade or rent tokens at your price.
 
@@ -8,7 +8,7 @@ Visit [yld.cx](https://yld.cx) to learn about the product, or integrate directly
 
 ## Deployments
 
-The same v0.3 contract is deployed at **`0x0000014563b23D9ac3aC11Fe68D63cdfC19A43db`** on:
+The current v0.3 contract is deployed at **`0x0000014563b23D9ac3aC11Fe68D63cdfC19A43db`** on:
 
 | Network         | Chain ID | Verified contract                                                                               |
 | --------------- | -------- | ----------------------------------------------------------------------------------------------- |
@@ -281,6 +281,8 @@ Estimated **Yield and Quote proceeds** include the **1%** immutable protocol fee
 
 Only **exact-transfer ERC-20 tokens** are supported. Use WETH rather than native ETH. Fee-on-transfer, rebasing, and callback/reentrant token behavior are unsupported. Permissionless market creation **does not certify token safety or compatibility**. The contract checks observable transfer amounts and tracked liabilities; direct token donations create no claim and there is no rescue function.
 
+`collectProtocolFees(address token, uint256 amount)` is permissionless and sends only to immutable `FEE_TO`. Calculate a positive amount offchain from the token balance minus `tokenLiability`; zero requests revert with `InvalidInput`. Partial collection can leave room for transfer rounding. `_push` verifies the treasury receives at least the requested amount, then `_reconcileLiability(token, 0, 0)` verifies all user backing remains intact. There is no separate pre-transfer balance read or onchain amount calculation. An unsafe stale/excessive request or extra outgoing debit reverts the entire call. `ProtocolFeesCollected` keeps its signature and reports the requested amount, which may include fees, donations or positive rebases. This function has no return value.
+
 ## Troubleshooting
 
 | Revert                              | Suggested response                                                                  |
@@ -301,7 +303,7 @@ ERC-20 balance or allowance failures can also originate in the token contract. P
 - [Multicall integration tests](https://github.com/yld-cx/yield-orders/blob/main/protocol/ethereum/test/PreviewIntegration.ts) — simulations, decoding, approvals, and real transaction comparisons.
 - [Protocol specification](https://github.com/yld-cx/yield-orders/blob/main/spec/protocol.md) and [EVM specification](https://github.com/yld-cx/yield-orders/blob/main/spec/ethereum.md) — exact rules and accounting.
 - [Product specification](https://github.com/yld-cx/yield-orders/blob/main/spec/product.md) — UI terminology and behavior.
-- [v0.3 rounding vectors](https://github.com/yld-cx/yield-orders/blob/main/protocol/ethereum/vectors/golden-v03.json) — raw-unit boundary cases, also exported as `@yld-cx/ethereum-protocol/vectors/golden-v03.json`.
+- [rounding vectors](https://github.com/yld-cx/yield-orders/blob/main/protocol/ethereum/vectors/golden.json) — raw-unit boundary cases, also exported as `@yld-cx/ethereum-protocol/vectors/golden.json`.
 
 To develop or test the protocol itself, clone the repo and run from `protocol/ethereum`:
 
