@@ -6,12 +6,37 @@ import { address, integer, type Env, HttpError } from "./shared.ts";
 // Operational defaults only. Chain IDs and contract addresses come from the package.
 const defaults: Record<
   string,
-  { chain: Chain; confirmations: number; overlap: number; gecko?: string }
+  {
+    chain: Chain;
+    rpcUrls: readonly string[];
+    confirmations: number;
+    overlap: number;
+    gecko?: string;
+  }
 > = {
-  ethereum: { chain: mainnet, confirmations: 12, overlap: 16, gecko: "eth" },
-  base: { chain: base, confirmations: 64, overlap: 32, gecko: "base" },
+  ethereum: {
+    chain: mainnet,
+    rpcUrls: [
+      "https://ethereum-rpc.publicnode.com",
+      "https://gateway.tenderly.co/public/mainnet",
+    ],
+    confirmations: 12,
+    overlap: 16,
+    gecko: "eth",
+  },
+  base: {
+    chain: base,
+    rpcUrls: ["https://mainnet.base.org", "https://base-rpc.publicnode.com"],
+    confirmations: 64,
+    overlap: 32,
+    gecko: "base",
+  },
   robinhood: {
     chain: robinhood,
+    rpcUrls: [
+      "https://rpc.mainnet.chain.robinhood.com",
+      "https://robinhood-rpc.publicnode.com",
+    ],
     confirmations: 64,
     overlap: 32,
     gecko: "robinhood",
@@ -29,7 +54,6 @@ export const supportedNetworks = Object.entries(manifest.networks).map(
 
 export type SupportedNetwork = (typeof supportedNetworks)[number];
 export type Network = SupportedNetwork & {
-  rpcUrl: string;
   startBlock?: bigint;
   confirmations: number;
   overlap: number;
@@ -58,14 +82,26 @@ export function indexingNetwork(env: Env, n: SupportedNetwork): Network {
     c.startBlock === undefined
       ? undefined
       : BigInt(integer(String(c.startBlock), "startBlock"));
-  const urls = JSON.parse(env.RPC_URLS ?? "{}") as Record<string, string>;
-  const rpcUrl = urls[String(n.chainId)] ?? n.chain.rpcUrls.default.http[0];
-  if (!rpcUrl || !["http:", "https:"].includes(new URL(rpcUrl).protocol))
-    throw new Error("Invalid RPC URL");
+  const urls = JSON.parse(env.RPC_URLS ?? "{}") as Record<string, unknown>;
+  const configured = urls[String(n.chainId)] ?? urls[n.name] ?? n.rpcUrls;
+  if (!Array.isArray(configured) || configured.length === 0)
+    throw new Error("Invalid RPC URLs");
+  const rpcUrls = configured.map((value: unknown) => {
+    try {
+      if (
+        typeof value !== "string" ||
+        !["http:", "https:"].includes(new URL(value).protocol)
+      )
+        throw new Error();
+      return value;
+    } catch {
+      throw new Error("Invalid RPC URL");
+    }
+  });
   const rangeLimit = number("rangeLimit", 1000, 1, 2000);
   return {
     ...n,
-    rpcUrl,
+    rpcUrls,
     startBlock,
     confirmations: number("confirmations", n.confirmations, 1),
     overlap: number("overlap", n.overlap, 1),

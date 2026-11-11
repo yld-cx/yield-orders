@@ -1,4 +1,4 @@
-import { createPublicClient, http } from "viem";
+import { createPublicClient, fallback, http } from "viem";
 import { decodeLog, type EventRow, type RpcLog } from "./events.ts";
 import {
   indexingNetwork,
@@ -66,11 +66,17 @@ async function boundedFetch(
 export function rpcFor(n: Network, timeout: number): Rpc {
   const client = createPublicClient({
     chain: n.chain,
-    transport: http(n.rpcUrl, {
-      timeout,
-      retryCount: 0,
-      fetchFn: boundedFetch,
-    }),
+    transport: fallback(
+      n.rpcUrls.map((url) =>
+        http(url, {
+          // A full pass through the endpoints shares one timeout budget.
+          timeout: Math.max(1, Math.floor(timeout / n.rpcUrls.length)),
+          retryCount: 0,
+          fetchFn: boundedFetch,
+        }),
+      ),
+      { rank: false, retryCount: 2, retryDelay: 500 },
+    ),
   });
   return {
     head: () => client.getBlockNumber({ cacheTime: 0 }),

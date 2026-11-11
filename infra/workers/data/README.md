@@ -43,7 +43,8 @@ Deployment provisions or reuses the `yld-data` database, applies migrations, the
 
 Optional settings in `wrangler.jsonc`:
 
-- `RPC_URLS`: RPC URLs keyed by chain ID; public URLs are already provided.
+- `RPC_URLS`: a nonempty ordered array of RPC URLs per network name (`ethereum`, `base`, `robinhood`) or chain ID. A chain-ID entry takes precedence if both keys are present. Public primary and fallback URLs are already provided.
+- `RPC_TIMEOUT_MS`: timeout budget per pass through the endpoint list (default `8000`), divided between endpoints. Requests try URLs in order, then retry the full list up to twice with backoff. If all attempts fail, the failed range remains uncommitted for a later scheduled run.
 - `NETWORK_CONFIG`: optional per-chain `startBlock` for historical indexing, set before the first run.
 - `EVENT_RETENTION_MONTHS`: defaults to `2`; set `0` to retain all history.
 - `CORS_ORIGINS`: allowed frontend origins.
