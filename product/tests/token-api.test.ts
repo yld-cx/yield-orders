@@ -122,24 +122,56 @@ describe("token discovery API", () => {
     expect(await response.json()).toEqual({ tokens: [] });
     expect(response.headers.get("cache-control")).toContain("86400");
   });
-  it.each([undefined, null, "", "   ", 123, false, {}, []])(
-    "excludes tokens with an invalid CoinGecko ID (%j)",
+  it.each([
+    undefined,
+    null,
+    "",
+    "   ",
+    "0",
+    "-1",
+    "NaN",
+    "Infinity",
+    "1e3",
+    123,
+    false,
+    {},
+    [],
+  ])("excludes tokens with an invalid USD price (%j)", async (priceUsd) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        success([
+          {
+            ...meta,
+            geckoTerminal: { attributes: { price_usd: priceUsd } },
+          },
+        ]),
+      ),
+    );
+    expect(await (await GET(request())).json()).toEqual({ tokens: [] });
+  });
+  it.each([undefined, null])(
+    "includes priced tokens without a CoinGecko ID (%j)",
     async (coingeckoCoinId) => {
       vi.stubGlobal(
         "fetch",
         vi.fn().mockResolvedValue(success([{ ...meta, coingeckoCoinId }])),
       );
-      expect(await (await GET(request())).json()).toEqual({ tokens: [] });
+      const { tokens } = await (await GET(request())).json();
+      expect(tokens).toHaveLength(1);
+      expect(tokens[0].address).toBe(address);
+      expect(tokens[0]).not.toHaveProperty("coingeckoCoinId");
+      expect(tokens[0]).not.toHaveProperty("priceUsd");
     },
   );
-  it("excludes null and missing CoinGecko IDs in SQL before applying the token limit", async () => {
+  it("excludes null and missing USD prices in SQL before applying the token limit", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       db.exec(
         "CREATE TABLE tokens (id TEXT PRIMARY KEY, meta TEXT NOT NULL, timestamp INTEGER NOT NULL)",
       );
       const insert = db.prepare("INSERT INTO tokens VALUES (?, ?, ?)");
-      const missingIds = [undefined, null];
+      const missingPrices = [undefined, null];
       for (let i = 0; i < 220; i++) {
         const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
         insert.run(
@@ -147,8 +179,13 @@ describe("token discovery API", () => {
           JSON.stringify({
             ...meta,
             address,
-            coingeckoCoinId:
-              i < 110 ? missingIds[i % missingIds.length] : "one",
+            coingeckoCoinId: undefined,
+            geckoTerminal: {
+              attributes: {
+                price_usd:
+                  i < 110 ? missingPrices[i % missingPrices.length] : "1",
+              },
+            },
           }),
           220 - i,
         );
@@ -169,8 +206,8 @@ describe("token discovery API", () => {
       expect(tokens).toHaveLength(100);
       expect(
         tokens.every(
-          (token: { coingeckoCoinId: string }) =>
-            token.coingeckoCoinId === "one",
+          (token: { coingeckoCoinId?: string }) =>
+            token.coingeckoCoinId === undefined,
         ),
       ).toBe(true);
     } finally {

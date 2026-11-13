@@ -15,6 +15,17 @@ export const enum MarketTab {
   YieldList = "all",
 }
 
+export enum MarketSort {
+  SourceOrder = "source-order",
+  BidLiquidity = "bid-liquidity",
+}
+
+export const DEFAULT_MARKET_SORT: Partial<
+  Record<Category | MarketTab, MarketSort>
+> = {
+  [MarketTab.Trending]: MarketSort.SourceOrder,
+};
+
 export const MARKET_TAGS = [
   MarketTab.Trending,
   MarketTab.YieldList,

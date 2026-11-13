@@ -11,6 +11,22 @@
         "stepTicks": 1000,
         "tags": ["blue-chip", "stable"]
       },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb200000000000000000000c2e324d24d7eecd1fb": {
+        "stepTicks": 1000,
+        "tags": ["stock", "rwa"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb200000000000000000000d9192b6b456483c2e8": {
+        "stepTicks": 1000,
+        "tags": ["stock", "rwa"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb20000000000000000000078ee7ce2fe4908108c": {
+        "stepTicks": 1000,
+        "tags": ["stock", "rwa"]
+      },
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb2000000000000000000001e800a7f5189430cd0": {
+        "stepTicks": 1000,
+        "tags": ["stock", "rwa"]
+      },
       "0x3f5bf3edac59d650d8fdf9657a71f2f904a3a4ee:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": {
         "stepTicks": 1000,
         "tags": ["defi"]
@@ -27,17 +43,9 @@
         "stepTicks": 2000,
         "tags": ["meme"]
       },
-      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb200000000000000000000d9192b6b456483c2e8": {
-        "stepTicks": 1000,
-        "tags": ["stock", "rwa"]
-      },
-      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb20000000000000000000078ee7ce2fe4908108c": {
-        "stepTicks": 1000,
-        "tags": ["stock", "rwa"]
-      },
-      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xb2000000000000000000001e800a7f5189430cd0": {
-        "stepTicks": 1000,
-        "tags": ["stock", "rwa"]
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913:0xa6af0cea8fbc93e1eccc00f1fdd9a0bba251fee1": {
+        "stepTicks": 2000,
+        "tags": ["meme"]
       }
     },
     "eip155:1": {

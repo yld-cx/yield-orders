@@ -1,10 +1,5 @@
 "use client";
-import {
-  Category,
-  QUERY_TIMING,
-  type MarketConfiguration,
-  type Token,
-} from "@yld-cx/sdk";
+import { Category, type Token } from "@yld-cx/sdk";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import {
   TableCell,
@@ -18,7 +13,6 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
   Search,
@@ -31,16 +25,19 @@ import {
 import { displayTokens } from "@yld-cx/sdk/registry";
 import { getNetwork } from "@yld-cx/sdk/ethereum";
 import { type Duration, type Tick } from "@yld-cx/sdk";
-import { useMarket } from "@/hooks/use-market";
+import { useMarketLiquidity } from "@/hooks/use-market-liquidity";
 import { useTokenMetadata } from "@/hooks/use-token-metadata";
 import { fallbackToken } from "@/lib/token-metadata";
 import { marketPath } from "@/lib/registry";
-import { getSdk } from "@/lib/rpc";
-import { queryKeys } from "@/lib/query-keys";
 import { amountText } from "@/lib/utils";
 import { useMarketFilters } from "@/hooks/use-market-filters";
 import { useMarketList } from "@/hooks/use-market-list";
-import { MARKET_TAGS, MarketTab } from "@/lib/market-filters";
+import {
+  DEFAULT_MARKET_SORT,
+  MARKET_TAGS,
+  MarketSort,
+  MarketTab,
+} from "@/lib/market-filters";
 import {
   Empty,
   EmptyHeader,
@@ -89,17 +86,15 @@ function MarketRowSkeleton() {
 }
 
 function MarketRow({
-  market: config,
+  row: { config, result, query },
   duration,
   yieldMode,
 }: {
-  market: MarketConfiguration;
+  row: ReturnType<typeof useMarketLiquidity>[number];
   duration: Duration;
   yieldMode: YieldMode;
 }) {
-  const network = getNetwork(config.network).slug,
-    sdk = getSdk(network);
-  const result = useMarket(network, config.key);
+  const network = getNetwork(config.network).slug;
   const market = result.market;
   const metadata = useTokenMetadata(network, [
     config.token0.address,
@@ -115,35 +110,6 @@ function MarketRow({
     },
   );
   const router = useRouter();
-  const query = useQuery({
-    queryKey: queryKeys.ticks(
-      network,
-      config.key,
-      market?.baseTick,
-      config.stepTicks,
-      duration,
-    ),
-    enabled: !!market && !!result.pair.data,
-    queryFn: async () => {
-      if (!market) throw new Error("Token metadata unavailable");
-      const pair = result.pair.data!;
-      if (!pair[3])
-        return { reads: [], complete: true, radius: 0, blockNumber: 0n };
-      return sdk.discover(pair[0], {
-        baseTick: market.baseTick,
-        stepTicks: market.stepTicks,
-        duration,
-      });
-    },
-    select: (result) => ({
-      ticks: result.reads.flatMap((r) =>
-        r.status === "exists" ? [r.tick] : [],
-      ),
-      failed: result.reads.filter((r) => r.status === "failed").length,
-      checked: result.reads.length,
-    }),
-    refetchInterval: QUERY_TIMING.marketRefresh,
-  });
   const ticks =
     query.data?.ticks.filter((t) => t.durationDays === duration) ?? [];
   const pending = query.isPending && !result.error;
@@ -275,16 +241,33 @@ export function MarketTable() {
     markets,
     marketCount,
     tokenCount,
-    loading,
+    loading: listLoading,
     loadingLabel,
     error,
     empty,
   } = useMarketList({ network, tag: category, search });
+  const sortBy = DEFAULT_MARKET_SORT[category] ?? MarketSort.BidLiquidity;
+  const sortByBidLiquidity = sortBy === MarketSort.BidLiquidity;
   const failed = !!error;
   const pageCount = Math.max(1, Math.ceil(markets.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const start = (currentPage - 1) * PAGE_SIZE;
-  const visibleMarkets = markets.slice(start, start + PAGE_SIZE);
+  const rows = useMarketLiquidity(
+    network,
+    sortByBidLiquidity ? markets : markets.slice(start, start + PAGE_SIZE),
+    duration,
+    sortBy,
+  );
+  const loading =
+    listLoading ||
+    (sortByBidLiquidity &&
+      rows.some(
+        ({ result, query }) =>
+          !result.error && (result.isPending || query.isPending),
+      ));
+  const visibleMarkets = sortByBidLiquidity
+    ? rows.slice(start, start + PAGE_SIZE)
+    : rows;
   useEffect(() => {
     if (!loading && !failed && page !== currentPage)
       updateFilters({ page: currentPage }, true);
@@ -412,7 +395,10 @@ export function MarketTable() {
                     >
                       {yieldMode === "apy" ? "Ask APY" : "Ask Yield"}
                     </TableHead>
-                    <TableHead className="w-[15%] px-4 text-right first:text-left">
+                    <TableHead
+                      className="w-[15%] px-4 text-right first:text-left"
+                      aria-sort={sortByBidLiquidity ? "descending" : undefined}
+                    >
                       Bid liquidity
                     </TableHead>
                     <TableHead
@@ -433,8 +419,8 @@ export function MarketTable() {
                       ))
                     : visibleMarkets.map((m) => (
                         <MarketRow
-                          key={`${m.network}/${m.key}`}
-                          market={m}
+                          key={`${m.config.network}/${m.config.key}`}
+                          row={m}
                           duration={duration}
                           yieldMode={yieldMode}
                         />
