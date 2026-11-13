@@ -13,10 +13,10 @@ import { Category, type NetworkId } from "../types/index.ts";
 export const categorySchema = z.enum([
   Category.BlueChip,
   Category.Stable,
-  Category.Meme,
-  Category.Defi,
   Category.Stock,
   Category.Rwa,
+  Category.Defi,
+  Category.Meme,
 ]);
 export const networkSchema = z.string().refine((value) => {
   if (/^eip155:[1-9]\d*$/.test(value))
