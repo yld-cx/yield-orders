@@ -557,6 +557,93 @@ test("Provide shows APY without a switch while Rent retains its quoted Term Yiel
   }
 });
 
+for (const tag of ["all", "stable"]) {
+  test(`${tag} markets wait for final bid liquidity and sort again when duration changes`, async ({
+    page,
+  }) => {
+    const markets = configuredMarkets.filter(
+      (market) =>
+        tag === "all" || market.tags?.some((category) => category === "stable"),
+    );
+    const overrides: TickOverrides = new Map();
+    for (const [index, market] of markets.entries()) {
+      const pair = pairIdFor(
+        market.token0.address as typeof a,
+        market.token1.address as typeof b,
+      );
+      const bidDirection = market.token0.address === b ? 0 : 1;
+      const asset =
+        bidDirection === 0 ? market.token1.address : market.token0.address;
+      for (const days of [7, 30]) {
+        const baseTick = market.baseTick ?? DISCOVERY_DEFAULTS.baseTick;
+        overrides.set(
+          tickIdFor(
+            pair,
+            bidDirection,
+            bidDirection === 0 ? baseTick : -baseTick,
+            days,
+          ),
+          {
+            asset: b,
+            quote: asset as typeof a,
+            durationDays: BigInt(days),
+            availableSupply:
+              BigInt(days === 7 ? index + 1 : markets.length - index) *
+              10n ** 6n,
+          },
+        );
+      }
+    }
+    await rpc(page, true, overrides);
+    // Hold one market's metadata while the table waits for the full sort.
+    const delayedAddress =
+      markets.at(-1)!.token1.address === b
+        ? markets.at(-1)!.token0.address
+        : markets.at(-1)!.token1.address;
+    let releaseMetadata!: () => void;
+    const metadataGate = new Promise<void>((resolve) => {
+      releaseMetadata = resolve;
+    });
+    let heldMetadata = false;
+    await page.route(metadataRoute, async (route) => {
+      const addresses = new URL(route.request().url()).searchParams
+        .get("addresses")!
+        .split(",");
+      if (addresses.includes(delayedAddress)) {
+        heldMetadata = true;
+        await metadataGate;
+      }
+      await route.fallback();
+    });
+    await page.goto(`/?tag=${tag}&network=base&duration=7`);
+    const table = page.getByRole("table");
+    const links = table.getByRole("link", { name: /^Open / });
+    await expect.poll(() => heldMetadata).toBe(true);
+    await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "true");
+    await expect(links).toHaveCount(0);
+    await expect(table.locator('[data-slot="skeleton"]').first()).toBeVisible();
+    releaseMetadata();
+    const hrefs = () =>
+      links.evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("href")),
+      );
+    const expected = (items: typeof markets) =>
+      items
+        .slice(0, marketPageSize)
+        .map((market) => `/market/base/${market.key}`);
+    await expect.poll(hrefs).toEqual(expected([...markets].reverse()));
+    await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "false");
+    await expect(
+      page.getByRole("columnheader", { name: "Bid liquidity" }),
+    ).toHaveAttribute("aria-sort", "descending");
+    await page
+      .getByRole("combobox", { name: "Market duration", exact: true })
+      .click();
+    await page.getByRole("option", { name: "30D", exact: true }).click();
+    await expect.poll(hrefs).toEqual(expected(markets));
+  });
+}
+
 test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   const discovered = Array.from({ length: 23 }, (_, i) => {
     const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
@@ -611,6 +698,9 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Trending", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByRole("columnheader", { name: "Bid liquidity" }),
+  ).not.toHaveAttribute("aria-sort", "descending");
   const links = page.getByRole("table").getByRole("link", { name: /^Open / });
   const pagination = page.getByRole("navigation", {
     name: "Market pagination",
@@ -1019,7 +1109,7 @@ test("market lookup reserves space while loading", async ({ page }) => {
   expect(await description.boundingBox()).toEqual(before);
 });
 
-test("market summary cells keep their positions when reads finish", async ({
+test("market table keeps cell positions while loading all markets for sorting", async ({
   page,
 }) => {
   const pairs: string[] = [],
@@ -1059,24 +1149,36 @@ test("market summary cells keep their positions when reads finish", async ({
     await route.fallback();
   });
   await page.goto("/");
-  const row = page.getByRole("row").filter({
-    has: page.locator(`a[href="/market/base/${configuredMarkets[0].key}"]`),
-  });
+  const table = page.getByRole("table");
+  const row = table.locator("tbody tr").first();
+  await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "true");
+  await expect(table.getByRole("link", { name: /^Open / })).toHaveCount(0);
   await expect(row.locator('[data-slot="skeleton"]').first()).toBeVisible();
   await expect(row.getByRole("status")).toHaveCount(0);
-  const cells = row.getByRole("cell");
+  const cells = row.locator("td");
   const before = await cells.evaluateAll((nodes) =>
     nodes.map((node) => node.getBoundingClientRect().toJSON()),
   );
   release();
-  await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(0);
-  expect(
-    await cells.evaluateAll((nodes) =>
-      nodes.map((node) => node.getBoundingClientRect().toJSON()),
-    ),
-  ).toEqual(before);
+  await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "false");
+  await expect(table.getByRole("link", { name: /^Open / })).toHaveCount(
+    Math.min(configuredMarkets.length, marketPageSize),
+  );
+  const after = await cells.evaluateAll((nodes) =>
+    nodes.map((node) => node.getBoundingClientRect().toJSON()),
+  );
+  expect(after).toHaveLength(before.length);
+  for (const [index, bounds] of after.entries()) {
+    expect(bounds.x).toBe(before[index].x);
+    expect(bounds.width).toBe(before[index].width);
+    // Collapsed borders can shift half a pixel when skeleton rows are replaced.
+    expect(Math.abs(bounds.y - before[index].y)).toBeLessThanOrEqual(1);
+    expect(Math.abs(bounds.height - before[index].height)).toBeLessThanOrEqual(
+      1,
+    );
+  }
   await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-  const configured = configuredMarkets.slice(0, marketPageSize);
+  const configured = configuredMarkets;
   expect(requests.flat()).not.toContain("eth_getCode");
   expect(pairs).toHaveLength(configured.length);
   expect(new Set(pairs).size).toBe(configured.length);

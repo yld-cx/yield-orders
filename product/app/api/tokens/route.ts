@@ -29,7 +29,7 @@ export async function GET(request: Request) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          sql: "SELECT meta FROM tokens WHERE id LIKE ? AND json_extract(meta, '$.status') = 'available' AND json_extract(meta, '$.symbol') IS NOT NULL AND json_extract(meta, '$.coingeckoCoinId') IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 100",
+          sql: "SELECT meta FROM tokens WHERE id LIKE ? AND json_extract(meta, '$.status') = 'available' AND json_extract(meta, '$.symbol') IS NOT NULL AND json_extract(meta, '$.geckoTerminal.attributes.price_usd') IS NOT NULL ORDER BY timestamp DESC, id DESC LIMIT 100",
           params: [`${chainId}:%`],
         }),
         cache: "no-store",
@@ -51,7 +51,7 @@ export async function GET(request: Request) {
         if (
           !token ||
           token.status !== "available" ||
-          !token.coingeckoCoinId ||
+          !token.priceUsd ||
           seen.has(token.address)
         )
           return [];

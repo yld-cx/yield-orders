@@ -40,27 +40,38 @@ function resolveToken(onchain: Token, remote?: TokenMetadata): Token {
     listed: !!registry.getToken(onchain.network, onchain.address),
   };
 }
+function useTokenQueries(
+  network: NetworkSlug,
+  addresses: readonly string[],
+  enabled = true,
+) {
+  const metadata = useQueries({
+    queries: addresses.map((address) => ({
+      ...tokenMetadataOptions(network, address),
+      enabled,
+    })),
+  });
+  const onchain = useQueries({
+    queries: addresses.map((address) => ({
+      ...onchainTokenOptions(network, address),
+      enabled,
+    })),
+  });
+  return onchain.map((query, i) => ({
+    ...query,
+    isPending: query.isPending || metadata[i].isPending,
+    data:
+      query.data && !metadata[i].isPending
+        ? resolveToken(query.data, metadata[i].data)
+        : undefined,
+  }));
+}
 export function useToken(
   network: NetworkSlug,
   address: string,
   enabled = true,
 ) {
-  const metadata = useQuery({
-    ...tokenMetadataOptions(network, address),
-    enabled,
-  });
-  const onchain = useQuery({
-    ...onchainTokenOptions(network, address),
-    enabled,
-  });
-  return {
-    ...onchain,
-    isPending: onchain.isPending || metadata.isPending,
-    data:
-      onchain.data && !metadata.isPending
-        ? resolveToken(onchain.data, metadata.data)
-        : undefined,
-  };
+  return useTokenQueries(network, [address], enabled)[0];
 }
 /** Full tokens for views that need balances and onchain fallback search. */
 export function useTokens(
@@ -90,46 +101,61 @@ export function useTokens(
   );
 }
 
-export function useMarket(network: NetworkSlug, key: string) {
-  key = queryKeys.pair(network, key)[2];
-  const [a, b] = key.split(":");
-  const token0 = useToken(network, a),
-    token1 = useToken(network, b);
-  const config = registry.getMarket(getNetwork(network).id, a, b);
-  const market: Market | undefined =
-    token0.data && token1.data
-      ? {
-          network: getNetwork(network).id,
-          key,
-          token0: token0.data as Token,
-          token1: token1.data as Token,
-          stepTicks: config?.stepTicks ?? DISCOVERY_DEFAULTS.stepTicks,
-          baseTick:
-            calculatedBaseTick(
-              token0.data,
-              token1.data,
-              config?.stepTicks ?? DISCOVERY_DEFAULTS.stepTicks,
-            ) ??
-            config?.baseTick ??
-            DISCOVERY_DEFAULTS.baseTick,
-          tags: config?.tags,
-          telegramPost: config?.telegramPost,
-          defaultDuration: config?.defaultDuration ?? DEFAULT_DURATION,
-        }
-      : undefined;
-  const pair = useQuery({
-    queryKey: queryKeys.pair(network, key),
-    queryFn: () => getSdk(network).getPair(a as Address, b as Address),
-    refetchInterval: QUERY_TIMING.marketRefresh,
+export function useMarkets(network: NetworkSlug, keys: readonly string[]) {
+  const canonicalKeys = keys.map((key) => queryKeys.pair(network, key)[2]);
+  const addresses = [
+    ...new Set(canonicalKeys.flatMap((key) => key.split(":"))),
+  ];
+  const tokens = useTokenQueries(network, addresses);
+  const pairs = useQueries({
+    queries: canonicalKeys.map((key) => {
+      const [a, b] = key.split(":");
+      return {
+        queryKey: queryKeys.pair(network, key),
+        queryFn: () => getSdk(network).getPair(a as Address, b as Address),
+        refetchInterval: QUERY_TIMING.marketRefresh,
+      };
+    }),
   });
-  return {
-    market,
-    defaultDuration: config?.defaultDuration ?? DEFAULT_DURATION,
-    pair,
-    pairId: pairIdFor(a as Address, b as Address),
-    error: token0.error ?? token1.error ?? pair.error,
-    isPending: token0.isPending || token1.isPending || pair.isPending,
-  };
+  return canonicalKeys.map((key, i) => {
+    const [a, b] = key.split(":");
+    const token0 = tokens[addresses.indexOf(a)];
+    const token1 = tokens[addresses.indexOf(b)];
+    const pair = pairs[i];
+    const config = registry.getMarket(getNetwork(network).id, a, b);
+    const market: Market | undefined =
+      token0.data && token1.data
+        ? {
+            network: getNetwork(network).id,
+            key,
+            token0: token0.data as Token,
+            token1: token1.data as Token,
+            stepTicks: config?.stepTicks ?? DISCOVERY_DEFAULTS.stepTicks,
+            baseTick:
+              calculatedBaseTick(
+                token0.data,
+                token1.data,
+                config?.stepTicks ?? DISCOVERY_DEFAULTS.stepTicks,
+              ) ??
+              config?.baseTick ??
+              DISCOVERY_DEFAULTS.baseTick,
+            tags: config?.tags,
+            telegramPost: config?.telegramPost,
+            defaultDuration: config?.defaultDuration ?? DEFAULT_DURATION,
+          }
+        : undefined;
+    return {
+      market,
+      defaultDuration: config?.defaultDuration ?? DEFAULT_DURATION,
+      pair,
+      pairId: pairIdFor(a as Address, b as Address),
+      error: token0.error ?? token1.error ?? pair.error,
+      isPending: token0.isPending || token1.isPending || pair.isPending,
+    };
+  });
+}
+export function useMarket(network: NetworkSlug, key: string) {
+  return useMarkets(network, [key])[0];
 }
 export function useDeployment(network: NetworkSlug) {
   return useQuery({

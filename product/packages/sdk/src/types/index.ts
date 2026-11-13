@@ -9,11 +9,11 @@ export type Direction = 0 | 1;
 export const enum Category {
   BlueChip = "blue-chip",
   Stable = "stable",
-  Meme = "meme",
-  Defi = "defi",
-  Token = "token",
   Stock = "stock",
   Rwa = "rwa",
+  Defi = "defi",
+  Meme = "meme",
+  Token = "token",
 }
 export interface Token {
   network: NetworkId;
