@@ -10,14 +10,11 @@ import type { DiscoveryResult, NetworkSlug } from "@yld-cx/sdk/ethereum";
 import { useMarkets } from "@/hooks/use-market";
 import { queryKeys } from "@/lib/query-keys";
 import { getSdk } from "@/lib/rpc";
-import { bidLiquidity, compareBidLiquidity } from "@/lib/market-liquidity";
-import { MarketSort } from "@/lib/market-filters";
 
 export function useMarketLiquidity(
   network: NetworkSlug,
   configs: readonly MarketConfiguration[],
   duration: Duration,
-  sortBy: MarketSort,
 ) {
   const results = useMarkets(
     network,
@@ -54,6 +51,7 @@ export function useMarketLiquidity(
           checked: result.reads.length,
         }),
         refetchInterval: QUERY_TIMING.marketRefresh,
+        staleTime: QUERY_TIMING.marketRefresh,
       };
     }),
   });
@@ -64,18 +62,7 @@ export function useMarketLiquidity(
       config,
       result,
       query,
-      bidLiquidity:
-        result.market && !result.error && query.isSuccess && !query.data.failed
-          ? bidLiquidity(result.market, query.data.ticks, duration)
-          : undefined,
     };
   });
-  switch (sortBy) {
-    case MarketSort.BidLiquidity:
-      return rows.sort((a, b) =>
-        compareBidLiquidity(a.bidLiquidity, b.bidLiquidity),
-      );
-    case MarketSort.SourceOrder:
-      return rows;
-  }
+  return rows;
 }

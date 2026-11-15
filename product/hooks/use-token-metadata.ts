@@ -40,7 +40,6 @@ export function tokenMetadataOptions(network: NetworkSlug, address: string) {
         ? QUERY_TIMING.tokenMetadataStale
         : 300_000;
     },
-    retry: false,
   };
 }
 export function useTokenMetadata(
@@ -72,7 +71,6 @@ export function useTokenDiscovery(network: NetworkSlug, enabled = true) {
       }));
     },
     staleTime: 86400_000,
-    retry: false,
   });
 }
 export function useDiscoveryTokens(network: NetworkSlug) {

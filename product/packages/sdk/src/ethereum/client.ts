@@ -343,6 +343,10 @@ export class EthereumClient {
       radius?: number;
       /** Omit to discover both supported durations (Yield Book). */
       duration?: Duration;
+      /** Omit to read both sides. */
+      direction?: TickIdentity["direction"];
+      /** Share a snapshot across multiple markets without another head read. */
+      blockNumber?: bigint;
     } = {},
   ): Promise<DiscoveryResult> {
     const radius = config.radius ?? DISCOVERY_DEFAULTS.radius;
@@ -353,9 +357,12 @@ export class EthereumClient {
       radius,
     ).filter(
       (tick) =>
-        config.duration === undefined || tick.durationDays === config.duration,
+        (config.duration === undefined ||
+          tick.durationDays === config.duration) &&
+        (config.direction === undefined || tick.direction === config.direction),
     );
-    const blockNumber = await this.publicClient.getBlockNumber();
+    const blockNumber =
+      config.blockNumber ?? (await this.publicClient.getBlockNumber());
     const reads: DiscoveryRead[] = [];
     for (let i = 0; i < identities.length; i += DISCOVERY_BATCH_SIZE) {
       const batch = identities.slice(i, i + DISCOVERY_BATCH_SIZE);

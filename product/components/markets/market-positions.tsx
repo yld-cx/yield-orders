@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 import { useConnection } from "wagmi";
 import type { Market } from "@yld-cx/sdk";
 import { getNetwork, explainError } from "@yld-cx/sdk/ethereum";
@@ -14,10 +15,16 @@ import {
   TabsContent,
 } from "@yld-cx/ui/components/ui/tabs";
 
+const enum MarketPositionTab {
+  Provide = "provide",
+  Use = "use",
+}
+
 export function MarketPositions({ market }: { market: Market }) {
   const account = useConnection();
   const network = getNetwork(market.network).slug;
   const portfolio = usePortfolio(network);
+  const [selectedTab, setTab] = useState<MarketPositionTab | null>(null);
   if (!account.address) return null;
   const pages = portfolio.data?.pages ?? [];
   const matchesMarket = ({
@@ -32,6 +39,11 @@ export function MarketPositions({ market }: { market: Market }) {
     .filter(matchesMarket);
   const uses = pages.flatMap((page) => page.uses).filter(matchesMarket);
   const timestamp = pages[0]?.timestamp ?? 0n;
+  const tab =
+    selectedTab ??
+    (providers.length === 0 && uses.length > 0
+      ? MarketPositionTab.Use
+      : MarketPositionTab.Provide);
   if (
     !providers.length &&
     !uses.length &&
@@ -53,18 +65,24 @@ export function MarketPositions({ market }: { market: Market }) {
       {portfolio.isError && (
         <Message error>{explainError(portfolio.error)}</Message>
       )}
-      <Tabs defaultValue="provide" className="mt-4">
+      <Tabs
+        value={tab}
+        onValueChange={(next) => setTab(next as MarketPositionTab)}
+        className="mt-4"
+      >
         <TabsList
           aria-label="Market positions tab"
           data-intent="term"
           variant="line"
         >
-          <TabsTrigger value="provide">
+          <TabsTrigger value={MarketPositionTab.Provide}>
             Provide ({providers.length})
           </TabsTrigger>
-          <TabsTrigger value="use">Use ({uses.length})</TabsTrigger>
+          <TabsTrigger value={MarketPositionTab.Use}>
+            Use ({uses.length})
+          </TabsTrigger>
         </TabsList>
-        <TabsContent value="provide" keepMounted>
+        <TabsContent value={MarketPositionTab.Provide} keepMounted>
           <div className="mt-2 grid grid-cols-1 gap-4">
             {providers.map((position) => (
               <ProviderCard
@@ -80,7 +98,7 @@ export function MarketPositions({ market }: { market: Market }) {
             </p>
           )}
         </TabsContent>
-        <TabsContent value="use" keepMounted>
+        <TabsContent value={MarketPositionTab.Use} keepMounted>
           <div className="mt-2 grid grid-cols-1 gap-4">
             {uses.map((position) => (
               <UseCard

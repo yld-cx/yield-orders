@@ -10,6 +10,13 @@ const pair = `${a}:${b}`;
 const reversed = `${b.toUpperCase().replace("0X", "0x")}:${a}`;
 
 describe("shared RPC query keys", () => {
+  it("shares market lists across aliases while separating source and duration", () => {
+    const key = queryKeys.markets("base", 7, "all");
+    expect(key).toEqual(queryKeys.markets("eip155:8453", 7, "all"));
+    expect(key).not.toEqual(queryKeys.markets("base", 30, "all"));
+    expect(key).not.toEqual(queryKeys.markets("ethereum", 7, "all"));
+    expect(key).not.toEqual(queryKeys.markets("base", undefined, "trending"));
+  });
   it("invalidates each read group on the current network using shared key prefixes", async () => {
     const client = new QueryClient();
     const affected = [

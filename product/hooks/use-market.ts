@@ -15,11 +15,15 @@ import type { Address } from "viem";
 import { tokenMetadataOptions, useTokenMetadata } from "./use-token-metadata";
 import { fallbackToken, type TokenMetadata } from "@/lib/token-metadata";
 import { calculatedBaseTick } from "@/lib/market-values";
+type PairQuery = {
+  state: { data?: Awaited<ReturnType<ReturnType<typeof getSdk>["getPair"]>> };
+};
 function onchainTokenOptions(network: NetworkSlug, address: string) {
   return {
     queryKey: queryKeys.token(network, address),
     queryFn: () => getSdk(network).tokenMetadata(address as Address),
     staleTime: QUERY_TIMING.tokenMetadataStale,
+    gcTime: QUERY_TIMING.tokenMetadataStale,
   };
 }
 function resolveToken(onchain: Token, remote?: TokenMetadata): Token {
@@ -113,7 +117,12 @@ export function useMarkets(network: NetworkSlug, keys: readonly string[]) {
       return {
         queryKey: queryKeys.pair(network, key),
         queryFn: () => getSdk(network).getPair(a as Address, b as Address),
-        refetchInterval: QUERY_TIMING.marketRefresh,
+        // Created pairs are immutable. Keep checking only until creation.
+        staleTime: (query: PairQuery) =>
+          query.state.data?.[3] ? Infinity : QUERY_TIMING.marketRefresh,
+        gcTime: QUERY_TIMING.tokenMetadataStale,
+        refetchInterval: (query: PairQuery) =>
+          query.state.data?.[3] ? false : QUERY_TIMING.marketRefresh,
       };
     }),
   });

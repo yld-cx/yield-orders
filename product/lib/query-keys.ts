@@ -6,6 +6,7 @@ export const QUERY_NAMES = {
   token: "token",
   tokenMetadata: "token-metadata",
   tokenDiscovery: "token-discovery",
+  markets: "markets",
   pair: "pair",
   ticks: "ticks",
   quote: "quote",
@@ -21,6 +22,13 @@ function canonicalKey(network: string, key: string) {
 }
 
 export const queryKeys = {
+  markets: (network: string, duration: Duration | undefined, tag: string) =>
+    [
+      QUERY_NAMES.markets,
+      getNetwork(network).id,
+      duration ?? null,
+      tag,
+    ] as const,
   balance: (network: string, token: string, owner?: string) =>
     [
       QUERY_NAMES.balance,

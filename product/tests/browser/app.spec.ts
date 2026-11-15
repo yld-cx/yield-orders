@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Route } from "@playwright/test";
 import yieldList from "../../public/yieldlist.json" with { type: "json" };
 import { tokenFixture } from "./token-fixtures";
 import {
@@ -22,7 +22,7 @@ import {
   tickCandidates,
   deploymentFor,
 } from "../../packages/sdk/src/ethereum/index.js";
-import { Registry } from "../../packages/sdk/src/registry/index.js";
+import { Registry, pairKey } from "../../packages/sdk/src/registry/index.js";
 import {
   DISCOVERY_DEFAULTS,
   MAX_TICK,
@@ -46,6 +46,42 @@ const configuredAddresses = [
   ...new Set(configuredPairs.flatMap((pair) => pair.split(":"))),
 ];
 const marketPageSize = 10;
+function trendingFixtures(addresses: readonly string[]) {
+  const registry = new Registry(yieldList);
+  const seen = new Set([b]);
+  return addresses.flatMap((value) => {
+    const address = value.toLowerCase();
+    if (seen.has(address)) return [];
+    seen.add(address);
+    const key = pairKey("eip155:8453", address, b);
+    const [a0, a1] = key.split(":");
+    return [
+      registry.getMarket("eip155:8453", a0, a1) ?? {
+        network: "eip155:8453",
+        key,
+        token0: { network: "eip155:8453", address: a0 },
+        token1: { network: "eip155:8453", address: a1 },
+        defaultDuration: 7,
+        stepTicks: DISCOVERY_DEFAULTS.stepTicks,
+      },
+    ];
+  });
+}
+async function fulfillTrending(
+  route: Route,
+  addresses: readonly string[],
+  status = 200,
+) {
+  const params = new URL(route.request().url()).searchParams;
+  if (params.get("tag") !== "trending") return route.fallback();
+  return route.fulfill({
+    status,
+    json: {
+      markets:
+        params.get("chainId") === "8453" ? trendingFixtures(addresses) : [],
+    },
+  });
+}
 const directId = tickIdFor(pairIdFor(a, b), 0, -196123, 7);
 const pairId = pairIdFor(a, b),
   id7 = tickIdFor(pairId, 0, -196000, 7),
@@ -419,6 +455,15 @@ test.beforeEach(async ({ page }) => {
       },
     }),
   );
+  await page.route("**/api/markets?**", async (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.get("tag") === "trending")
+      return fulfillTrending(route, configuredAddresses);
+    const markets = new Registry(yieldList).getMarkets(
+      `eip155:${Number(params.get("chainId"))}`,
+    );
+    await route.fulfill({ json: { markets } });
+  });
   await page.addInitScript(() => {
     const events: string[] = [];
     Object.assign(window, { testCspEvents: events });
@@ -558,89 +603,123 @@ test("Provide shows APY without a switch while Rent retains its quoted Term Yiel
 });
 
 for (const tag of ["all", "stable"]) {
-  test(`${tag} markets wait for final bid liquidity and sort again when duration changes`, async ({
+  test(`${tag} markets use API ranking and sort again when duration changes`, async ({
     page,
   }) => {
+    await page.clock.install();
     const markets = configuredMarkets.filter(
-      (market) =>
-        tag === "all" || market.tags?.some((category) => category === "stable"),
+      (m) => tag === "all" || m.tags?.some((t) => t === tag),
     );
-    const overrides: TickOverrides = new Map();
-    for (const [index, market] of markets.entries()) {
-      const pair = pairIdFor(
-        market.token0.address as typeof a,
-        market.token1.address as typeof b,
-      );
-      const bidDirection = market.token0.address === b ? 0 : 1;
-      const asset =
-        bidDirection === 0 ? market.token1.address : market.token0.address;
-      for (const days of [7, 30]) {
-        const baseTick = market.baseTick ?? DISCOVERY_DEFAULTS.baseTick;
-        overrides.set(
-          tickIdFor(
-            pair,
-            bidDirection,
-            bidDirection === 0 ? baseTick : -baseTick,
-            days,
-          ),
-          {
-            asset: b,
-            quote: asset as typeof a,
-            durationDays: BigInt(days),
-            availableSupply:
-              BigInt(days === 7 ? index + 1 : markets.length - index) *
-              10n ** 6n,
-          },
-        );
-      }
-    }
-    await rpc(page, true, overrides);
-    // Hold one market's metadata while the table waits for the full sort.
-    const delayedAddress =
-      markets.at(-1)!.token1.address === b
-        ? markets.at(-1)!.token0.address
-        : markets.at(-1)!.token1.address;
-    let releaseMetadata!: () => void;
-    const metadataGate = new Promise<void>((resolve) => {
-      releaseMetadata = resolve;
+    let releaseRanking!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseRanking = resolve;
     });
-    let heldMetadata = false;
-    await page.route(metadataRoute, async (route) => {
-      const addresses = new URL(route.request().url()).searchParams
-        .get("addresses")!
-        .split(",");
-      if (addresses.includes(delayedAddress)) {
-        heldMetadata = true;
-        await metadataGate;
+    let rankingRequested = false;
+    let listRequests = 0;
+    await page.route("**/api/markets?**", async (route) => {
+      listRequests++;
+      const params = new URL(route.request().url()).searchParams;
+      if (params.get("duration") === "7") {
+        rankingRequested = true;
+        await gate;
       }
-      await route.fallback();
+      const sorted =
+        params.get("duration") === "7"
+          ? [...configuredMarkets].reverse()
+          : configuredMarkets;
+      expect(params.has("page")).toBe(false);
+      expect(params.has("search")).toBe(false);
+      expect(params.get("tag")).toBe("all");
+      await route.fulfill({ json: { markets: sorted } });
+    });
+    const metadataAddresses = new Set<string>();
+    const pairReads: string[] = [];
+    let tickReads = 0;
+    page.on("request", (request) => {
+      if (metadataRoute.test(request.url()))
+        for (const address of new URL(request.url()).searchParams
+          .get("addresses")!
+          .split(","))
+          metadataAddresses.add(address);
+      if (!request.url().startsWith("https://mainnet.base.org")) return;
+      const payload = request.postDataJSON();
+      for (const item of Array.isArray(payload) ? payload : [payload]) {
+        if (item.method !== "eth_call") continue;
+        const call = item.params[0] as { data: Hex; to: string };
+        let calls = [{ callData: call.data, target: call.to }];
+        try {
+          const batch = decodeFunctionData({
+            abi: multicall3Abi,
+            data: call.data,
+          });
+          if (batch.functionName === "aggregate3") calls = [...batch.args[0]];
+        } catch {}
+        for (const entry of calls) {
+          try {
+            const decoded = decodeFunctionData({
+              abi: protocolAbi,
+              data: entry.callData,
+            });
+            if (decoded.functionName === "getPair")
+              pairReads.push(decoded.args.join(":").toLowerCase());
+            if (decoded.functionName === "getTick") tickReads++;
+          } catch {}
+        }
+      }
     });
     await page.goto(`/?tag=${tag}&network=base&duration=7`);
     const table = page.getByRole("table");
     const links = table.getByRole("link", { name: /^Open / });
-    await expect.poll(() => heldMetadata).toBe(true);
+    await expect.poll(() => rankingRequested).toBe(true);
     await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "true");
     await expect(links).toHaveCount(0);
-    await expect(table.locator('[data-slot="skeleton"]').first()).toBeVisible();
-    releaseMetadata();
+    expect(metadataAddresses.size).toBe(0);
+    releaseRanking();
     const hrefs = () =>
       links.evaluateAll((nodes) =>
         nodes.map((node) => node.getAttribute("href")),
       );
     const expected = (items: typeof markets) =>
-      items
-        .slice(0, marketPageSize)
-        .map((market) => `/market/base/${market.key}`);
+      items.slice(0, marketPageSize).map((m) => `/market/base/${m.key}`);
     await expect.poll(hrefs).toEqual(expected([...markets].reverse()));
-    await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "false");
+    await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
+    const visibleKeys = [...markets]
+      .reverse()
+      .slice(0, marketPageSize)
+      .map((m) => m.key);
+    expect([...pairReads].sort()).toEqual([...visibleKeys].sort());
+    const ticksBeforeRefresh = tickReads;
+    await page.clock.fastForward(QUERY_TIMING.marketRefresh + 1000);
+    await expect.poll(() => tickReads).toBeGreaterThan(ticksBeforeRefresh);
+    // Liquidity stays live without polling immutable pair data again.
+    expect(pairReads).toHaveLength(visibleKeys.length);
+    expect([...metadataAddresses].sort()).toEqual(
+      [...configuredAddresses].sort(),
+    );
     await expect(
       page.getByRole("columnheader", { name: "Bid liquidity" }),
     ).toHaveAttribute("aria-sort", "descending");
+    await page.getByLabel("Search markets").fill("WETH");
+    await expect(links).toHaveCount(1);
+    await page.getByLabel("Search markets").clear();
+    await expect.poll(hrefs).toEqual(expected([...markets].reverse()));
+    expect(listRequests).toBe(1);
+    if (markets.length > marketPageSize) {
+      await page.getByRole("button", { name: "Next", exact: true }).click();
+      await expect.poll(hrefs).toEqual(
+        [...markets]
+          .reverse()
+          .slice(marketPageSize)
+          .map((m) => `/market/base/${m.key}`),
+      );
+    }
+    expect(listRequests).toBe(1);
     await page
       .getByRole("combobox", { name: "Market duration", exact: true })
       .click();
     await page.getByRole("option", { name: "30D", exact: true }).click();
     await expect.poll(hrefs).toEqual(expected(markets));
+    expect(listRequests).toBe(2);
   });
 }
 
@@ -649,15 +728,12 @@ test("Trending reads only the ten visible USD* markets", async ({ page }) => {
     const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
     return { address, ...tokenFixture(address) };
   });
-  await page.route("**/api/tokens?**", (route) =>
-    route.fulfill({
-      json: {
-        tokens:
-          new URL(route.request().url()).searchParams.get("chainId") === "8453"
-            ? [discovered[0], { address: b, ...tokenFixture(b) }, ...discovered]
-            : [],
-      },
-    }),
+  await page.route("**/api/markets?**", (route) =>
+    fulfillTrending(route, [
+      discovered[0].address,
+      b,
+      ...discovered.map((token) => token.address),
+    ]),
   );
   const pairs = new Set<string>();
   const decimals = new Set<string>();
@@ -791,14 +867,8 @@ for (const tag of ["all", "trending"]) {
   test(`${tag} searches shared metadata by symbol, name, address and pair`, async ({
     page,
   }) => {
-    await page.route("**/api/tokens?**", (route) =>
-      route.fulfill({
-        json: {
-          tokens: [
-            { address: a, symbol: "DISCOVERY", name: "Discovery identity" },
-          ],
-        },
-      }),
+    await page.route("**/api/markets?**", (route) =>
+      fulfillTrending(route, [a]),
     );
     await page.goto(`/?tag=${tag}&network=base&search=WETH%2FUSDC`);
     const link = page.getByRole("link", {
@@ -823,8 +893,8 @@ for (const tag of ["all", "trending"]) {
     page,
   }) => {
     await page.route(metadataRoute, (route) => route.fulfill({ status: 503 }));
-    await page.route("**/api/tokens?**", (route) =>
-      route.fulfill({ json: { tokens: [{ address: a }] } }),
+    await page.route("**/api/markets?**", (route) =>
+      fulfillTrending(route, [a]),
     );
     await page.goto(`/?tag=${tag}&network=base&search=${a}`);
     const link = page.getByRole("link", {
@@ -848,13 +918,9 @@ test("Trending keeps the requested page while loading and offers retry on discov
   let release!: () => void;
   const ready = new Promise<void>((resolve) => (release = resolve));
   let unavailable = true;
-  await page.route("**/api/tokens?**", async (route) => {
+  await page.route("**/api/markets?**", async (route) => {
     await ready;
-    await route.fulfill(
-      unavailable
-        ? { status: 503, json: { tokens: [] } }
-        : { json: { tokens: [{ address: a, ...tokenFixture(a) }] } },
-    );
+    await fulfillTrending(route, [a], unavailable ? 503 : 200);
   });
   await page.goto("/?tag=trending&page=99&network=base");
   await expect(
@@ -1109,7 +1175,7 @@ test("market lookup reserves space while loading", async ({ page }) => {
   expect(await description.boundingBox()).toEqual(before);
 });
 
-test("market table keeps cell positions while loading all markets for sorting", async ({
+test("market table keeps cell positions while loading only visible rows", async ({
   page,
 }) => {
   const pairs: string[] = [],
@@ -1136,7 +1202,8 @@ test("market table keeps cell positions while loading all markets for sorting", 
       for (const data of calls) {
         try {
           const call = decodeFunctionData({ abi: protocolAbi, data });
-          if (call.functionName === "getPair") pairs.push(call.args.join(":"));
+          if (call.functionName === "getPair")
+            pairs.push(call.args.join(":").toLowerCase());
           if (call.functionName === "getTick") ticks.push(call.args[0]);
         } catch {}
       }
@@ -1151,7 +1218,13 @@ test("market table keeps cell positions while loading all markets for sorting", 
   await page.goto("/");
   const table = page.getByRole("table");
   const row = table.locator("tbody tr").first();
-  await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "true");
+  const configured = configuredMarkets.slice(0, marketPageSize);
+  await expect(
+    page.getByRole("navigation", { name: "Market pagination" }),
+  ).toContainText(
+    `1–${configured.length} of ${configuredMarkets.length} markets`,
+  );
+  await expect(table.locator("tbody tr")).toHaveCount(configured.length);
   await expect(table.getByRole("link", { name: /^Open / })).toHaveCount(0);
   await expect(row.locator('[data-slot="skeleton"]').first()).toBeVisible();
   await expect(row.getByRole("status")).toHaveCount(0);
@@ -1160,7 +1233,6 @@ test("market table keeps cell positions while loading all markets for sorting", 
     nodes.map((node) => node.getBoundingClientRect().toJSON()),
   );
   release();
-  await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "false");
   await expect(table.getByRole("link", { name: /^Open / })).toHaveCount(
     Math.min(configuredMarkets.length, marketPageSize),
   );
@@ -1178,10 +1250,12 @@ test("market table keeps cell positions while loading all markets for sorting", 
     );
   }
   await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-  const configured = configuredMarkets;
   expect(requests.flat()).not.toContain("eth_getCode");
   expect(pairs).toHaveLength(configured.length);
   expect(new Set(pairs).size).toBe(configured.length);
+  expect([...pairs].sort()).toEqual(
+    configured.map((market) => market.key).sort(),
+  );
   const expected = (duration: 7 | 30) =>
     configured
       .flatMap((config) => {
@@ -4124,15 +4198,18 @@ for (const rentalsOnly of [false, true]) {
       exact: true,
     });
     const use = positions.getByRole("tab", { name: "Use (1)", exact: true });
-    await expect(provide).toHaveAttribute("aria-selected", "true");
-    await expect(
-      positions.getByText("Rented Asset", { exact: true }),
-    ).toBeHidden();
+    await expect(rentalsOnly ? use : provide).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     if (rentalsOnly) {
       await expect(
-        positions.getByText("No Provide positions in this market."),
+        positions.getByText("Rented Asset", { exact: true }),
       ).toBeVisible();
     } else {
+      await expect(
+        positions.getByText("Rented Asset", { exact: true }),
+      ).toBeHidden();
       await expect(
         positions.getByRole("button", { name: "Preview Withdraw" }),
       ).toBeVisible();
@@ -4155,6 +4232,27 @@ for (const rentalsOnly of [false, true]) {
     await expect(
       positions.getByText("Rented Asset", { exact: true }),
     ).toBeHidden();
+    if (rentalsOnly) {
+      await expect(
+        positions.getByText("No Provide positions in this market."),
+      ).toBeVisible();
+    }
+
+    await page.goto("/orders");
+    const orderProvide = page.getByRole("tab", {
+      name: `Provide (${rentalsOnly ? 0 : 1})`,
+      exact: true,
+    });
+    const orderUse = page.getByRole("tab", { name: "Use (1)", exact: true });
+    await expect(rentalsOnly ? orderUse : orderProvide).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await orderProvide.click();
+    await expect(orderProvide).toHaveAttribute("aria-selected", "true");
+    await orderUse.click();
+    await expect(orderUse).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Rented Asset", { exact: true })).toBeVisible();
   });
 }
 

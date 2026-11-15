@@ -378,6 +378,31 @@ describe("direct reads and write safety", () => {
       expect(expected).toHaveLength(tickCandidates(42n).length / 2);
     },
   );
+  it.each([0, 1] as const)(
+    "discovers only direction %s at a shared block without another head read",
+    async (direction) => {
+      const getBlockNumber = vi.fn();
+      const multicall = vi.fn(
+        async ({ contracts }: { contracts: { args: readonly [bigint] }[] }) =>
+          contracts.map(() => ({ status: "success", result: state })),
+      );
+      const sdk = client({ getBlockNumber, multicall });
+      const result = await sdk.discover(42n, { direction, blockNumber: 123n });
+      const expected = tickCandidates(42n).filter(
+        (tick) => tick.direction === direction,
+      );
+      expect(result.reads.map((read) => read.identity)).toEqual(expected);
+      expect(result.reads).toHaveLength(tickCandidates(42n).length / 2);
+      expect(getBlockNumber).not.toHaveBeenCalled();
+      expect(
+        multicall.mock.calls.flatMap(([call]) =>
+          call.contracts.map((contract) => contract.args[0]),
+        ),
+      ).toEqual(expected.map((tick) => tick.id));
+      for (const [call] of multicall.mock.calls)
+        expect(call).toMatchObject({ blockNumber: 123n });
+    },
+  );
   it("pins portfolio reads, shares repeated ticks and retains a zero-raw supplier position", async () => {
     const blocks: bigint[] = [];
     const readContract = vi.fn(
