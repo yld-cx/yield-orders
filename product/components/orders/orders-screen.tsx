@@ -57,7 +57,7 @@ export function OrdersScreen() {
 }
 function OrdersForWallet({ network }: { network: NetworkSlug }) {
   const account = useConnection(),
-    [tab, setTab] = useState<OrderTab>(OrderTab.Provide),
+    [selectedTab, setTab] = useState<OrderTab | null>(null),
     [search, setSearch] = useState(""),
     [filter, setFilter] = useState<OrderFilter>(OrderFilter.All);
   const query = usePortfolio(network);
@@ -65,6 +65,11 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
     providers = pages.flatMap((p) => p.providers),
     uses = pages.flatMap((p) => p.uses),
     timestamp = pages[0]?.timestamp ?? 0n;
+  const tab =
+    selectedTab ??
+    (providers.length === 0 && uses.length > 0
+      ? OrderTab.Use
+      : OrderTab.Provide);
   const metadata = useTokens(
     network,
     [...providers, ...uses].flatMap((p) => [p.tick.asset, p.tick.quote]),

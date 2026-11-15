@@ -4124,15 +4124,18 @@ for (const rentalsOnly of [false, true]) {
       exact: true,
     });
     const use = positions.getByRole("tab", { name: "Use (1)", exact: true });
-    await expect(provide).toHaveAttribute("aria-selected", "true");
-    await expect(
-      positions.getByText("Rented Asset", { exact: true }),
-    ).toBeHidden();
+    await expect(rentalsOnly ? use : provide).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
     if (rentalsOnly) {
       await expect(
-        positions.getByText("No Provide positions in this market."),
+        positions.getByText("Rented Asset", { exact: true }),
       ).toBeVisible();
     } else {
+      await expect(
+        positions.getByText("Rented Asset", { exact: true }),
+      ).toBeHidden();
       await expect(
         positions.getByRole("button", { name: "Preview Withdraw" }),
       ).toBeVisible();
@@ -4155,6 +4158,27 @@ for (const rentalsOnly of [false, true]) {
     await expect(
       positions.getByText("Rented Asset", { exact: true }),
     ).toBeHidden();
+    if (rentalsOnly) {
+      await expect(
+        positions.getByText("No Provide positions in this market."),
+      ).toBeVisible();
+    }
+
+    await page.goto("/orders");
+    const orderProvide = page.getByRole("tab", {
+      name: `Provide (${rentalsOnly ? 0 : 1})`,
+      exact: true,
+    });
+    const orderUse = page.getByRole("tab", { name: "Use (1)", exact: true });
+    await expect(rentalsOnly ? orderUse : orderProvide).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await orderProvide.click();
+    await expect(orderProvide).toHaveAttribute("aria-selected", "true");
+    await orderUse.click();
+    await expect(orderUse).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByText("Rented Asset", { exact: true })).toBeVisible();
   });
 }
 
