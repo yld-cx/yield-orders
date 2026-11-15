@@ -52,8 +52,7 @@ import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
 import { PairIcons } from "./token-icon";
 import { YieldModeSwitch } from "@/components/forms/yield-display";
 import { DEFAULT_YIELD_MODE, tickYieldText, type YieldMode } from "@/lib/yield";
-
-const PAGE_SIZE = 10;
+import { MARKET_PAGE_SIZE as PAGE_SIZE } from "@/lib/market-list";
 
 function MarketRowSkeleton() {
   return (
@@ -110,9 +109,10 @@ function MarketRow({
     },
   );
   const router = useRouter();
+  if (!result.error && (result.isPending || query.isPending))
+    return <MarketRowSkeleton />;
   const ticks =
     query.data?.ticks.filter((t) => t.durationDays === duration) ?? [];
-  const pending = query.isPending && !result.error;
   function summary(asset: string) {
     const side = ticks.filter(
       (t) => t.state.asset.toLowerCase() === asset.toLowerCase(),
@@ -155,21 +155,14 @@ function MarketRow({
         <Fragment key={i}>
           <TableCell className="p-4 text-right first:text-left">
             <div className={i === 0 ? "text-ask" : "text-bid"}>
-              {pending ? (
-                <Skeleton
-                  className="ml-auto h-5 w-20 motion-reduce:animate-none"
-                  aria-label="Loading liquidity…"
-                />
-              ) : query.isError || result.error ? (
-                "Read failed"
-              ) : query.data?.failed ? (
-                "Incomplete"
-              ) : (
-                `${amountText(s.available, tokens[i].address === market?.token0.address ? market.token0.decimals : market!.token1.decimals)} ${tokens[i].symbol}`
-              )}
+              {query.isError || result.error
+                ? "Read failed"
+                : query.data?.failed
+                  ? "Incomplete"
+                  : `${amountText(s.available, tokens[i].address === market?.token0.address ? market.token0.decimals : market!.token1.decimals)} ${tokens[i].symbol}`}
             </div>
-            <small className={pending ? "invisible" : undefined}>
-              {pending || (query.isSuccess && !query.data.failed)
+            <small>
+              {query.isSuccess && !query.data.failed
                 ? "Available"
                 : "Refresh to retry"}
             </small>
@@ -178,7 +171,6 @@ function MarketRow({
             <YieldReference
               duration={duration}
               yieldMode={yieldMode}
-              pending={pending}
               ticks={query.data?.failed || query.isError ? [] : s.side}
             />
           </TableCell>
@@ -193,30 +185,19 @@ function MarketRow({
 function YieldReference({
   duration,
   ticks,
-  pending,
   yieldMode,
 }: {
   duration: Duration;
   ticks: Tick[];
-  pending: boolean;
   yieldMode: YieldMode;
 }) {
   const tick = ticks.find((t) => t.state.availableSupply > 0n);
   const estimatedYield = tick ? tickYieldText(tick.state, yieldMode) : "—";
   return (
     <>
-      <div className="text-primary">
-        {pending ? (
-          <Skeleton
-            className="ml-auto h-5 w-12 motion-reduce:animate-none"
-            aria-label="Loading yield…"
-          />
-        ) : (
-          estimatedYield
-        )}
-      </div>
-      <small className={pending ? "invisible" : undefined}>
-        {tick || pending
+      <div className="text-primary">{estimatedYield}</div>
+      <small>
+        {tick
           ? yieldMode === "apy"
             ? "Annualized"
             : `${duration}D reference`
@@ -239,35 +220,23 @@ export function MarketTable() {
   } = useMarketFilters();
   const {
     markets,
+    total,
+    currentPage,
     marketCount,
     tokenCount,
     loading: listLoading,
     loadingLabel,
     error,
     empty,
-  } = useMarketList({ network, tag: category, search });
+  } = useMarketList({ network, tag: category, search, duration, page });
   const sortBy = DEFAULT_MARKET_SORT[category] ?? MarketSort.BidLiquidity;
   const sortByBidLiquidity = sortBy === MarketSort.BidLiquidity;
   const failed = !!error;
-  const pageCount = Math.max(1, Math.ceil(markets.length / PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount);
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const start = (currentPage - 1) * PAGE_SIZE;
-  const rows = useMarketLiquidity(
-    network,
-    sortByBidLiquidity ? markets : markets.slice(start, start + PAGE_SIZE),
-    duration,
-    sortBy,
-  );
-  const loading =
-    listLoading ||
-    (sortByBidLiquidity &&
-      rows.some(
-        ({ result, query }) =>
-          !result.error && (result.isPending || query.isPending),
-      ));
-  const visibleMarkets = sortByBidLiquidity
-    ? rows.slice(start, start + PAGE_SIZE)
-    : rows;
+  const rows = useMarketLiquidity(network, markets, duration);
+  const loading = listLoading;
+  const visibleMarkets = rows;
   useEffect(() => {
     if (!loading && !failed && page !== currentPage)
       updateFilters({ page: currentPage }, true);
@@ -465,8 +434,8 @@ export function MarketTable() {
                 className="flex flex-wrap items-center justify-between gap-3 border-t p-4 text-sm"
               >
                 <p className="text-muted-foreground" aria-live="polite">
-                  {start + 1}–{Math.min(start + PAGE_SIZE, markets.length)} of{" "}
-                  {markets.length} markets
+                  {start + 1}–{Math.min(start + PAGE_SIZE, total)} of {total}{" "}
+                  markets
                 </p>
                 <div className="flex items-center gap-3">
                   <Button

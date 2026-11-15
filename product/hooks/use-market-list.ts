@@ -1,33 +1,59 @@
 "use client";
 
-import { getNetwork } from "@yld-cx/sdk/ethereum";
-import {
-  useTokenDiscovery,
-  useTokenMetadata,
-} from "@/hooks/use-token-metadata";
+import type { Duration } from "@yld-cx/sdk";
+import { getNetwork, type NetworkSlug } from "@yld-cx/sdk/ethereum";
+import { useQuery } from "@tanstack/react-query";
+import { useTokenMetadata } from "@/hooks/use-token-metadata";
 import {
   MarketTab,
   searchMarkets,
   type MarketFilters,
 } from "@/lib/market-filters";
 import { registry } from "@/lib/registry";
-import { trendingMarkets, USD_ADDRESSES } from "@/lib/trending-markets";
+import { USD_ADDRESSES } from "@/lib/trending-markets";
+import {
+  MARKET_CACHE_SECONDS,
+  MARKET_PAGE_SIZE,
+  type MarketList,
+} from "@/lib/market-list";
+import { queryKeys } from "@/lib/query-keys";
+
+export function marketListOptions(
+  network: NetworkSlug,
+  duration: Duration | undefined,
+  source: MarketTab,
+) {
+  return {
+    queryKey: queryKeys.markets(network, duration, source),
+    queryFn: async (): Promise<MarketList> => {
+      const params = new URLSearchParams({
+        chainId: String(getNetwork(network).chain.id),
+        tag: source,
+        ...(duration === undefined ? {} : { duration: String(duration) }),
+      });
+      const response = await fetch(`/api/markets?${params}`);
+      if (!response.ok) throw new Error("Markets unavailable");
+      return response.json();
+    },
+    staleTime: MARKET_CACHE_SECONDS * 1000,
+  } as const;
+}
 
 export function useMarketList({
   network,
   tag,
   search,
-}: Pick<MarketFilters, "network" | "tag" | "search">) {
+  duration,
+  page,
+}: MarketFilters) {
   const id = getNetwork(network).id;
   const trending = tag === MarketTab.Trending;
   const quoteAddress = USD_ADDRESSES[id];
-  const discovery = useTokenDiscovery(network, trending && !!quoteAddress);
-  const sourceMarkets = trending
-    ? trendingMarkets(
-        id,
-        (discovery.data ?? []).map((token) => token.address),
-      )
-    : registry.getMarkets(id);
+  const source = trending ? MarketTab.Trending : MarketTab.YieldList;
+  const list = useQuery(
+    marketListOptions(network, trending ? undefined : duration, source),
+  );
+  const sourceMarkets = list.data?.markets ?? [];
   const addresses = sourceMarkets.flatMap((market) => [
     market.token0.address,
     market.token1.address,
@@ -39,20 +65,36 @@ export function useMarketList({
       tag === MarketTab.YieldList ||
       market.tags?.includes(tag),
   );
-  const failed =
-    trending && !!quoteAddress && discovery.isError && !discovery.data;
+  const failed = list.isError && !list.data;
+  const currentPage = Math.min(
+    page,
+    Math.max(1, Math.ceil(markets.length / MARKET_PAGE_SIZE)),
+  );
+  const start = (currentPage - 1) * MARKET_PAGE_SIZE;
 
   return {
-    markets,
-    marketCount: sourceMarkets.length,
-    tokenCount: new Set(addresses).size,
-    loading: trending && !!quoteAddress && discovery.isPending,
+    markets: markets.slice(start, start + MARKET_PAGE_SIZE),
+    total: markets.length,
+    currentPage,
+    marketCount: list.data
+      ? sourceMarkets.length
+      : trending
+        ? 0
+        : registry.getMarkets(id).length,
+    tokenCount: list.data
+      ? new Set(addresses).size
+      : trending
+        ? 0
+        : registry.getTokens(id).length,
+    loading: list.isPending,
     loadingLabel: trending ? "Loading trending markets…" : "Loading markets…",
     error: failed
       ? {
-          title: "Trending markets unavailable",
-          description: "Could not load tokens. Please try again.",
-          retry: () => discovery.refetch(),
+          title: trending
+            ? "Trending markets unavailable"
+            : "Markets unavailable",
+          description: "Could not load markets. Please try again.",
+          retry: () => list.refetch(),
         }
       : undefined,
     empty:
