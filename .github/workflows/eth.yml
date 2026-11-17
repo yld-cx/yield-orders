@@ -5,11 +5,15 @@ on:
     branches: [main]
     paths:
       - "protocol/ethereum/**"
+      - "product/packages/sdk/**"
+      - "product/package-lock.json"
       - ".github/workflows/eth.yml"
   push:
     branches: [main]
     paths:
       - "protocol/ethereum/**"
+      - "product/packages/sdk/**"
+      - "product/package-lock.json"
       - ".github/workflows/eth.yml"
   workflow_dispatch:
 
@@ -35,7 +39,15 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: protocol/ethereum/package-lock.json
+          cache-dependency-path: |
+            protocol/ethereum/package-lock.json
+            product/package-lock.json
+      - name: Install shared SDK dependencies
+        run: npm ci
+        working-directory: product
+      - name: Build shared SDK
+        run: npm run build --workspace=@yld-cx/sdk
+        working-directory: product
       - run: npm ci
       - run: npm run build:production
       - run: npm run typecheck

@@ -1,3 +1,4 @@
+import "server-only";
 import { unstable_cache } from "next/cache";
 import {
   DISCOVERY_DEFAULTS,
@@ -17,7 +18,7 @@ import { calculatedBaseTick } from "@/lib/market-values";
 import { bidLiquidity, compareBidLiquidity } from "@/lib/market-liquidity";
 import { MARKET_CACHE_SECONDS } from "@/lib/market-list";
 import { trendingMarkets, USD_ADDRESSES } from "@/lib/trending-markets";
-import { discoverTokens } from "@/lib/server/token-discovery";
+import { discoverTokens } from "@/server/token-discovery";
 
 type Rankings = Record<Duration, MarketConfiguration[]>;
 

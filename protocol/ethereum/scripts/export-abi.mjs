@@ -7,6 +7,13 @@ await writeFile(
   new URL("../abi/YieldOrders.json", import.meta.url),
   `${JSON.stringify(protocolArtifact.abi, null, 2)}\n`,
 );
+const resolverArtifact = JSON.parse(
+  await readFile(new URL("../artifacts/contracts/periphery/YieldResolver.sol/YieldResolver.json", import.meta.url)),
+);
+await writeFile(
+  new URL("../abi/YieldResolver.json", import.meta.url),
+  `${JSON.stringify(resolverArtifact.abi, null, 2)}\n`,
+);
 await mkdir(new URL("../test/abi/", import.meta.url), { recursive: true });
 
 const mockArtifacts = {

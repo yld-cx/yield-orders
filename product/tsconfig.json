@@ -23,7 +23,8 @@
       "@yld-cx/sdk": ["./packages/sdk/src/index.ts"],
       "@yld-cx/sdk/ethereum": ["./packages/sdk/src/ethereum/index.ts"],
       "@yld-cx/sdk/registry": ["./packages/sdk/src/registry/index.ts"],
-      "@yld-cx/ui/*": ["./packages/ui/src/*"]
+      "@yld-cx/ui/*": ["./packages/ui/src/*"],
+      "@yld-cx/sdk/uniswap": ["./packages/sdk/src/uniswap/index.ts"]
     },
     "allowImportingTsExtensions": true
   },

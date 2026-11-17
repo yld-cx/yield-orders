@@ -1,5 +1,5 @@
 import { networks } from "@yld-cx/sdk/ethereum";
-import { discoverTokens } from "@/lib/server/token-discovery";
+import { discoverTokens } from "@/server/token-discovery";
 
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;

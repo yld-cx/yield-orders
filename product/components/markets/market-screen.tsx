@@ -37,11 +37,13 @@ import { SupplyForm } from "./supply-form";
 import { UseForm } from "./use-form";
 import { TokenIcon } from "./token-icon";
 import { MarketPositions } from "./market-positions";
+import { SwapForm } from "./swap-form";
 
 enum MarketPanel {
   Provide = "provide",
   YieldBook = "book",
   Use = "use",
+  Swap = "swap",
 }
 
 export function MarketScreen({
@@ -265,6 +267,7 @@ function MarketContent({
             <TabsTrigger value={MarketPanel.Provide}>Provide</TabsTrigger>
             <TabsTrigger value={MarketPanel.YieldBook}>Yield Book</TabsTrigger>
             <TabsTrigger value={MarketPanel.Use}>Use</TabsTrigger>
+            <TabsTrigger value={MarketPanel.Swap}>Swap</TabsTrigger>
           </TabsList>
         </div>
         <div className="grid items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]">
@@ -340,6 +343,18 @@ function MarketContent({
             />
           </TabsContent>
         </div>
+        <TabsContent
+          value={MarketPanel.Swap}
+          keepMounted
+          hidden={false}
+          inert={false}
+          className={cn(
+            "lg:block",
+            activePanel !== MarketPanel.Swap && "hidden",
+          )}
+        >
+          <SwapForm market={market} />
+        </TabsContent>
       </Tabs>
       <MarketPositions market={market} />
       {!exists && (

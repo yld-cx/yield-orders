@@ -3,7 +3,7 @@ import { Duration, DURATIONS, type Tick } from "@yld-cx/sdk";
 import { displayTokens } from "@yld-cx/sdk/registry";
 import { GET } from "@/app/api/markets/route";
 import { registry } from "@/lib/registry";
-import { getSortedMarkets, getTrendingMarkets } from "@/lib/server/markets";
+import { getSortedMarkets, getTrendingMarkets } from "@/server/markets";
 import { tokenFixture } from "./browser/token-fixtures";
 
 const sdk = vi.hoisted(() => ({
@@ -39,7 +39,7 @@ vi.mock("@/lib/token-metadata", async (original) => ({
 }));
 
 const discovery = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/server/token-discovery", () => ({ discoverTokens: discovery }));
+vi.mock("@/server/token-discovery", () => ({ discoverTokens: discovery }));
 
 const configs = registry.getMarkets("eip155:8453");
 const request = (query = "chainId=8453&duration=7") =>

@@ -1,3 +1,4 @@
+import { PERMIT2, permit2Abi, swapNetwork } from "@yld-cx/sdk/uniswap";
 import { readFileSync } from "node:fs";
 import { test, expect, type Page, type Route } from "@playwright/test";
 import yieldList from "../../public/yieldlist.json" with { type: "json" };
@@ -21,20 +22,16 @@ import {
   humanPrice,
   tickCandidates,
   deploymentFor,
-} from "../../packages/sdk/src/ethereum/index.js";
-import { Registry, pairKey } from "../../packages/sdk/src/registry/index.js";
+} from "@yld-cx/sdk/ethereum";
+import { Registry, pairKey } from "@yld-cx/sdk/registry";
 import {
   DISCOVERY_DEFAULTS,
   MAX_TICK,
   DURATIONS,
   QUERY_TIMING,
   YIELD_BOOK_LAYOUT,
-} from "../../packages/sdk/src/constants.js";
-import type {
-  ProviderPosition,
-  UsePosition,
-  TickState,
-} from "../../packages/sdk/src/types/index.js";
+} from "@yld-cx/sdk";
+import type { ProviderPosition, UsePosition, TickState } from "@yld-cx/sdk";
 type TickOverrides = Map<bigint, Partial<TickState> | null>;
 const metadataRoute = /(?:https:\/\/md\.yld\.cx|\/api\/md)\/tokens\?/;
 const a = "0x4200000000000000000000000000000000000006",
@@ -290,7 +287,7 @@ async function rpc(
 }
 async function showMarketSection(
   page: Page,
-  section: "Provide" | "Yield Book" | "Use",
+  section: "Provide" | "Yield Book" | "Use" | "Swap",
 ) {
   await expect(page.locator(".yield-book")).toBeAttached();
   const sections = page.getByRole("tablist", { name: "Market sections" });
@@ -2090,7 +2087,7 @@ for (const [reason, code] of [
 async function chooseBaseTick(page: Page, tick: number) {
   await showMarketSection(page, "Yield Book");
   await page.getByRole("combobox", { name: "Base tick", exact: true }).click();
-  await expect(page.getByRole("option")).toHaveCount(7);
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(7);
   await page.getByRole("option", { name: String(tick), exact: true }).click();
   await expect(
     page.getByRole("combobox", { name: "Base tick", exact: true }),
@@ -2154,7 +2151,7 @@ test("Base tick drives the compact reference price, preserves selection and refr
     exact: true,
   });
   await selector.click();
-  await expect(page.getByRole("option")).toHaveText([
+  await expect(page.getByRole("listbox").getByRole("option")).toHaveText([
     String(center - DISCOVERY_DEFAULTS.stepTicks * 100),
     String(center - DISCOVERY_DEFAULTS.stepTicks * 10),
     String(center - DISCOVERY_DEFAULTS.stepTicks),
@@ -2347,7 +2344,7 @@ test("an off-grid URL falls back safely and grid bounds disable invalid neighbor
     await page
       .getByRole("combobox", { name: "Base tick", exact: true })
       .click();
-    await expect(page.getByRole("option")).toHaveCount(7);
+    await expect(page.getByRole("listbox").getByRole("option")).toHaveCount(7);
     await expect(
       page.getByRole("option", {
         name: String(center + (center > 0 ? step : -step)),
@@ -3194,6 +3191,7 @@ async function transactionRpc(
     tick: boolean;
     direction?: 0 | 1;
     allowance?: bigint;
+    permitAllowance?: () => readonly [bigint, number, number];
     reject?: boolean;
     fail?: boolean;
     positions?: {
@@ -3202,7 +3200,7 @@ async function transactionRpc(
       tickIds?: bigint[];
     };
     balance?: bigint;
-    atomic?: "supported" | "unsupported" | "missing" | "safe";
+    atomic?: "supported" | "unsupported" | "missing" | "safe" | "ready";
     zeroFirst?: boolean;
     simulationUnsupported?: boolean;
     sendUnsupported?: boolean;
@@ -3294,6 +3292,19 @@ async function transactionRpc(
     pair = state.pair,
     ticks = overrides,
   ): { success: boolean; returnData: Hex } {
+    if (data.startsWith("0x927da105"))
+      return {
+        success: true,
+        returnData: encodeFunctionResult({
+          abi: permit2Abi,
+          functionName: "allowance",
+          result: options.permitAllowance?.() ?? [
+            10n ** 30n,
+            Math.floor(Date.now() / 1000) + 86400,
+            0,
+          ],
+        }),
+      };
     try {
       const token = decodeFunctionData({ abi: erc20Abi, data });
       if (
@@ -5371,3 +5382,312 @@ test("metadata requests use the environment's configured browser endpoint", asyn
     ),
   ).toBe(true);
 });
+
+for (const scenario of [
+  "supported",
+  "unsupported",
+  "ready",
+  "rejected",
+  "expired",
+  "already-approved",
+  "permit-only",
+  "batch-unsupported",
+  "wrong-chain",
+  "allowance-changed",
+] as const) {
+  const atomic =
+    scenario === "unsupported"
+      ? "unsupported"
+      : scenario === "ready"
+        ? "ready"
+        : "supported";
+  test(`Market Swap ${scenario} wallet batches Permit2 without offchain signatures`, async ({
+    page,
+  }) => {
+    const router = swapNetwork(8453).router;
+    let authorized = scenario === "already-approved";
+    const approved =
+      scenario === "already-approved" || scenario === "permit-only";
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: approved ? 10n ** 18n : 0n,
+      atomic,
+      permitAllowance: () => [
+        authorized ? 10n ** 30n : 0n,
+        Math.floor(Date.now() / 1000) + 86400,
+        0,
+      ],
+    });
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    let quoteRequests = 0;
+    const submitted: { to: string; data: Hex }[][] = [];
+    const rpcMethods: string[] = [];
+    await page.route("https://mainnet.base.org", async (route) => {
+      const request = route.request().postDataJSON() as {
+        id: number;
+        method: string;
+        params: unknown[];
+      };
+      if (Array.isArray(request)) return route.fallback();
+      rpcMethods.push(request.method);
+      let result: unknown;
+      if (request.method === "wallet_sendCalls") {
+        if (scenario === "rejected" || scenario === "batch-unsupported") {
+          return route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: request.id,
+              error: {
+                code: scenario === "rejected" ? 4001 : 5760,
+                message:
+                  scenario === "rejected"
+                    ? "User rejected batch"
+                    : "Atomicity not supported",
+              },
+            }),
+          });
+        }
+        const batch = request.params[0] as {
+          atomicRequired: boolean;
+          calls: { to: string; data: Hex }[];
+        };
+        expect(batch.atomicRequired).toBe(true);
+        submitted.push(batch.calls);
+        state.allowance = 0n;
+        authorized = true;
+        result = { id: "wallet-batch-1" };
+      } else if (request.method === "eth_sendTransaction") {
+        const call = request.params[0] as { to: string; data: Hex };
+        submitted.push([call]);
+        if (call.to.toLowerCase() === a) state.allowance = 10n ** 18n;
+        if (call.to.toLowerCase() === PERMIT2.toLowerCase()) authorized = true;
+        result = `0x${"12".repeat(32)}`;
+      } else return route.fallback();
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+      });
+    });
+    await page.route("**/api/swap/**", async (route) => {
+      const input = route.request().postDataJSON() as {
+        swapper: string;
+        amount: string;
+      };
+      const transaction = {
+        to: router,
+        data: "0x12345678",
+        value: "0",
+        chainId: 8453,
+      };
+      expect(route.request().url().endsWith("/quote")).toBe(true);
+      quoteRequests++;
+      const result = {
+        mode: "wallet-router",
+        chainId: 8453,
+        tokenIn: a,
+        tokenOut: b,
+        amountIn: input.amount,
+        estimatedAmountOut: "3000000000",
+        minimumAmountOut: "2985000000",
+        routing: "CLASSIC",
+        routeVersion: "2.1.2",
+        quotedAt: Date.now(),
+        expiresAt: Date.now() + (scenario === "expired" ? -1 : 45000),
+        routeId: "browser-test",
+        transaction,
+        ...(!authorized
+          ? {
+              permitTransaction: {
+                to: PERMIT2,
+                chainId: 8453,
+                value: "0",
+                data: encodeFunctionData({
+                  abi: permit2Abi,
+                  functionName: "approve",
+                  args: [
+                    a,
+                    router,
+                    BigInt(input.amount),
+                    Math.floor(Date.now() / 1000) + 86400,
+                  ],
+                }),
+              },
+            }
+          : {}),
+      };
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(result),
+      });
+    });
+    await showMarketSection(page, "Swap");
+    await page.getByLabel("You pay", { exact: true }).fill("1");
+    await page
+      .getByRole("button", { name: "Get swap quote", exact: true })
+      .click();
+    if (scenario === "expired") {
+      await expect(
+        page.getByText("Swap changed or expired. Request a fresh quote.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      expect(submitted).toEqual([]);
+      expect(quoteRequests).toBe(1);
+      return;
+    }
+    await expect(
+      page.getByText("Minimum received:", { exact: false }),
+    ).toBeVisible();
+    expect(quoteRequests).toBe(1);
+    if (scenario === "wrong-chain") {
+      await page.evaluate(() =>
+        (
+          window as unknown as {
+            testWallet: { chain: (chain: string) => void };
+          }
+        ).testWallet.chain("0x1"),
+      );
+      await expect(
+        page.getByRole("button", { name: "Get swap quote", exact: true }),
+      ).toBeDisabled();
+      await expect(
+        page.getByRole("button", {
+          name: "Approve & swap atomically",
+          exact: true,
+        }),
+      ).toHaveCount(0);
+      expect(submitted).toEqual([]);
+      return;
+    }
+    if (
+      scenario === "rejected" ||
+      scenario === "allowance-changed" ||
+      scenario === "batch-unsupported"
+    ) {
+      if (scenario === "allowance-changed") state.allowance = 10n ** 18n;
+      await page
+        .getByRole("button", { name: "Approve & swap atomically", exact: true })
+        .click();
+      await expect(
+        page.getByText(
+          scenario === "rejected"
+            ? "Wallet request declined. You can try again."
+            : scenario === "allowance-changed"
+              ? "Allowance changed. Request a fresh quote."
+              : "Atomic batching is unavailable. Request a fresh quote to approve and swap separately.",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      expect(submitted).toEqual([]);
+      expect(rpcMethods).not.toContain("eth_sendTransaction");
+      if (scenario !== "batch-unsupported") return;
+      await page
+        .getByRole("button", { name: "Get swap quote", exact: true })
+        .click();
+      await expect(
+        page.getByRole("checkbox", {
+          name: "Use separate approval and swap transactions",
+        }),
+      ).toBeChecked();
+    }
+    if (scenario === "already-approved") {
+      await page
+        .getByRole("button", { name: "Confirm swap", exact: true })
+        .click();
+      await expect(
+        page.getByText("Swap confirmed", { exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]).toHaveLength(1);
+      expect(submitted[0][0].to.toLowerCase()).toBe(router.toLowerCase());
+      expect(rpcMethods).not.toContain("wallet_sendCalls");
+      return;
+    }
+    if (scenario === "ready") {
+      await expect(
+        page.getByRole("button", {
+          name: "Approve token (then review swap)",
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page
+        .getByRole("checkbox", {
+          name: "Allow my wallet to request an upgrade for atomic batching",
+        })
+        .check();
+    }
+    if (
+      scenario === "supported" ||
+      scenario === "ready" ||
+      scenario === "permit-only"
+    ) {
+      await page
+        .getByRole("button", { name: "Approve & swap atomically", exact: true })
+        .click();
+      await expect(
+        page.getByText("Swap confirmed", { exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]).toHaveLength(scenario === "permit-only" ? 2 : 3);
+    } else {
+      await expect(page.getByText(/3 separate transactions/)).toBeVisible();
+      await page
+        .getByRole("button", {
+          name: "Approve token (then review swap)",
+          exact: true,
+        })
+        .click();
+      await expect(
+        page.getByText(/Approval confirmed\. Request a fresh quote/),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(1);
+      await page
+        .getByRole("button", { name: "Get swap quote", exact: true })
+        .click();
+      await page
+        .getByRole("button", {
+          name: "Authorize Permit2 (then review swap)",
+          exact: true,
+        })
+        .click();
+      await expect(
+        page.getByText(/Approval confirmed\. Request a fresh quote/),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Get swap quote", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Confirm swap", exact: true })
+        .click();
+      await expect(
+        page.getByText("Swap confirmed", { exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(3);
+    }
+    if (scenario === "permit-only") {
+      expect(submitted[0][0].to).toBe(PERMIT2);
+      expect(
+        decodeFunctionData({
+          abi: permit2Abi,
+          data: submitted[0][0].data,
+        }).args?.slice(0, 3),
+      ).toEqual([a, router, 10n ** 18n]);
+      return;
+    }
+    expect(submitted[0][0].to.toLowerCase()).toBe(a);
+    expect(
+      decodeFunctionData({ abi: erc20Abi, data: submitted[0][0].data }).args,
+    ).toEqual([PERMIT2, 10n ** 18n]);
+    expect(submitted.at(-1)!.at(-1)!.to.toLowerCase()).toBe(
+      router.toLowerCase(),
+    );
+    expect(rpcMethods.some((method) => /signTypedData/i.test(method))).toBe(
+      false,
+    );
+  });
+}

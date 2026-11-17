@@ -1,7 +1,7 @@
 import { DEFAULT_DURATION, DURATIONS } from "@yld-cx/sdk";
 import { networks } from "@yld-cx/sdk/ethereum";
 import { MarketTab } from "@/lib/market-filters";
-import { getSortedMarkets, getTrendingMarkets } from "@/lib/server/markets";
+import { getSortedMarkets, getTrendingMarkets } from "@/server/markets";
 import type { MarketList } from "@/lib/market-list";
 import { registry } from "@/lib/registry";
 
