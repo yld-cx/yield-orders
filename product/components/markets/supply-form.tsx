@@ -19,7 +19,7 @@ import {
 } from "@/components/forms/financial-fields";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
 import { Button } from "@yld-cx/ui/components/ui/button";
-import { tickPrice } from "@/lib/market-values";
+import { priceText, tickPrice } from "@/lib/market-values";
 import { ApyLabel } from "@/components/forms/yield-display";
 import { DEFAULT_YIELD_MODE, tickYieldText } from "@/lib/yield";
 import { queryKeys } from "@/lib/query-keys";
@@ -93,7 +93,7 @@ export function SupplyForm({
       />
       <Metric label="Price">
         {selected
-          ? `${tickPrice(selected, display)} ${display[1].symbol} / ${display[0].symbol}`
+          ? `${priceText(tickPrice(selected, display))} ${display[1].symbol} / ${display[0].symbol}`
           : "Not selected"}
       </Metric>
       <Metric label="Term">{duration}D</Metric>

@@ -3895,6 +3895,15 @@ test("simplified book preserves the selected limit price and amount across ten-l
   );
   const missing = book.locator('[data-status="missing"]').first();
   await missing.click();
+  const selectedPrice = (
+    await missing.locator("span").first().innerText()
+  ).trim();
+  await expect(
+    order
+      .locator("dl")
+      .filter({ has: page.getByText("Price", { exact: true }) })
+      .locator("dd"),
+  ).toHaveText(`${selectedPrice} USDC / WETH`);
   const selectedId = await missing.getAttribute("data-tick-id");
   await order.getByLabel("Amount", { exact: true }).fill("12");
   const price = await order

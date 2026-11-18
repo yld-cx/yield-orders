@@ -254,7 +254,7 @@ export function MarketTable() {
           ))}
         </div>
         <Card className="gap-0 p-0">
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-2 py-2">
             {error ? (
               <Empty>
                 <EmptyHeader>
@@ -274,13 +274,17 @@ export function MarketTable() {
                     {loadingLabel}
                   </TableCaption>
                 )}
-                <TableHeader>
+                <colgroup>
+                  <col className="w-[90%]" />
+                  <col className="w-[10%]" />
+                </colgroup>
+                <TableHeader className="sr-only">
                   <TableRow>
                     <TableHead className="w-[90%] px-4 text-right first:text-left">
                       Market
                     </TableHead>
                     <TableHead className="w-[10%] px-4 text-center">
-                      <span className="sr-only">Open</span>
+                      Open
                     </TableHead>
                   </TableRow>
                 </TableHeader>
