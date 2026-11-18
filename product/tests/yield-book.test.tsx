@@ -1,33 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  DISCOVERY_DEFAULTS,
+  PRODUCT_MARKET,
   QUERY_TIMING,
-  Duration,
   type Market,
   type TickState,
-  type EconomicAction,
 } from "@yld-cx/sdk";
 import {
-  tickCandidates,
   priceAtTick,
+  tickCandidates,
   type DiscoveryResult,
 } from "@yld-cx/sdk/ethereum";
 import { useYieldBook, type BookLevel } from "@/hooks/use-yield-book";
+import { YieldBook } from "@/components/markets/yield-book";
 import { SupplyForm } from "@/components/markets/supply-form";
 import { UseForm } from "@/components/markets/use-form";
-import { YieldBook } from "@/components/markets/yield-book";
+import { bookWindow, initialBookWindow } from "@/lib/market-selection";
 import { discoveryBaseTick } from "@/lib/market-values";
-
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   discover: vi.fn(),
   flow: vi.fn(),
 }));
-vi.mock("@tanstack/react-query", () => ({
-  useQuery: mocks.query,
-  keepPreviousData: (data: unknown) => data,
-}));
+vi.mock("@tanstack/react-query", () => ({ useQuery: mocks.query }));
 vi.mock("@/lib/rpc", () => ({ getSdk: () => ({ discover: mocks.discover }) }));
 vi.mock("wagmi", () => ({ useConnection: () => ({}) }));
 vi.mock("@/components/transactions/transaction-flow", () => ({
@@ -42,13 +37,13 @@ const market: Market = {
   network: "eip155:8453",
   key: `${a}:${b}`,
   baseTick: -196000,
-  stepTicks: DISCOVERY_DEFAULTS.stepTicks,
-  defaultDuration: Duration.Weekly,
+  stepTicks: PRODUCT_MARKET.stepTicks,
+  defaultDuration: 7,
   token0: {
     network: "eip155:8453",
     address: a,
     symbol: "WETH",
-    name: "Wrapped Ether",
+    name: "Ether",
     decimals: 18,
     listed: true,
   },
@@ -56,19 +51,21 @@ const market: Market = {
     network: "eip155:8453",
     address: b,
     symbol: "USDC",
-    name: "USD Coin",
+    name: "USD",
     decimals: 6,
     listed: true,
   },
 };
-const pairId = 42n;
-const identities = tickCandidates(pairId, market.baseTick, market.stepTicks);
-const identity = identities[0];
+const display = [market.token0, market.token1] as const;
+const window = bookWindow(initialBookWindow(market.baseTick));
+const identities = window
+  .flatMap((tick) => tickCandidates(42n, tick, 100, 0))
+  .filter((t) => t.direction === 1 && t.durationDays === 7);
 const state: TickState = {
-  asset: a,
-  quote: b,
-  priceX128: priceAtTick(identity.priceTick),
-  durationDays: BigInt(identity.durationDays),
+  asset: b,
+  quote: a,
+  priceX128: priceAtTick(identities[0].priceTick),
+  durationDays: 7n,
   availableSupply: 500n,
   workingSupply: 0n,
   exitWorking: 0n,
@@ -78,7 +75,7 @@ const state: TickState = {
 };
 const result: DiscoveryResult = {
   blockNumber: 1n,
-  radius: DISCOVERY_DEFAULTS.radius,
+  radius: 10,
   complete: false,
   reads: identities.map((identity, i) =>
     i === 0
@@ -88,21 +85,18 @@ const result: DiscoveryResult = {
         : { identity, status: "missing" },
   ),
 };
-function readBook(
-  data: DiscoveryResult | null = result,
-  error?: Error,
-  baseTick = market.baseTick,
-) {
+function readBook(data: DiscoveryResult | undefined = result, error?: Error) {
   mocks.query.mockReturnValue({
-    data: data ?? undefined,
+    data,
     isError: !!error,
     error,
     isFetching: false,
+    isPending: false,
     refetch: vi.fn(),
   });
   let book!: ReturnType<typeof useYieldBook>;
   function Harness() {
-    book = useYieldBook(market, pairId, baseTick);
+    book = useYieldBook(market, 42n, window, 1);
     return null;
   }
   renderToStaticMarkup(<Harness />);
@@ -110,255 +104,181 @@ function readBook(
 }
 function supply(
   level?: BookLevel,
-  duration = level?.durationDays ?? market.defaultDuration,
-  assetAddress = level?.asset ?? market.token0.address,
+  duration: 7 = 7,
+  assetAddress = level?.asset ?? b,
 ) {
   return renderToStaticMarkup(
     <SupplyForm
       market={market}
-      display={[market.token0, market.token1]}
+      display={display}
       duration={duration}
       selectedTick={level}
       assetAddress={assetAddress}
-      onAssetChange={vi.fn()}
-      onDurationChange={vi.fn()}
     />,
   );
 }
 beforeEach(() => vi.clearAllMocks());
-
-describe("URL discovery center", () => {
-  it.each([
+describe("single-side discovery", () => {
+  it("reads only ten exact canonical levels in the selected side and 7D", async () => {
+    const book = readBook(),
+      options = mocks.query.mock.calls[0][0];
+    await options.queryFn();
+    expect(mocks.discover).toHaveBeenCalledWith(42n, {
+      canonicalTicks: window,
+      direction: 1,
+      duration: 7,
+      stepTicks: 100,
+    });
+    expect(options.refetchInterval).toBe(QUERY_TIMING.liveRefresh);
+    expect(book.levels).toHaveLength(10);
+    expect(book.ticks).toHaveLength(1);
+    expect(book.levels[1]).toMatchObject({
+      status: "failed",
+      error: "RPC timeout",
+    });
+    expect(book.levels[2]).toMatchObject({ status: "missing", asset: b });
+    expect(options).not.toHaveProperty("placeholderData");
+  });
+  it.each([undefined, result])(
+    "fails safely even with cached discovery data %s",
+    (data) => {
+      const book = readBook(data, new Error("RPC unavailable"));
+      expect(book.failed).toBe(10);
+      expect(book.missing).toBe(0);
+      expect(book.ticks).toHaveLength(0);
+    },
+  );
+  it("renders missing levels, failed reads, Yield and the original animated OTC controls", () => {
+    const book = readBook();
+    const html = renderToStaticMarkup(
+      <YieldBook
+        display={display}
+        side="bid"
+        onSideChange={vi.fn()}
+        selection={{ kind: "tick", canonicalTick: market.baseTick }}
+        onSelect={vi.fn()}
+        onMarket={vi.fn()}
+        marketAvailable
+        referencePrice="3K"
+        book={book}
+        onNavigate={vi.fn()}
+        canHigher
+        canLower
+      />,
+    );
+    expect(html).toContain('data-status="missing"');
+    expect(html).toContain("0 <small>USDC</small>");
+    expect(html).toContain("Read failed");
+    expect(html.indexOf("Market · AMM")).toBeLessThan(html.indexOf("Price ·"));
+    expect(html).toContain(">Yield</span>");
+    expect(html).toContain("otc-badge");
+    expect(html).toContain("~ 3K USDC");
+    expect(html).toContain('aria-label="Refresh discovery"');
+    expect(html).not.toContain("Back to market");
+    expect(html).not.toContain("Amounts in");
+    expect(html).not.toContain("30D");
+  });
+});
+describe("Limit execution", () => {
+  it.each([0, 1] as const)(
+    "prepares initialization of a missing tick in direction %s",
+    async (direction) => {
+      readBook();
+      const identity = tickCandidates(42n, market.baseTick, 100, 0).find(
+        (t) => t.direction === direction && t.durationDays === 7,
+      )!;
+      const level: BookLevel = {
+        ...identity,
+        status: "missing",
+        asset: direction === 0 ? a : b,
+        priceX128: priceAtTick(identity.priceTick),
+      };
+      const html = supply(level);
+      const flow = mocks.flow.mock.calls[0][0];
+      expect(flow.label).toBe("Preview Provide");
+      expect(flow.triggerLabel).toBe(
+        direction === 0 ? "Sell and Earn" : "Buy and Earn",
+      );
+      expect(await flow.prepare()).toEqual({
+        kind: "supply",
+        tickId: identity.id,
+        amount: 0n,
+        initialize: {
+          tokenA: a,
+          tokenB: b,
+          direction,
+          priceTick: identity.priceTick,
+          durationDays: 7,
+        },
+      });
+      expect(html).toContain("7D");
+      expect(html).not.toContain("Supply side");
+      expect(html).not.toContain('role="combobox"');
+    },
+  );
+  it("blocks failed reads and incompatible side/duration", () => {
+    const book = readBook();
+    supply(book.levels[1]);
+    expect(mocks.flow.mock.calls[0][0].disabled).toBe(true);
+    mocks.flow.mockClear();
+    supply({ ...book.levels[0], durationDays: 30 });
+    supply(book.levels[0], 7, a);
+    expect(mocks.flow).not.toHaveBeenCalled();
+  });
+});
+describe("Rent and tick Swap", () => {
+  function render(
+    level?: BookLevel,
+    mode: "use" | "swap" = "use",
+    pending = false,
+  ) {
+    mocks.query.mockReturnValue({ isError: false });
+    return renderToStaticMarkup(
+      <UseForm
+        market={market}
+        display={display}
+        tick={level}
+        mode={mode}
+        isPending={pending}
+        isIncomplete={level?.status === "failed"}
+      />,
+    );
+  }
+  it.each(["use", "swap"] as const)(
+    "requires confirmed liquidity for %s",
+    (mode) => {
+      const book = readBook();
+      expect(render(book.levels[2], mode)).toContain("No liquidity yet");
+      expect(render(book.levels[1], mode)).toContain("Liquidity unavailable");
+      expect(mocks.flow).not.toHaveBeenCalled();
+      const html = render(book.levels[0], mode);
+      expect(html).toContain("Amount");
+      expect(mocks.flow.mock.calls[0][0].label).toBe(
+        mode === "use" ? "Preview Rent" : "Preview Swap",
+      );
+      expect(html.includes('aria-label="Yield slippage"')).toBe(mode === "use");
+    },
+  );
+  it("distinguishes loading from missing levels", () => {
+    const pending = render(undefined, "use", true);
+    expect(pending).toContain('aria-busy="true"');
+    expect(pending).toContain('data-slot="skeleton"');
+    expect(pending).not.toContain("Reading market");
+    expect(render()).toContain("Choose your price");
+  });
+});
+it("validates canonical URL centers against the product grid", () => {
+  for (const value of [
     null,
     "",
     " ",
     "1.5",
     "-195001",
     "887273",
-    "-887273",
     "Infinity",
-    "NaN",
     "1e3",
     "+1000",
-    "9007199254740993",
-  ])("safely ignores invalid base tick %s", (value) => {
+  ])
     expect(discoveryBaseTick(value, market)).toBe(market.baseTick);
-  });
-  it.each(["-195000", "1000", "0", "887000", "-887000"])(
-    "uses valid aligned canonical base tick %s",
-    (value) => {
-      expect(discoveryBaseTick(value, market)).toBe(Number(value));
-    },
-  );
-  it("uses the market's stepTicks for URL validation", () => {
-    expect(discoveryBaseTick("1500", { baseTick: 0, stepTicks: 500 })).toBe(
-      1500,
-    );
-    expect(discoveryBaseTick("1501", { baseTick: 0, stepTicks: 500 })).toBe(0);
-  });
-});
-
-describe("configured Yield Book", () => {
-  it("discovers the entire shared grid with active ticks refreshed every 15 seconds", async () => {
-    const book = readBook();
-    const options = mocks.query.mock.calls[0][0];
-    expect(options.refetchInterval).toBe(QUERY_TIMING.liveRefresh);
-    expect(options).not.toHaveProperty("enabled");
-    await options.queryFn();
-    expect(mocks.discover).toHaveBeenCalledWith(pairId, {
-      baseTick: market.baseTick,
-      stepTicks: market.stepTicks,
-    });
-    expect(book.levels).toHaveLength(identities.length);
-    expect(book.ticks).toHaveLength(1);
-    expect(book.levels[0].state).toBe(state);
-    expect(book.levels[1]).toMatchObject({
-      status: "failed",
-      error: "RPC timeout",
-    });
-    expect(book.levels[2]).toMatchObject({
-      ...identities[2],
-      status: "missing",
-      asset: b,
-      priceX128: priceAtTick(identities[2].priceTick),
-    });
-    expect(book.levels[2].state).toBeUndefined();
-  });
-  it("uses the effective center in discovery, cache keys and failed-read candidates", async () => {
-    const center = market.baseTick + market.stepTicks;
-    const book = readBook(null, new Error("RPC unavailable"), center);
-    const options = mocks.query.mock.calls[0][0];
-    await options.queryFn();
-    expect(mocks.discover).toHaveBeenCalledWith(pairId, {
-      baseTick: center,
-      stepTicks: market.stepTicks,
-    });
-    expect(options.queryKey).toContain(center);
-    expect(options.queryKey).not.toContain(market.baseTick);
-    const expected = tickCandidates(pairId, center, market.stepTicks);
-    expect(book.levels.map(({ id }) => id)).toEqual(
-      expected.map(({ id }) => id),
-    );
-    expect(book.levels).toHaveLength(84);
-    expect(book.failed).toBe(84);
-    expect(book.baseTick).toBe(center);
-    expect(
-      new Set(book.levels.map(({ durationDays }) => durationDays)),
-    ).toEqual(new Set([Duration.Weekly, Duration.Monthly]));
-  });
-  it("renders confirmed missing ticks as zero and failed reads as unavailable", () => {
-    const book = readBook();
-    const html = renderToStaticMarkup(
-      <YieldBook
-        referencePrice="3.08K"
-        stepTicks={market.stepTicks}
-        onBaseTickChange={vi.fn()}
-        display={[market.token0, market.token1]}
-        duration={Duration.Monthly}
-        book={book}
-        onSelect={vi.fn()}
-        onDurationChange={vi.fn()}
-      />,
-    );
-    expect(html).toContain('data-status="missing"');
-    expect(html).toContain("0 <small>USDC</small>");
-    expect(html).toContain("Read failed");
-  });
-  it.each([null, result])(
-    "never turns a failed discovery into confirmed empty levels (cached data: %s)",
-    (data) => {
-      const book = readBook(data, new Error("RPC unavailable"));
-      expect(book.levels).toHaveLength(identities.length);
-      expect(book.levels.every((level) => level.status === "failed")).toBe(
-        true,
-      );
-      expect(book.missing).toBe(0);
-      expect(book.failed).toBe(identities.length);
-      expect(book.ticks).toHaveLength(0);
-    },
-  );
-});
-
-describe("selected price Rent or Swap", () => {
-  function renderUse(
-    level?: BookLevel,
-    isPending = false,
-    isIncomplete = false,
-  ) {
-    mocks.query.mockReturnValue({ isError: false });
-    return renderToStaticMarkup(
-      <UseForm
-        market={market}
-        display={[market.token0, market.token1]}
-        tick={level}
-        isPending={isPending}
-        isIncomplete={isIncomplete}
-      />,
-    );
-  }
-  it.each([0n, 1n])(
-    "uses the selected tick's available supply (%s)",
-    (availableSupply) => {
-      const html = renderUse({
-        ...identity,
-        asset: a,
-        priceX128: state.priceX128,
-        status: "exists",
-        state: { ...state, availableSupply },
-      });
-      if (availableSupply > 0n) {
-        expect(html).toContain("You receive");
-        expect(html).toContain(">Max</button>");
-        expect(html).toContain('aria-label="Yield slippage"');
-        expect(html).toContain('value="0.5"');
-        expect(mocks.flow.mock.calls[0][0].label).toBe("Preview Rent");
-      } else {
-        expect(html).toContain("No liquidity yet");
-        expect(html).not.toContain(">Max</button>");
-        expect(html).toContain("https://t.me/yld_group");
-        expect(mocks.flow).not.toHaveBeenCalled();
-      }
-    },
-  );
-  it("distinguishes no selection, a missing level, loading and failed reads", () => {
-    expect(renderUse()).toContain(
-      "Select a Yield Book price to rent or swap tokens.",
-    );
-    const missing: BookLevel = {
-      ...identity,
-      asset: a,
-      priceX128: state.priceX128,
-      status: "missing",
-    };
-    expect(renderUse(missing)).toContain("No liquidity yet");
-    expect(renderUse(undefined, true)).toContain("Reading market…");
-    const failed = renderUse(
-      { ...missing, status: "failed", error: "RPC timeout" },
-      false,
-      true,
-    );
-    expect(failed).toContain("Liquidity unavailable");
-    expect(failed).not.toContain("No liquidity yet");
-    expect(mocks.flow).not.toHaveBeenCalled();
-  });
-});
-
-describe("selected price Supply", () => {
-  it.each([0, 1] as const)(
-    "previews Provide for missing direction %s with its exact initialization identity",
-    async (direction) => {
-      const level = readBook().levels.find(
-        (level) =>
-          level.status === "missing" &&
-          level.direction === direction &&
-          level.durationDays === Duration.Monthly,
-      )!;
-      const html = supply(level);
-      expect(html).toContain(">Price</dt>");
-      expect(mocks.flow).toHaveBeenCalledTimes(1);
-      const props = mocks.flow.mock.calls[0][0];
-      expect(props.label).toBe("Preview Provide");
-      expect(await props.prepare()).toEqual({
-        kind: "supply",
-        tickId: level.id,
-        amount: 0n,
-        initialize: {
-          tokenA: a,
-          tokenB: b,
-          direction: level.direction,
-          priceTick: level.priceTick,
-          durationDays: level.durationDays,
-        },
-      });
-    },
-  );
-  it("supplies an existing selected ID directly", async () => {
-    supply(readBook().levels[0]);
-    const props = mocks.flow.mock.calls[0][0];
-    expect(props.label).toBe("Preview Provide");
-    expect(await props.prepare()).toEqual({
-      kind: "supply",
-      tickId: identity.id,
-      amount: 0n,
-      initialize: {
-        tokenA: a,
-        tokenB: b,
-        direction: identity.direction,
-        priceTick: identity.priceTick,
-        durationDays: identity.durationDays,
-      },
-    } satisfies EconomicAction);
-    expect(props.disabled).toBe(true);
-  });
-  it("requires selection and blocks failed or incompatible identities", () => {
-    const book = readBook();
-    expect(supply()).toContain("Not selected");
-    supply(book.levels[1]);
-    expect(mocks.flow).toHaveBeenCalledTimes(1);
-    expect(mocks.flow.mock.calls[0][0].disabled).toBe(true);
-    mocks.flow.mockClear();
-    supply(book.levels[0], Duration.Monthly);
-    supply(book.levels[0], Duration.Weekly, b);
-    expect(mocks.flow).not.toHaveBeenCalled();
-  });
+  expect(discoveryBaseTick("-195900", market)).toBe(-195900);
 });

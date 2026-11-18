@@ -1,6 +1,6 @@
 # yld.cx
 
-Provide liquidity, rent or swap tokens, and manage your orders.
+Provide liquidity, rent or swap tokens, and manage your yield orders.
 
 Use Node.js 24+. Run commands from `product/`.
 
@@ -27,3 +27,5 @@ npm exec playwright install chromium
 npm run test:browser
 PLAYWRIGHT_SERVER=development npm run test:browser
 ```
+
+See [Market UI and reference caching](docs/market-ui.md) for product settings, discovery and execution behavior.

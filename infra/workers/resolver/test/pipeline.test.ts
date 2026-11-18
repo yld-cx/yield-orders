@@ -54,7 +54,6 @@ for (const promising of [true, false])
                 network: "eip155:1",
                 token0: { address: A },
                 token1: { address: Q },
-                stepTicks: 1000,
               },
             ],
           });
@@ -153,8 +152,8 @@ for (const promising of [true, false])
         });
       },
     );
-    const priceTick = promising ? 6000 : 8000;
-    const activeTick = tickCandidates(pairId, 7000, 1000, 2).find(
+    const priceTick = promising ? 6800 : 7000;
+    const activeTick = tickCandidates(pairId, 6900, 100, 2).find(
       (t) =>
         t.direction === 0 && t.priceTick === priceTick && t.durationDays === 7,
     )!;
@@ -293,7 +292,7 @@ for (const promising of [true, false])
       "the price quote supplies the discovery block without another RPC",
     );
     if (promising) {
-      assert.deepEqual(reads, [20]);
+      assert.deepEqual(reads, [10]);
       assert.deepEqual(
         groups.at(-1),
         ["balanceOf"],
@@ -307,7 +306,7 @@ for (const promising of [true, false])
       assert.ok(valued);
       assert.ok(BigInt(String(valued.net)) > 0n);
     } else {
-      assert.deepEqual(reads, [20, 16]);
+      assert.deepEqual(reads, [10, 8]);
       assert.equal(simulations, 0);
       assert.deepEqual(
         requests

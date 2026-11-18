@@ -4,7 +4,6 @@ import { marginalTermYieldRatio } from "@yld-cx/sdk/ethereum";
 export type YieldMode = "apy" | "term";
 
 export const DEFAULT_YIELD_MODE = {
-  markets: "apy",
   provide: "apy",
   rent: "term",
 } as const satisfies Record<string, YieldMode>;

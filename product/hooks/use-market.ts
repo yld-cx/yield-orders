@@ -4,7 +4,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { getSdk } from "@/lib/rpc";
 import { registry } from "@/lib/registry";
 import {
-  DEFAULT_DURATION,
+  PRODUCT_MARKET,
   DISCOVERY_DEFAULTS,
   QUERY_TIMING,
   type Market,
@@ -139,23 +139,23 @@ export function useMarkets(network: NetworkSlug, keys: readonly string[]) {
             key,
             token0: token0.data as Token,
             token1: token1.data as Token,
-            stepTicks: config?.stepTicks ?? DISCOVERY_DEFAULTS.stepTicks,
+            stepTicks: PRODUCT_MARKET.stepTicks,
             baseTick:
               calculatedBaseTick(
                 token0.data,
                 token1.data,
-                config?.stepTicks ?? DISCOVERY_DEFAULTS.stepTicks,
+                PRODUCT_MARKET.stepTicks,
               ) ??
               config?.baseTick ??
               DISCOVERY_DEFAULTS.baseTick,
             tags: config?.tags,
             telegramPost: config?.telegramPost,
-            defaultDuration: config?.defaultDuration ?? DEFAULT_DURATION,
+            defaultDuration: PRODUCT_MARKET.duration,
           }
         : undefined;
     return {
       market,
-      defaultDuration: config?.defaultDuration ?? DEFAULT_DURATION,
+      defaultDuration: PRODUCT_MARKET.duration,
       pair,
       pairId: pairIdFor(a as Address, b as Address),
       error: token0.error ?? token1.error ?? pair.error,

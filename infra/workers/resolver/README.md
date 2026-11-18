@@ -4,6 +4,8 @@ Cloudflare Worker + Durable Objects for executing Yield Orders against Uniswap l
 
 Runs every five minutes. Reads nearby ticks through multicall, requests `BEST_PRICE` quotes across V2/V3/V4, and simulates batches before submitting profitable executions. Starts disabled and in dry-run mode.
 
+Candidate discovery uses `PRODUCT_MARKET.stepTicks` (100) and `PRODUCT_MARKET.duration` (7D), with a bounded radius and deduplicated multicalls of at most 100 reads.
+
 ## Local
 
 From the repository root:

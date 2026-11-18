@@ -1,11 +1,10 @@
 import { boundedJson, address, record } from "@yld-cx/sdk/uniswap";
-import { MAX_TICK, pairIdFor } from "@yld-cx/sdk/ethereum";
+import { pairIdFor } from "@yld-cx/sdk/ethereum";
 import type { Address } from "viem";
 export interface MarketIdentity {
   pairId: bigint;
   token0: Address;
   token1: Address;
-  stepTicks: number;
 }
 export async function markets(
   origin: string,
@@ -16,8 +15,7 @@ export async function markets(
     throw new Error("HTTPS markets origin required");
   url.search = new URLSearchParams({
     chainId: String(chainId),
-    tag: "yieldlist",
-    duration: "7",
+    tag: "all",
   }).toString();
   const response = await fetch(url, {
     redirect: "error",
@@ -31,13 +29,7 @@ export async function markets(
   return payload.markets.flatMap((value) => {
     try {
       const m = record(value);
-      if (
-        m.network !== `eip155:${chainId}` ||
-        !Number.isSafeInteger(m.stepTicks) ||
-        Number(m.stepTicks) <= 0 ||
-        Number(m.stepTicks) > MAX_TICK
-      )
-        return [];
+      if (m.network !== `eip155:${chainId}`) return [];
       const [token0, token1] = [
         address(record(m.token0).address),
         address(record(m.token1).address),
@@ -46,7 +38,7 @@ export async function markets(
       const pairId = pairIdFor(token0, token1);
       if (seen.has(String(pairId))) return [];
       seen.add(String(pairId));
-      return [{ pairId, token0, token1, stepTicks: Number(m.stepTicks) }];
+      return [{ pairId, token0, token1 }];
     } catch {
       return [];
     }

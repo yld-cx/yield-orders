@@ -6,7 +6,11 @@ import {
   tickCandidates,
 } from "@yld-cx/sdk/ethereum";
 import { same, type SwapPriceResult } from "@yld-cx/sdk/uniswap";
-import type { TickState } from "@yld-cx/sdk";
+import {
+  PRODUCT_MARKET,
+  DISCOVERY_BATCH_SIZE,
+  type TickState,
+} from "@yld-cx/sdk";
 import type { Address, PublicClient } from "viem";
 import type { MarketIdentity } from "./markets.ts";
 export const INITIAL_RADIUS = 2;
@@ -32,7 +36,7 @@ export function baseTickFromPrice(
     ),
     0,
     0,
-    market.stepTicks,
+    PRODUCT_MARKET.stepTicks,
   ).priceTick;
 }
 
@@ -75,20 +79,36 @@ export async function* ticks(
     const identities = tickCandidates(
       market.pairId,
       baseTick,
-      market.stepTicks,
+      PRODUCT_MARKET.stepTicks,
       radius,
-    ).filter((t) => !seen.has(t.id));
-    identities.forEach((t) => seen.add(t.id));
-    const result = await client.multicall({
-      blockNumber,
-      allowFailure: true,
-      contracts: identities.map((t) => ({
-        address: yld,
-        abi: protocolAbi,
-        functionName: "getTick" as const,
-        args: [t.id] as const,
-      })),
-    });
+    )
+      .filter((tick) => tick.durationDays === PRODUCT_MARKET.duration)
+      .filter((t) => {
+        if (seen.has(t.id)) return false;
+        seen.add(t.id);
+        return true;
+      });
+    const result = [];
+    for (
+      let offset = 0;
+      offset < identities.length;
+      offset += DISCOVERY_BATCH_SIZE
+    ) {
+      result.push(
+        ...(await client.multicall({
+          blockNumber,
+          allowFailure: true,
+          contracts: identities
+            .slice(offset, offset + DISCOVERY_BATCH_SIZE)
+            .map((t) => ({
+              address: yld,
+              abi: protocolAbi,
+              functionName: "getTick" as const,
+              args: [t.id] as const,
+            })),
+        })),
+      );
+    }
     const available = result.flatMap((r, i) =>
       r.status === "success" &&
       r.result.availableSupply > 0n &&

@@ -5,7 +5,46 @@ import {
   swapNetwork,
   permit2Abi,
   type SwapQuoteResult,
+  type SwapInput,
 } from "@yld-cx/sdk/uniswap";
+
+export interface MarketSwapAction {
+  kind: "market-swap";
+  input: SwapInput;
+}
+export interface MarketSwapPreview {
+  quote: SwapQuoteResult;
+  calls: Awaited<ReturnType<typeof swapCalls>>;
+}
+
+export async function swapRequest(
+  input: SwapInput,
+  signal?: AbortSignal,
+): Promise<SwapQuoteResult> {
+  const response = await fetch("/api/swap/quote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(30000)])
+      : AbortSignal.timeout(30000),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error ?? "Swap unavailable");
+  if (
+    result.chainId !== input.chainId ||
+    result.mode !== input.mode ||
+    !same(result.tokenIn, input.tokenIn) ||
+    !same(result.tokenOut, input.tokenOut) ||
+    result.amountIn !== input.amount
+  )
+    throw new Error(
+      "Swap quote no longer matches this order. Request a fresh quote.",
+    );
+  if (result.expiresAt <= Date.now())
+    throw new Error("Swap changed or expired. Request a fresh quote.");
+  return result as SwapQuoteResult;
+}
 
 /** Plan exact onchain approvals from fresh RPC state, without approval APIs. */
 export async function swapCalls(

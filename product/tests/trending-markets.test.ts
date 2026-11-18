@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_DURATION, DISCOVERY_DEFAULTS } from "@yld-cx/sdk";
+import { PRODUCT_MARKET } from "@yld-cx/sdk";
 import { registry } from "@/lib/registry";
 import { trendingMarkets, USD_ADDRESSES } from "@/lib/trending-markets";
 
@@ -23,8 +23,8 @@ describe("trending markets", () => {
       key: `${quote}:${arbitrary}`,
       token0: { address: quote },
       token1: { address: arbitrary },
-      defaultDuration: DEFAULT_DURATION,
-      stepTicks: DISCOVERY_DEFAULTS.stepTicks,
+      defaultDuration: PRODUCT_MARKET.duration,
+      stepTicks: PRODUCT_MARKET.stepTicks,
     });
     expect(markets[1]).toEqual(registry.getMarket(network, weth, quote));
     expect(trendingMarkets(network, [])).toEqual([]);

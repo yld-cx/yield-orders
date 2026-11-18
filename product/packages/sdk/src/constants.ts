@@ -6,16 +6,20 @@ export const Duration = {
 export type Duration = (typeof Duration)[keyof typeof Duration];
 export const DURATIONS = [Duration.Weekly, Duration.Monthly] as const;
 export const DEFAULT_DURATION = Duration.Weekly;
-
 export const DISCOVERY_DEFAULTS = {
   baseTick: 0,
-  stepTicks: 1000,
+  stepTicks: 100,
   radius: 10,
 } as const;
 export const MAX_DISCOVERY_RADIUS = 128;
 export const DISCOVERY_BATCH_SIZE = 100;
-export const YIELD_BOOK_LAYOUT = { visibleRows: 5, rowHeightRem: 2.5 } as const;
 
+export const PRODUCT_MARKET = {
+  duration: Duration.Weekly,
+  stepTicks: DISCOVERY_DEFAULTS.stepTicks,
+  visibleRows: 10,
+  referenceCacheSeconds: 3600,
+} as const;
 export const PORTFOLIO_DEFAULTS = { offset: 0, limit: 24 } as const;
 export const MAX_PORTFOLIO_PAGE_SIZE = 100;
 export const MIN_TICK = -887272;

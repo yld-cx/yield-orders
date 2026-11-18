@@ -1,16 +1,21 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   decodeFunctionData,
   encodeFunctionData,
   erc20Abi,
   type PublicClient,
 } from "viem";
-import { atomicRequestUnsupported, swapCalls } from "../lib/swap-flow.ts";
+import {
+  atomicRequestUnsupported,
+  swapCalls,
+  swapRequest,
+} from "../lib/swap-flow.ts";
 import {
   PERMIT2,
   permit2Abi,
   swapNetwork,
   type SwapQuoteResult,
+  type SwapInput,
 } from "@yld-cx/sdk/uniswap";
 const TOKEN = "0x1111111111111111111111111111111111111111";
 const OWNER = "0x2222222222222222222222222222222222222222";
@@ -41,6 +46,41 @@ const quote: SwapQuoteResult = {
   transaction: { to: ROUTER, data: "0x12345678", value: "0", chainId: 8453 },
   permitTransaction,
 };
+afterEach(() => vi.unstubAllGlobals());
+describe("swap quote identity", () => {
+  const input: SwapInput = {
+    chainId: 8453,
+    mode: "wallet-router",
+    tokenIn: TOKEN,
+    tokenOut: OWNER,
+    amount: "100",
+    swapper: OWNER,
+    slippage: 0.5,
+  };
+  it("accepts a fresh quote matching the exact payment and pair", async () => {
+    const current = { ...quote, expiresAt: Date.now() + 45000 };
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json(current));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await swapRequest(input)).toEqual(current);
+    expect(JSON.parse(fetcher.mock.calls[0][1]?.body as string)).toEqual(input);
+  });
+  it.each([
+    { tokenIn: OWNER },
+    { tokenOut: TOKEN },
+    { amountIn: "101" },
+    { chainId: 1 },
+    { mode: "resolver-router" },
+  ])("rejects changed quote identity %j", async (changed) => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json({ ...quote, expiresAt: Date.now() + 45000, ...changed }),
+    );
+    await expect(swapRequest(input)).rejects.toThrow("no longer matches");
+  });
+  it("rejects expired executable quotes before enabling a swap", async () => {
+    vi.stubGlobal("fetch", async () => Response.json(quote));
+    await expect(swapRequest(input)).rejects.toThrow("expired");
+  });
+});
 function rpc(
   allowance = 0n,
   permitted = 0n,

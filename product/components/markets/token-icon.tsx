@@ -1,6 +1,6 @@
 "use client";
-/* eslint-disable @next/next/no-img-element -- Token icons use remote metadata with a local fallback. */
 import type { Token } from "@yld-cx/sdk";
+import { useCallback, useState } from "react";
 import { tokenImageUrl } from "@/lib/token-metadata";
 export function tokenIconFallback(image: HTMLImageElement) {
   if (image.getAttribute("src") !== "/token.svg") image.src = "/token.svg";
@@ -12,12 +12,25 @@ export function TokenIcon({
   token: Pick<Token, "symbol" | "imageUrl">;
   size?: number;
 }) {
+  const src = tokenImageUrl(token.imageUrl) ?? "/token.svg";
+  const [readySrc, setReadySrc] = useState<string>();
+  const imageRef = useCallback(
+    (image: HTMLImageElement | null) => {
+      if (image?.complete && image.naturalWidth > 0) setReadySrc(src);
+    },
+    [src],
+  );
   return (
     <img
-      key={token.imageUrl}
-      className="shrink-0 rounded-full"
-      src={tokenImageUrl(token.imageUrl) ?? "/token.svg"}
-      onError={(event) => tokenIconFallback(event.currentTarget)}
+      key={src}
+      ref={imageRef}
+      className={`shrink-0 rounded-full ${readySrc === src ? "opacity-100" : "opacity-0"}`}
+      src={src}
+      onLoad={() => setReadySrc(src)}
+      onError={(event) => {
+        setReadySrc(undefined);
+        tokenIconFallback(event.currentTarget);
+      }}
       width={size}
       height={size}
       alt={`${token.symbol} logo`}

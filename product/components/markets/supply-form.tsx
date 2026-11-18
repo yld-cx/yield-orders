@@ -1,6 +1,4 @@
 "use client";
-import { Badge } from "@yld-cx/ui/components/ui/badge";
-import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useConnection } from "wagmi";
@@ -8,14 +6,14 @@ import type { Address } from "viem";
 import { Droplets } from "lucide-react";
 import {
   QUERY_TIMING,
-  type Duration,
+  PRODUCT_MARKET,
+  Q128,
   type Market,
   type Token,
 } from "@yld-cx/sdk";
 import { getNetwork, tokenAmount, explainError } from "@yld-cx/sdk/ethereum";
 import {
   AmountInput,
-  DurationSelect,
   Metric,
   Message,
 } from "@/components/forms/financial-fields";
@@ -26,33 +24,28 @@ import { ApyLabel } from "@/components/forms/yield-display";
 import { DEFAULT_YIELD_MODE, tickYieldText } from "@/lib/yield";
 import { queryKeys } from "@/lib/query-keys";
 import { getSdk } from "@/lib/rpc";
+import { amountText } from "@/lib/utils";
 import type { BookLevel } from "@/hooks/use-yield-book";
-import {
-  Tabs,
-  TabsList,
-  TabsTrigger,
-  TabsContent,
-} from "@yld-cx/ui/components/ui/tabs";
-
 export function SupplyForm({
   market,
   display,
   duration,
   selectedTick,
   assetAddress,
-  onAssetChange,
-  onDurationChange,
+  isPending = false,
 }: {
   market: Market;
   display: readonly [Token, Token];
-  duration: Duration;
+  duration: typeof PRODUCT_MARKET.duration;
   selectedTick?: BookLevel;
   assetAddress: string;
-  onAssetChange: (address: string) => void;
-  onDurationChange: (duration: Duration) => void;
+  isPending?: boolean;
 }) {
   const [amount, setAmount] = useState("");
-  const side = assetAddress === display[0].address ? "ask" : "bid";
+  const side =
+    assetAddress.toLowerCase() === display[0].address.toLowerCase()
+      ? "ask"
+      : "bid";
   const [asset, quote] = side === "ask" ? display : [display[1], display[0]];
   const network = getNetwork(market.network).slug;
   const account = useConnection();
@@ -81,116 +74,86 @@ export function SupplyForm({
       ? tickYieldText(selected.state, DEFAULT_YIELD_MODE.provide)
       : "—";
   return (
-    <Card className="min-w-0" aria-label="Provide liquidity">
-      <CardContent className="space-y-4">
-        <div className="flex items-center justify-between gap-3 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:font-semibold">
-          <div>
-            <h2>{side === "ask" ? "Sell" : "Buy"} and Earn</h2>
-            <p className="text-xs text-muted-foreground">
-              Choose a Yield Book price.
-            </p>
-          </div>
-          <Badge variant="outline" data-intent="term">
-            Provide
-          </Badge>
-        </div>
-        <Tabs
-          value={side}
-          onValueChange={(next) =>
-            onAssetChange(
-              next === "ask" ? display[0].address : display[1].address,
-            )
-          }
-        >
-          <TabsList className="w-full" aria-label="Supply side">
-            <TabsTrigger value="ask" data-intent="ask">
-              Ask · {display[0].symbol}
-            </TabsTrigger>
-            <TabsTrigger value="bid" data-intent="bid">
-              Bid · {display[1].symbol}
-            </TabsTrigger>
-          </TabsList>
-          <TabsContent value={side}>
-            <AmountInput
-              label="Amount"
-              symbol={asset.symbol}
-              value={amount}
-              onChange={setAmount}
-              balance={
-                connected
-                  ? {
-                      value: balance.data,
-                      decimals: asset.decimals,
-                      isPending: balance.isPending,
-                      isError: balance.isError,
-                    }
-                  : undefined
+    <div className="space-y-4" aria-label="Limit order">
+      <AmountInput
+        label="Amount"
+        symbol={asset.symbol}
+        value={amount}
+        onChange={setAmount}
+        balance={
+          connected
+            ? {
+                value: balance.data,
+                decimals: asset.decimals,
+                isPending: balance.isPending,
+                isError: balance.isError,
               }
-            />
-            <Metric label="Price">
-              {selected
-                ? `${tickPrice(selected, display)} ${display[1].symbol} / ${display[0].symbol}`
-                : "Not selected"}
-            </Metric>
-            <DurationSelect
-              label="Term"
-              value={duration}
-              onChange={onDurationChange}
-            />
-            {selected && (
-              <Card className="mb-4">
-                <CardContent className="space-y-4">
-                  <Metric label="You provide">
-                    {amount || "0"} {asset.symbol}
-                  </Metric>
-                  <Metric label={<ApyLabel>Estimated APY</ApyLabel>}>
-                    {estimatedYield}
-                  </Metric>
-                  <p className="text-xs text-muted-foreground">Annualized</p>
-                  <details className="space-y-2 text-xs text-muted-foreground [&_code]:block [&_code]:break-all">
-                    <summary>Price details</summary>
-                    <Metric label="Price tick">{selected.priceTick}</Metric>
-                    <code>{selected.id.toString()}</code>
-                  </details>
-                </CardContent>
-              </Card>
-            )}
-            {validation && <Message error>{validation}</Message>}
-            {selected?.status === "failed" && (
-              <Message error>
-                Selected price level could not be read. Refresh discovery.{" "}
-                {selected.error}
-              </Message>
-            )}
-            {selected && !validation ? (
-              <TransactionFlow
-                key={`supply/${selected.id}/${rawAmount}`}
-                network={network}
-                label="Preview Provide"
-                asset={asset}
-                quote={quote}
-                disabled={rawAmount === 0n || selected.status === "failed"}
-                prepare={async () => ({
-                  kind: "supply",
-                  tickId: selected.id,
-                  amount: rawAmount,
-                  initialize: {
-                    tokenA: market.token0.address as `0x${string}`,
-                    tokenB: market.token1.address as `0x${string}`,
-                    direction: selected.direction,
-                    priceTick: selected.priceTick,
-                    durationDays: selected.durationDays,
-                  },
-                })}
-              />
-            ) : (
-              <Button className="w-full" aria-label="Preview Provide" disabled>
-                <Droplets aria-hidden="true" data-icon="inline-start" /> Provide
-              </Button>
-            )}
-          </TabsContent>
-        </Tabs>
-      </CardContent>
-    </Card>
+            : undefined
+        }
+      />
+      <Metric label="Price">
+        {selected
+          ? `${tickPrice(selected, display)} ${display[1].symbol} / ${display[0].symbol}`
+          : "Not selected"}
+      </Metric>
+      <Metric label="Term">{duration}D</Metric>
+      {selected && (
+        <div className="my-4 space-y-4">
+          <Metric label="You provide">
+            {amountText(rawAmount, asset.decimals)} {asset.symbol}
+          </Metric>
+          <Metric label="You receive">
+            ~{" "}
+            {amountText(
+              (rawAmount * selected.priceX128 + Q128 - 1n) / Q128,
+              quote.decimals,
+            )}{" "}
+            {quote.symbol}
+          </Metric>
+          <Metric label={<ApyLabel>Estimated APY</ApyLabel>}>
+            {estimatedYield}
+          </Metric>
+        </div>
+      )}
+      {validation && <Message error>{validation}</Message>}
+      {selected?.status === "failed" && !isPending && (
+        <Message error>
+          Selected price level could not be read. Refresh discovery.{" "}
+          {selected.error}
+        </Message>
+      )}
+      {selected && !validation ? (
+        <TransactionFlow
+          key={`supply/${selected.id}/${rawAmount}`}
+          network={network}
+          label="Preview Provide"
+          triggerLabel={side === "ask" ? "Sell and Earn" : "Buy and Earn"}
+          asset={asset}
+          quote={quote}
+          disabled={rawAmount === 0n || selected.status === "failed"}
+          prepare={async () => ({
+            kind: "supply",
+            tickId: selected.id,
+            amount: rawAmount,
+            initialize: {
+              tokenA: market.token0.address as `0x${string}`,
+              tokenB: market.token1.address as `0x${string}`,
+              direction: selected.direction,
+              priceTick: selected.priceTick,
+              durationDays: selected.durationDays,
+            },
+          })}
+        />
+      ) : (
+        <Button
+          className="w-full"
+          aria-label={side === "ask" ? "Sell and Earn" : "Buy and Earn"}
+          disabled
+        >
+          <Droplets aria-hidden="true" data-icon="inline-start" />{" "}
+          {side === "ask" ? "Sell and Earn" : "Buy and Earn"}
+        </Button>
+      )}
+    </div>
   );
 }
