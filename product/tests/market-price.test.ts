@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { PRODUCT_MARKET } from "@yld-cx/sdk";
 import { getMarketPrice } from "@/server/market-price";
 import { GET } from "@/app/api/market-price/route";
 import { displayReference, referenceAmount } from "@/lib/market-reference";
@@ -9,24 +8,6 @@ const mocks = vi.hoisted(() => ({
   price: vi.fn(),
   token: vi.fn(),
   metadata: vi.fn(),
-  cache: new Map<string, unknown>(),
-  config: [] as { keys: string[]; revalidate: number }[],
-}));
-vi.mock("next/cache", () => ({
-  unstable_cache: (
-    fn: (...args: unknown[]) => Promise<unknown>,
-    keys: string[],
-    options: { revalidate: number },
-  ) => {
-    mocks.config.push({ keys, ...options });
-    return async (...args: unknown[]) => {
-      const key = JSON.stringify(args);
-      if (mocks.cache.has(key)) return mocks.cache.get(key);
-      const value = await fn(...args);
-      mocks.cache.set(key, value);
-      return value;
-    };
-  },
 }));
 vi.mock("@/lib/rpc", () => ({
   getSdk: () => ({ tokenMetadata: mocks.token }),
@@ -39,50 +20,33 @@ vi.mock("@yld-cx/sdk/uniswap", async (original) => ({
   },
 }));
 beforeEach(() => {
-  mocks.cache.clear();
   mocks.metadata.mockReset().mockResolvedValue([]);
-  mocks.token
-    .mockReset()
-    .mockImplementation(async (address) => ({
-      address,
-      decimals: address === a ? 18 : 6,
-    }));
-  mocks.price
-    .mockReset()
-    .mockImplementation(async () => ({
-      tokenIn: a,
-      tokenOut: b,
-      amountIn: "1000000000000000",
-      estimatedAmountOut: "3000000",
-      priceImpact: 0.01,
-      quotedAt: Date.now(),
-    }));
+  mocks.token.mockReset().mockImplementation(async (address) => ({
+    address,
+    decimals: address === a ? 18 : 6,
+  }));
+  mocks.price.mockReset().mockImplementation(async () => ({
+    tokenIn: a,
+    tokenOut: b,
+    amountIn: "1000000000000000",
+    estimatedAmountOut: "3000000",
+    priceImpact: 0.01,
+    quotedAt: Date.now(),
+  }));
 });
-describe("indicative reference cache", () => {
-  it("shares one-hour results across callers and coalesces cold misses", async () => {
+describe("indicative references", () => {
+  it("coalesces in-flight loads without retaining completed results", async () => {
     const values = await Promise.all(
       Array.from({ length: 8 }, () => getMarketPrice("base", a, b)),
     );
     expect(
       values.every((value) => value.price === "3000" && value.source === "amm"),
     ).toBe(true);
-    await getMarketPrice("base", a, b);
     expect(mocks.price).toHaveBeenCalledTimes(1);
-    expect(mocks.config[0].revalidate).toBe(
-      PRODUCT_MARKET.referenceCacheSeconds,
-    );
+    await getMarketPrice("base", a, b);
+    expect(mocks.price).toHaveBeenCalledTimes(2);
     expect(values[0]).not.toHaveProperty("transaction");
     expect(values[0]).not.toHaveProperty("permitTransaction");
-  });
-  it("does not serve an expired indication while the shared cache revalidates", async () => {
-    const first = await getMarketPrice("base", a, b);
-    mocks.cache.set(JSON.stringify(["base", a, b]), {
-      ...first,
-      timestamp: Date.now() - 3600001,
-    });
-    const next = await getMarketPrice("base", a, b);
-    expect(next.timestamp).toBeGreaterThan(Date.now() - 1000);
-    expect(mocks.price).toHaveBeenCalledTimes(2);
   });
   it.each([undefined, -1, 2, NaN])(
     "rejects unusable impact %s and uses trusted metadata",
@@ -116,12 +80,40 @@ describe("indicative reference cache", () => {
       ammAvailable: false,
     });
   });
-  it("returns an explicit unavailable state for arbitrary pairs without a reference", async () => {
-    const value = await getMarketPrice(
-      "base",
-      a,
-      "0xffffffffffffffffffffffffffffffffffffffff",
+  it("quotes a meaningful BNKR amount and preserves its canonical USDC price", async () => {
+    const bnkr = "0x22af33fe49fd1fa80c7149773dde5890d3c76f3b";
+    mocks.token.mockImplementation(async (address) => ({
+      address,
+      decimals: address === b ? 6 : 18,
+    }));
+    mocks.metadata.mockResolvedValue([
+      { address: bnkr, status: "available", priceUsd: "0.00024" },
+      { address: b, status: "available", priceUsd: "1" },
+    ]);
+    mocks.price.mockImplementation(async ({ amount, tokenIn, tokenOut }) => ({
+      tokenIn,
+      tokenOut,
+      amountIn: amount,
+      // A one-token BNKR sample loses precision in USDC's six decimals.
+      estimatedAmountOut: amount === "1000000000000000000" ? "229" : "8854425",
+      priceImpact: amount === "1000000000000000000" ? 2.66 : 0.99,
+      quotedAt: Date.now(),
+    }));
+    const value = await getMarketPrice("base", bnkr, b);
+    expect(mocks.price).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: "41666666666666666666666" }),
     );
+    expect(value).toMatchObject({ source: "amm", ammAvailable: true });
+    expect(Number(value.price)).toBeCloseTo(0.0002125062, 12);
+  });
+  it("returns an explicit unavailable state for arbitrary pairs without a reference", async () => {
+    const response = await GET(
+      new Request(
+        `https://yld.cx/api/market-price?chainId=8453&tokenA=${a}&tokenB=0xffffffffffffffffffffffffffffffffffffffff`,
+      ),
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const value = await response.json();
     expect(value).toMatchObject({
       status: "unavailable",
       source: null,
@@ -137,7 +129,7 @@ describe("indicative reference cache", () => {
     ]);
     expect((await getMarketPrice("base", a, b)).source).toBe("configured");
   });
-  it("canonicalizes inverse requests before cache lookup", async () => {
+  it("canonicalizes inverse requests and sets one-hour response caching", async () => {
     for (const [tokenA, tokenB] of [
       [a, b],
       [b, a],
@@ -148,22 +140,26 @@ describe("indicative reference cache", () => {
         ),
       );
       expect(result.status).toBe(200);
+      expect(result.headers.get("cache-control")).toBe(
+        "public, max-age=0, s-maxage=3600",
+      );
       expect(await result.json()).toMatchObject({
         price: "3000",
         ammAvailable: true,
       });
     }
-    expect(mocks.price).toHaveBeenCalledTimes(1);
+    expect(mocks.price).toHaveBeenCalledTimes(2);
   });
   it.each([
     "chainId=10",
     `chainId=8453&tokenA=${a}&tokenB=${a}`,
     `chainId=8453&tokenA=${a}&tokenB=${b}&tokenB=${b}`,
   ])("validates requests %s", async (query) => {
-    expect(
-      (await GET(new Request(`https://yld.cx/api/market-price?${query}`)))
-        .status,
-    ).toBe(400);
+    const response = await GET(
+      new Request(`https://yld.cx/api/market-price?${query}`),
+    );
+    expect(response.status).toBe(400);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(mocks.price).not.toHaveBeenCalled();
   });
   it("uses bounded consistent reference amounts and integer inverse prices", () => {
@@ -171,7 +167,7 @@ describe("indicative reference cache", () => {
       3333333333333333n,
     );
     expect(referenceAmount({ decimals: 6, priceUsd: "0.000001" })).toBe(
-      1000000n,
+      10000000000000n,
     );
     expect(referenceAmount({ decimals: 0 })).toBe(1n);
     expect(referenceAmount({ decimals: 255 })).toBeLessThanOrEqual(10n ** 30n);

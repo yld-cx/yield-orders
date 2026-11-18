@@ -41,8 +41,8 @@
   --rent-surface: #4b3d68;
   --swap-surface: #3a4351;
   --term-surface: #35302a;
-  --token-start: #303947;
-  --token-end: #323e50;
+  --token-start: color-mix(in srgb, var(--brand) 12%, transparent);
+  --token-end: color-mix(in srgb, var(--brand) 6%, transparent);
 }
 /* Only color variables change inside semantic controls; shadcn owns all states. */
 [data-intent="ask"] {
@@ -104,11 +104,6 @@ body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 100px;
   align-items: center;
-  gap: 24px;
-  padding: 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: linear-gradient(105deg, var(--card), var(--muted));
 }
 .market-banner > dl {
   grid-column: 1/-1;
@@ -179,14 +174,11 @@ body {
 @media (max-width: 480px) {
   .market-banner {
     grid-template-columns: minmax(0, 1fr) 76px;
-    padding: 16px;
-    gap: 16px;
   }
 }
 @media (min-width: 1024px) {
   .market-banner {
     grid-template-columns: minmax(0, 1fr) 172px minmax(0, 1fr);
-    padding: 32px;
   }
   .market-banner > dl {
     grid-column: auto;

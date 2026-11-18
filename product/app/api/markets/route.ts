@@ -1,7 +1,7 @@
 import { networks } from "@yld-cx/sdk/ethereum";
 import { MarketTab } from "@/lib/market-filters";
 import { getTrendingMarkets } from "@/server/markets";
-import type { MarketList } from "@/lib/market-list";
+import { MARKET_CACHE_SECONDS, type MarketList } from "@/lib/market-list";
 import { registry } from "@/lib/registry";
 
 export async function GET(request: Request) {
@@ -26,11 +26,13 @@ export async function GET(request: Request) {
         ? await getTrendingMarkets(network.slug)
         : registry.getMarkets(network.id);
     return Response.json({ markets } satisfies MarketList, {
-      headers: { "Cache-Control": "no-store" },
+      headers: {
+        "Cache-Control": markets.length
+          ? `public, max-age=0, s-maxage=${MARKET_CACHE_SECONDS}`
+          : "no-store",
+      },
     });
   } catch {
-    // Keep markets accessible during upstream failures without another RPC scan.
-    // The fallback is not stored in the discovery cache.
     return Response.json(
       { markets: registry.getMarkets(network.id) } satisfies MarketList,
       {

@@ -106,10 +106,10 @@ export function YieldBook({
         >
           <TabsList className="grid w-full grid-cols-2" aria-label="Book side">
             <TabsTrigger value="bid" data-intent="bid">
-              BID
+              Buy
             </TabsTrigger>
             <TabsTrigger value="ask" data-intent="ask">
-              ASK
+              Sell
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -118,7 +118,6 @@ export function YieldBook({
             variant="ghost"
             className={rowClass}
             onClick={onMarket}
-            disabled={!marketAvailable}
             aria-pressed={selection.kind === "market"}
           >
             <span className="flex items-center gap-2 text-left">
@@ -127,8 +126,8 @@ export function YieldBook({
             </span>
             <span className="col-span-3 text-muted-foreground">
               {marketAvailable && referencePrice
-                ? `~ ${referencePrice} ${display[1].symbol}`
-                : "Unavailable"}
+                ? `~ ${priceText(referencePrice)} ${display[1].symbol}`
+                : "—"}
             </span>
           </Button>
           <div className="grid grid-cols-[1.3fr_1fr_0.8fr_0.8fr] items-center gap-2 border-y px-2 py-3 my-2 text-right text-xs text-muted-foreground">

@@ -1,5 +1,4 @@
 import "server-only";
-import { unstable_cache } from "next/cache";
 import { PRODUCT_MARKET } from "@yld-cx/sdk";
 import {
   getNetwork,
@@ -22,7 +21,7 @@ import { walletSwapAvailable } from "@/lib/swap-availability";
 import type { Address } from "viem";
 
 const pending = new Map<string, Promise<MarketReference>>();
-function load(network: NetworkSlug, a: Address, b: Address) {
+export function getMarketPrice(network: NetworkSlug, a: Address, b: Address) {
   const key = `${network}/${a}/${b}`;
   let result = pending.get(key);
   if (!result) {
@@ -148,29 +147,4 @@ async function loadReference(
         source: "configured",
         baseTick: nearestProductTick(fallback),
       };
-}
-// Next's Data Cache persists results across requests/users. In-flight promises
-// only coalesce work; they are not the reference cache. Arguments are canonical.
-const cachedReference = unstable_cache(
-  load,
-  [
-    "market-reference-v1",
-    JSON.stringify(registry.data),
-    "max-one-token-or-10-usd",
-    "max-impact-1-percent",
-    "slippage-0.5",
-  ],
-  { revalidate: PRODUCT_MARKET.referenceCacheSeconds },
-);
-export async function getMarketPrice(
-  network: NetworkSlug,
-  a: Address,
-  b: Address,
-) {
-  const reference = await cachedReference(network, a, b);
-  // Do not serve an expired indication while Next revalidates in the background.
-  return Date.now() - reference.timestamp >=
-    PRODUCT_MARKET.referenceCacheSeconds * 1000
-    ? load(network, a, b)
-    : reference;
 }

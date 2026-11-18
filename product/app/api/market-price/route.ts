@@ -1,3 +1,4 @@
+import { PRODUCT_MARKET } from "@yld-cx/sdk";
 import { networks } from "@yld-cx/sdk/ethereum";
 import { canonicalPair } from "@yld-cx/sdk/registry";
 import { address } from "@yld-cx/sdk/uniswap";
@@ -26,7 +27,12 @@ export async function GET(request: Request) {
     ) as readonly [Address, Address];
     const reference = await getMarketPrice(network.slug, a, b);
     return Response.json(reference, {
-      headers: { "Cache-Control": "no-store" },
+      headers: {
+        "Cache-Control":
+          reference.status === "available"
+            ? `public, max-age=0, s-maxage=${PRODUCT_MARKET.referenceCacheSeconds}`
+            : "no-store",
+      },
     });
   } catch {
     return Response.json(

@@ -166,20 +166,21 @@ function MarketContent({
   }
   return (
     <>
-      <div className="flex flex-wrap items-center gap-3 py-6 text-xs text-muted-foreground">
-        <Link href="/">Yield</Link>
-        <span>|</span>
-        <span>
-          {display[0].symbol} / {display[1].symbol}
-        </span>
-      </div>
-      <section className="market-banner" aria-label="Market overview">
-        <div>
+      <section
+        className="market-banner relative gap-x-6 gap-y-4 py-10"
+        aria-label="Market overview"
+      >
+        <div className="absolute right-0 top-10 flex h-4 items-center">
+          <Badge variant="outline" data-intent="bid">
+            {exists ? "Open market" : "Preview market"}
+          </Badge>
+        </div>
+        <div className="self-start">
           <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
             Yield market · {getNetwork(network).name}
           </p>
-          <div className="flex flex-wrap items-center gap-3 [&>h1]:text-3xl [&>h1]:font-semibold [&>h1]:tracking-tight">
-            <h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
               {display[0].symbol} / {display[1].symbol}
             </h1>
             <Button
@@ -191,21 +192,13 @@ function MarketContent({
               <ArrowLeftRight size={15} />
             </Button>
           </div>
-          <p className="my-3 text-sm text-muted-foreground">
+          <p className="my-3 text-muted-foreground">
             Trade and use {display[0].symbol} or {display[1].symbol} at your
             price.
           </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" data-intent="bid">
-              {exists ? "Open market" : "Preview market"}
-            </Badge>
-            <Badge variant="secondary" data-intent="term">
-              {PRODUCT_MARKET.duration}D
-            </Badge>
-          </div>
         </div>
         <div
-          className="crowned-token relative flex h-32 items-center justify-center"
+          className="crowned-token relative mt-8 flex h-32 items-center justify-center lg:mt-0"
           aria-label={`${display[0].symbol} crowned token`}
         >
           <span
@@ -218,16 +211,30 @@ function MarketContent({
             <TokenIcon token={display[0]} size={50} />
           </div>
         </div>
-        <dl className="space-y-2 text-sm">
+        <dl className="flex flex-wrap gap-x-10 gap-y-4 text-sm">
+          <div>
+            <dt className="text-xs text-muted-foreground">Reference price</dt>
+            <dd className="mt-1 font-semibold tabular-nums">
+              {referencePrice
+                ? `~ ${referencePrice} ${display[1].symbol}`
+                : "—"}
+            </dd>
+          </div>
           <div>
             <dt className="text-xs text-muted-foreground">
               <ApyLabel>{`${state.side.toUpperCase()} APY`}</ApyLabel>
             </dt>
             <dd className="mt-1 font-semibold text-primary">{selectedApy}</dd>
           </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Term</dt>
+            <dd className="mt-1 font-semibold">
+              {PRODUCT_MARKET.duration} days
+            </dd>
+          </div>
         </dl>
       </section>
-      <div className="my-4 grid items-start gap-4 lg:grid-cols-2">
+      <div className="grid items-start gap-4 lg:grid-cols-2">
         <YieldBook
           display={display}
           side={state.side}
@@ -242,7 +249,7 @@ function MarketContent({
           }
           onMarket={selectMarket}
           marketAvailable={!!reference?.ammAvailable}
-          referencePrice={referencePrice}
+          referencePrice={indicative}
           book={book}
           onNavigate={navigate}
           canHigher={

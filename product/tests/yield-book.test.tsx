@@ -159,7 +159,7 @@ describe("single-side discovery", () => {
         onSelect={vi.fn()}
         onMarket={vi.fn()}
         marketAvailable
-        referencePrice="3K"
+        referencePrice="3000"
         book={book}
         onNavigate={vi.fn()}
         canHigher
@@ -172,7 +172,7 @@ describe("single-side discovery", () => {
     expect(html.indexOf("Market · AMM")).toBeLessThan(html.indexOf("Price ·"));
     expect(html).toContain(">Yield</span>");
     expect(html).toContain("otc-badge");
-    expect(html).toContain("~ 3K USDC");
+    expect(html).toContain("~ 3,000 USDC");
     expect(html).toContain('aria-label="Refresh discovery"');
     expect(html).not.toContain("Back to market");
     expect(html).not.toContain("Amounts in");

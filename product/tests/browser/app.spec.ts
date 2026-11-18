@@ -981,7 +981,7 @@ test("multiple injected providers, wallet selection, account and network switchi
   await expect(page.getByRole("heading", { name: "Yield Book" })).toBeVisible();
   await page
     .getByLabel("Yield Book", { exact: true })
-    .getByRole("tab", { name: "ASK", exact: true })
+    .getByRole("tab", { name: "Sell", exact: true })
     .click();
   await page.locator(`[data-tick-id="${id7}"]`).click();
   await showMarketSection(page, "Provide");
@@ -1162,7 +1162,7 @@ async function openProvidePreview(page: Page, selectedId = id7) {
   await page
     .getByLabel("Yield Book", { exact: true })
     .getByRole("tab", {
-      name: selectedId === bid7 ? "BID" : "ASK",
+      name: selectedId === bid7 ? "Buy" : "Sell",
       exact: true,
     })
     .click();
@@ -1963,7 +1963,7 @@ test("Rent and Swap Max use the selected level's exact available amount", async 
     await showMarketSection(page, "Yield Book");
     await page
       .getByLabel("Yield Book", { exact: true })
-      .getByRole("tab", { name: id === bid7 ? "BID" : "ASK", exact: true })
+      .getByRole("tab", { name: id === bid7 ? "Buy" : "Sell", exact: true })
       .click();
     await page.locator(`[data-tick-id="${id}"]`).click();
     await showMarketSection(page, "Use");
@@ -2003,7 +2003,7 @@ test("Provide Max fills the exact wallet balance for the selected token", async 
   ] as const) {
     await page
       .getByLabel("Yield Book", { exact: true })
-      .getByRole("tab", { name: side.toUpperCase(), exact: true })
+      .getByRole("tab", { name: side === "Bid" ? "Buy" : "Sell", exact: true })
       .click();
     const balance = supply.getByLabel("Wallet balance", { exact: true });
     await expect(balance).toBeVisible();
@@ -2700,7 +2700,7 @@ test("Yield slippage accepts percentages and disables autocomplete", async ({
   await page.goto(`/market/base/${key}`);
   await page
     .getByLabel("Yield Book", { exact: true })
-    .getByRole("tab", { name: "ASK", exact: true })
+    .getByRole("tab", { name: "Sell", exact: true })
     .click();
   await page.locator(`[data-tick-id="${id7}"]`).click();
   await showMarketSection(page, "Use");
@@ -3435,7 +3435,7 @@ for (const scenario of [
     });
     await page
       .getByLabel("Yield Book", { exact: true })
-      .getByRole("tab", { name: "ASK", exact: true })
+      .getByRole("tab", { name: "Sell", exact: true })
       .click();
     await showMarketSection(page, "Swap");
     const form = page.getByLabel("Market swap", { exact: true });
@@ -3626,7 +3626,7 @@ test("Market Swap quotes the payment token automatically and ignores superseded 
   });
   try {
     const book = page.getByLabel("Yield Book", { exact: true });
-    await book.getByRole("tab", { name: "BID", exact: true }).click();
+    await book.getByRole("tab", { name: "Buy", exact: true }).click();
     await showMarketSection(page, "Swap");
     const form = page.getByLabel("Market swap", { exact: true });
     await expect(form).not.toContainText(
@@ -3668,7 +3668,7 @@ test("Market Swap quotes the payment token automatically and ignores superseded 
       amount: "20000000",
       slippage: 1,
     });
-    await book.getByRole("tab", { name: "ASK", exact: true }).click();
+    await book.getByRole("tab", { name: "Sell", exact: true }).click();
     await amount.fill("0.01");
     await expect.poll(() => requests.length).toBe(4);
     expect(requests[3]).toMatchObject({
@@ -3733,19 +3733,46 @@ test("simplified Trending recovers from an empty discovery response", async ({
   ).toBeVisible();
 });
 
-test("simplified market restores Yield, animated OTC, APY and action colors", async ({
+test("market header shows reference price, APY and animated OTC and action colors", async ({
   page,
 }) => {
   await page.goto(`/market/base/${key}`);
   const book = page.getByLabel("Yield Book", { exact: true });
   const banner = page.getByRole("region", { name: "Market overview" });
   const order = page.getByLabel("Yield Order", { exact: true });
-  await expect(banner.getByText("7D", { exact: true })).toBeVisible();
+  await expect(banner.getByText("Open market", { exact: true })).toBeVisible();
+  const [marketLabelBox, statusBox, bannerBox, titleBox] = await Promise.all([
+    banner.getByText("Yield market · Base", { exact: true }).boundingBox(),
+    banner.getByText("Open market", { exact: true }).boundingBox(),
+    banner.boundingBox(),
+    banner
+      .getByRole("heading", { name: "WETH / USDC", exact: true })
+      .boundingBox(),
+  ]);
+  expect(statusBox!.y + statusBox!.height / 2).toBeCloseTo(
+    marketLabelBox!.y + marketLabelBox!.height / 2,
+    0,
+  );
+  expect(marketLabelBox!.y - bannerBox!.y).toBeCloseTo(40, 0);
+  expect(
+    titleBox!.y - (marketLabelBox!.y + marketLabelBox!.height),
+  ).toBeLessThanOrEqual(4);
+  await expect(
+    banner.getByText("Term", { exact: true }).locator(".."),
+  ).toHaveText("Term7 days");
+  await expect(banner.getByText("7D", { exact: true })).toHaveCount(0);
+  const reference = banner
+    .getByText("Reference price", { exact: true })
+    .locator("..");
+  await expect(reference).toContainText("~ 3K USDC");
+  await expect(
+    book.getByRole("button", { name: /Market · AMM/ }),
+  ).toContainText("~ 3,000 USDC");
   await expect(banner.getByText("BID APY", { exact: true })).toBeVisible();
   await expect(
     banner.getByRole("button", { name: "About APY", exact: true }),
   ).toBeVisible();
-  await expect(banner).not.toContainText(/reference|USDC \/ WETH|Indicative/i);
+  await expect(banner).not.toContainText(/USDC \/ WETH|Indicative/i);
   await expect(book.getByText("Yield", { exact: true })).toBeVisible();
   await expect(book.locator(".otc-badge")).toHaveCSS(
     "color",
@@ -3777,8 +3804,10 @@ test("simplified market restores Yield, animated OTC, APY and action colors", as
     await tab.click();
     await expect(tab).toHaveCSS("color", color);
   }
-  await book.getByRole("tab", { name: "ASK", exact: true }).click();
+  await book.getByRole("tab", { name: "Sell", exact: true }).click();
   await expect(banner.getByText("ASK APY", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
+  await expect(reference).toContainText("~ 0.000333333 WETH");
 });
 
 for (const side of ["BID", "ASK"] as const)
@@ -3792,7 +3821,12 @@ for (const side of ["BID", "ASK"] as const)
           .getByRole("button", { name: /^Invert displayed pair/ })
           .click();
       const book = page.getByLabel("Yield Book", { exact: true });
-      await book.getByRole("tab", { name: side, exact: true }).click();
+      await book
+        .getByRole("tab", {
+          name: side === "BID" ? "Buy" : "Sell",
+          exact: true,
+        })
+        .click();
       const rows = book.locator("[data-tick-id]");
       await expect(rows).toHaveCount(10);
       const initialIds = await rows.evaluateAll((nodes) =>
@@ -3847,7 +3881,7 @@ test("simplified book preserves the selected limit price and amount across ten-l
   const rows = book.locator("[data-tick-id]");
   await expect(rows).toHaveCount(10);
   await expect(
-    book.getByRole("tab", { name: "BID", exact: true }),
+    book.getByRole("tab", { name: "Buy", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await expect(
     order.getByRole("tab", { name: "Limit", exact: true }),
@@ -3932,7 +3966,7 @@ test("market waits for a user-selected price and aligns the panel tabs", async (
   const ammPrice = book
     .getByRole("button", { name: /Market · AMM/ })
     .locator("span.col-span-3");
-  await expect(ammPrice).toHaveText("~ 3K USDC");
+  await expect(ammPrice).toHaveText("~ 3,000 USDC");
   await expect(ammPrice).toHaveCSS("color", "rgb(142, 152, 159)");
   const bookTabs = await book
     .getByRole("tablist", { name: "Book side" })
@@ -3962,7 +3996,7 @@ test("market waits for a user-selected price and aligns the panel tabs", async (
     ).toBeVisible();
     await expect(selectedRows).toHaveCount(0);
   }
-  await book.getByRole("tab", { name: "ASK", exact: true }).click();
+  await book.getByRole("tab", { name: "Sell", exact: true }).click();
   await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await book
     .getByRole("button", { name: "Next price levels", exact: true })
@@ -4001,7 +4035,7 @@ test("simplified selection maps tick and AMM taker directions and restores Limit
   await expect(
     order.getByText("You provide", { exact: true }).locator(".."),
   ).toContainText("USDC");
-  await book.getByRole("tab", { name: "ASK", exact: true }).click();
+  await book.getByRole("tab", { name: "Sell", exact: true }).click();
   await expect(
     order.getByText("You provide", { exact: true }).locator(".."),
   ).toContainText("WETH");
@@ -4012,7 +4046,7 @@ test("simplified selection maps tick and AMM taker directions and restores Limit
   );
   await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
   await expect(
-    book.getByRole("tab", { name: "BID", exact: true }),
+    book.getByRole("tab", { name: "Buy", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await expect(book.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
     "aria-pressed",
@@ -4023,7 +4057,7 @@ test("simplified selection maps tick and AMM taker directions and restores Limit
   ).toBeVisible();
 });
 
-test("simplified Limit remains usable without an AMM reference", async ({
+test("Limit and Market AMM remain selectable without an AMM reference", async ({
   page,
 }) => {
   await page.route("**/api/market-price?**", (route) =>
@@ -4038,14 +4072,25 @@ test("simplified Limit remains usable without an AMM reference", async ({
   );
   await page.goto(`/market/base/${key}`);
   const book = page.getByLabel("Yield Book", { exact: true });
+  const market = book.getByRole("button", { name: /Market · AMM/ });
+  await expect(market).toBeEnabled();
+  await expect(market).toContainText("—");
   await expect(
-    book.getByRole("button", { name: /Market · AMM/ }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("region", { name: "Market overview" }),
-  ).not.toContainText("reference");
+    page
+      .getByRole("region", { name: "Market overview" })
+      .getByText("Reference price", { exact: true })
+      .locator(".."),
+  ).toHaveText("Reference price—");
   await expect(book.locator("[data-tick-id]")).toHaveCount(10);
   await expect(page.getByLabel("Amount", { exact: true })).toBeVisible();
+  await market.click();
+  await expect(market).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page
+      .getByLabel("Yield Order", { exact: true })
+      .getByRole("tab", { name: "Swap", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("Market swap", { exact: true })).toBeVisible();
 });
 
 test("market startup RPC requests stay batched", async ({ page }, testInfo) => {
