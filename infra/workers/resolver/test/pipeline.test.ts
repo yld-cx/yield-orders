@@ -115,6 +115,11 @@ for (const promising of [true, false])
           });
         }
         assert.equal(endpoint, "swap");
+        assert.deepEqual(Object.keys(body).sort(), [
+          "deadline",
+          "quote",
+          "safetyMode",
+        ]);
         const quote = body.quote as {
           input: { amount: string };
           aggregatedOutputs: { minAmount: string }[];

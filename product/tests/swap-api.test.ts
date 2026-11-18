@@ -167,13 +167,31 @@ describe("Uniswap SDK integration", () => {
       ]);
       expect(call.headers.get("x-universal-router-version")).toBe("2.1.2");
       expect(call.body).not.toHaveProperty("signature");
-      if (call.endpoint === "quote" || call.endpoint === "swap") {
+      if (call.endpoint === "quote") {
         expect(call.body.generatePermitAsTransaction).toBe(true);
         expect(call.body.permitAmount).toBe("EXACT");
+      } else {
+        expect(call.body).not.toHaveProperty("generatePermitAsTransaction");
+        expect(call.body).not.toHaveProperty("permitAmount");
       }
       expect(call.body).not.toHaveProperty("swapSource");
     }
   });
+  it.each(["wallet-router", "resolver-router"] as const)(
+    "builds custom-deadline %s calldata using only swap request fields",
+    async (mode) => {
+      const deadline = Math.floor(Date.now() / 1000) + 180;
+      const r = response();
+      const s = service([r, { swap: tx(ROUTER) }]);
+      await s.client.quote({ ...input, mode, deadline });
+      expect(s.calls.map((call) => call.endpoint)).toEqual(["quote", "swap"]);
+      expect(s.calls[1].body).toEqual({
+        quote: r.quote,
+        deadline,
+        safetyMode: "SAFE",
+      });
+    },
+  );
   it("uses the same signature-free Permit2 route for the resolver", async () => {
     const s = service([response()]);
     const q = await s.client.quote({ ...input, mode: "resolver-router" });

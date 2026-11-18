@@ -3200,7 +3200,13 @@ async function transactionRpc(
       tickIds?: bigint[];
     };
     balance?: bigint;
-    atomic?: "supported" | "unsupported" | "missing" | "safe" | "ready";
+    atomic?:
+      | "supported"
+      | "unsupported"
+      | "missing"
+      | "safe"
+      | "ready"
+      | "other-chain-only";
     zeroFirst?: boolean;
     simulationUnsupported?: boolean;
     sendUnsupported?: boolean;
@@ -3574,12 +3580,17 @@ async function transactionRpc(
       if (item.method === "wallet_getCapabilities") {
         if (!options.atomic || options.atomic === "missing")
           return error("Method not found", -32601);
-        result = {
-          "0x2105":
-            options.atomic === "safe"
-              ? { atomicBatch: { supported: true } }
-              : { atomic: { status: options.atomic } },
-        };
+        result =
+          options.atomic === "other-chain-only"
+            ? {
+                "0x1": { atomic: { status: "supported" } },
+              }
+            : {
+                "0x2105":
+                  options.atomic === "safe"
+                    ? { atomicBatch: { supported: true } }
+                    : { atomic: { status: options.atomic } },
+              };
       } else if (item.method === "wallet_sendCalls") {
         if (options.sendUnsupported)
           return error("Atomicity not supported", 5760);
@@ -5385,6 +5396,7 @@ test("metadata requests use the environment's configured browser endpoint", asyn
 
 for (const scenario of [
   "supported",
+  "safe",
   "unsupported",
   "ready",
   "rejected",
@@ -5394,13 +5406,18 @@ for (const scenario of [
   "batch-unsupported",
   "wrong-chain",
   "allowance-changed",
+  "other-chain-only",
 ] as const) {
   const atomic =
-    scenario === "unsupported"
-      ? "unsupported"
-      : scenario === "ready"
-        ? "ready"
-        : "supported";
+    scenario === "safe"
+      ? "safe"
+      : scenario === "other-chain-only"
+        ? "other-chain-only"
+        : scenario === "unsupported"
+          ? "unsupported"
+          : scenario === "ready"
+            ? "ready"
+            : "supported";
   test(`Market Swap ${scenario} wallet batches Permit2 without offchain signatures`, async ({
     page,
   }) => {
@@ -5610,20 +5627,14 @@ for (const scenario of [
     }
     if (scenario === "ready") {
       await expect(
-        page.getByRole("button", {
-          name: "Approve token (then review swap)",
-          exact: true,
-        }),
-      ).toBeVisible();
-      await page
-        .getByRole("checkbox", {
+        page.getByRole("checkbox", {
           name: "Allow my wallet to request an upgrade for atomic batching",
-        })
-        .check();
+        }),
+      ).toHaveCount(0);
     }
     if (
       scenario === "supported" ||
-      scenario === "ready" ||
+      scenario === "safe" ||
       scenario === "permit-only"
     ) {
       await page

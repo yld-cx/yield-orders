@@ -85,20 +85,6 @@ export async function swapCalls(
   });
   return calls;
 }
-export function atomicStatus(
-  capabilities:
-    | { atomic?: { status?: string }; atomicBatch?: { supported?: boolean } }
-    | undefined,
-) {
-  if (capabilities?.atomic?.status === "ready") return "ready";
-  if (
-    capabilities?.atomic?.status === "supported" ||
-    capabilities?.atomicBatch?.supported === true
-  )
-    return "supported";
-  return "unsupported";
-}
-
 export function atomicRequestUnsupported(error: unknown) {
   const seen = new Set<unknown>();
   for (

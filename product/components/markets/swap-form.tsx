@@ -10,7 +10,7 @@ import { waitForCallsStatus } from "viem/actions";
 import { parseUnits, encodeFunctionData, erc20Abi } from "viem";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Market } from "@yld-cx/sdk";
-import { getNetwork, explainError } from "@yld-cx/sdk/ethereum";
+import { getNetwork, explainError, supportsAtomic } from "@yld-cx/sdk/ethereum";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { AmountInput, Message } from "@/components/forms/financial-fields";
@@ -18,11 +18,7 @@ import { NetworkGuard } from "@/components/wallet/wallet-connect";
 import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
 import { queryKeys } from "@/lib/query-keys";
-import {
-  atomicStatus,
-  atomicRequestUnsupported,
-  swapCalls,
-} from "@/lib/swap-flow";
+import { atomicRequestUnsupported, swapCalls } from "@/lib/swap-flow";
 import { walletSwapAvailable } from "@/lib/swap-availability";
 import {
   PERMIT2,
@@ -83,8 +79,7 @@ function SwapSession({ market }: { market: Market }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [status, setStatus] = useState("");
-  const [upgrade, setUpgrade] = useState(false),
-    [expired, setExpired] = useState(false);
+  const [expired, setExpired] = useState(false);
   const [separate, setSeparate] = useState(false);
   const locked = useRef(false),
     revision = useRef(0),
@@ -99,7 +94,7 @@ function SwapSession({ market }: { market: Market }) {
       retry: false,
     },
   });
-  const capability = atomicStatus(capabilities.data);
+  const capability = supportsAtomic(capabilities.data);
   const balance = useQuery({
     queryKey: queryKeys.balance(network.slug, input.address, account.address),
     queryFn: () =>
@@ -214,13 +209,9 @@ function SwapSession({ market }: { market: Market }) {
       )
         throw new Error("Allowance changed. Request a fresh quote.");
       const detected = await capabilities.refetch();
-      const atomic = atomicStatus(detected.data);
+      const atomic = supportsAtomic(detected.data);
       await assertWallet();
-      if (
-        calls.length > 1 &&
-        !separate &&
-        (atomic === "supported" || (atomic === "ready" && upgrade))
-      ) {
+      if (calls.length > 1 && !separate && atomic) {
         setStatus("Confirm the atomic approval and swap batch in your wallet");
         const sent = await batch.mutateAsync({
           account: account.address,
@@ -294,9 +285,7 @@ function SwapSession({ market }: { market: Market }) {
         functionName: "approve",
         args: [PERMIT2, 0n],
       });
-  const atomic =
-    !separate &&
-    (capability === "supported" || (capability === "ready" && upgrade));
+  const atomic = !separate && capability;
   return (
     <Card>
       <CardContent className="space-y-4">
@@ -362,18 +351,7 @@ function SwapSession({ market }: { market: Market }) {
           Routes depend on token and pool compatibility. Fee-on-transfer and
           permissioned tokens may be unavailable.
         </p>
-        {capability === "ready" && (
-          <label className="flex gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={upgrade}
-              disabled={busy}
-              onChange={(e) => setUpgrade(e.target.checked)}
-            />
-            Allow my wallet to request an upgrade for atomic batching
-          </label>
-        )}
-        {review && approvals > 0 && capability !== "unsupported" && (
+        {review && approvals > 0 && capability && (
           <label className="flex gap-2 text-sm">
             <input
               type="checkbox"

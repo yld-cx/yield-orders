@@ -5,11 +5,7 @@ import {
   erc20Abi,
   type PublicClient,
 } from "viem";
-import {
-  atomicStatus,
-  atomicRequestUnsupported,
-  swapCalls,
-} from "../lib/swap-flow.ts";
+import { atomicRequestUnsupported, swapCalls } from "../lib/swap-flow.ts";
 import {
   PERMIT2,
   permit2Abi,
@@ -125,14 +121,6 @@ describe("swap wallet planning", () => {
     await expect(
       swapCalls(rpc(0n, 0n, 99n), quote, OWNER, 8453, 0),
     ).rejects.toThrow("available token balance");
-  });
-  it("requires explicit consent for a ready wallet upgrade", () => {
-    expect(atomicStatus({ atomic: { status: "ready" } })).toBe("ready");
-    expect(atomicStatus({ atomic: { status: "supported" } })).toBe("supported");
-    expect(atomicStatus({ atomicBatch: { supported: true } })).toBe(
-      "supported",
-    );
-    expect(atomicStatus(undefined)).toBe("unsupported");
   });
   it("rejects stale quotes, wrong-chain and resolver-mode calldata before reading RPC", async () => {
     const client = rpc();

@@ -176,7 +176,7 @@ export class UniswapClient {
       BigInt(minimum) < (BigInt(amountOut) * (10000n - slippageBps)) / 10000n
     )
       throw new SwapError("Invalid output minimum", 502);
-    return { now, input, source, response, quote, amountOut, minimum };
+    return { now, input, response, quote, amountOut, minimum };
   }
 
   async price(value: SwapInput): Promise<SwapPriceResult> {
@@ -211,7 +211,7 @@ export class UniswapClient {
   }
 
   async quote(value: SwapInput): Promise<SwapQuoteResult> {
-    const { now, input, source, response, quote, amountOut, minimum } =
+    const { now, input, response, quote, amountOut, minimum } =
       await this.requestQuote(value);
     const permitTransaction = this.permit(
       response.permitTransaction,
@@ -222,7 +222,6 @@ export class UniswapClient {
     if (!transaction || input.deadline !== undefined) {
       const built = await this.post("swap", input, {
         quote,
-        ...source,
         ...(input.deadline ? { deadline: input.deadline } : {}),
         safetyMode: "SAFE",
       });
