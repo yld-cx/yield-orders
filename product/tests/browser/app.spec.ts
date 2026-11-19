@@ -110,6 +110,16 @@ function contractCall(
   if (token) return token;
   try {
     const decoded = decodeFunctionData({ abi: protocolAbi, data });
+    if (decoded.functionName === "tokenLiability")
+      return {
+        success: true,
+        returnData: encodeFunctionResult({
+          abi: protocolAbi,
+          functionName: "tokenLiability",
+          result:
+            decoded.args[0].toLowerCase() === a ? 12450000000000000000n : 0n,
+        }),
+      };
     if (decoded.functionName === "getPair") {
       const aa = decoded.args[0].toLowerCase() as typeof a,
         bb = decoded.args[1].toLowerCase() as typeof b;
@@ -3686,16 +3696,48 @@ test("simplified home explores markets without pair, tick or AMM requests", asyn
   page,
 }) => {
   const rpcRequests: string[] = [];
+  const protocolReads: string[] = [];
+  function trackRead(data: Hex) {
+    try {
+      const decoded = decodeFunctionData({ abi: multicall3Abi, data });
+      if (decoded.functionName === "aggregate3") {
+        decoded.args[0].forEach((call) => trackRead(call.callData));
+        return;
+      }
+    } catch {}
+    try {
+      protocolReads.push(
+        decodeFunctionData({ abi: protocolAbi, data }).functionName,
+      );
+    } catch {}
+  }
   page.on("request", (request) => {
-    if (/mainnet\.base\.org|api\/market-price|api\/swap/.test(request.url()))
+    if (/api\/market-price|api\/swap/.test(request.url()))
       rpcRequests.push(request.url());
+    if (new URL(request.url()).origin === "https://mainnet.base.org") {
+      const payload = request.postDataJSON();
+      for (const call of Array.isArray(payload) ? payload : [payload])
+        if (call.method === "eth_call") trackRead(call.params[0].data);
+    }
   });
   await page.goto("/");
   const table = page.getByRole("table");
   await expect(
     table.getByRole("link", { name: "Open WETH / USDC", exact: true }),
   ).toBeVisible();
-  await expect(table.getByRole("columnheader")).toHaveCount(2);
+  await expect(table.getByRole("columnheader")).toHaveCount(3);
+  await expect(
+    table.getByRole("columnheader", { name: "Asset TVL", exact: true }),
+  ).toBeVisible();
+  const row = table.getByRole("row").filter({
+    has: page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  });
+  await expect(
+    row.getByRole("cell", { name: "12.45 WETH", exact: true }),
+  ).toBeVisible();
+  await expect(
+    table.getByRole("cell", { name: "0 cbBTC", exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole("combobox", { name: "Market duration" }),
   ).toHaveCount(0);
@@ -3705,6 +3747,13 @@ test("simplified home explores markets without pair, tick or AMM requests", asyn
   await page.getByLabel("Search markets").fill("WETH");
   await expect(table.getByRole("link")).toHaveCount(1);
   expect(rpcRequests).toEqual([]);
+  expect(protocolReads.length).toBeGreaterThan(0);
+  expect(new Set(protocolReads)).toEqual(new Set(["tokenLiability"]));
+  await row.getByRole("link").click();
+  const banner = page.getByRole("region", { name: "Market overview" });
+  await expect(
+    banner.getByText("Asset TVL", { exact: true }).locator(".."),
+  ).toHaveText("Asset TVL12.45 WETH");
 });
 
 test("simplified Trending recovers from an empty discovery response", async ({
@@ -4227,13 +4276,13 @@ test("home keeps complete row skeletons until metadata and images are ready", as
     await expect(row).toBeAttached();
     await expect(link).toHaveCount(0);
     await expect(row.locator("img")).toHaveCount(0);
-    await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(5);
+    await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(6);
     const before = await row.boundingBox();
     const imageRequested = page.waitForRequest(imageUrl);
     releaseMetadata();
     await imageRequested;
     await expect(link).toHaveCount(0);
-    await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(5);
+    await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(6);
     expect(await row.boundingBox()).toEqual(before);
     releaseImage();
     await expect(link).toBeVisible();

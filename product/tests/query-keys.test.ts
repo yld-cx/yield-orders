@@ -40,6 +40,7 @@ describe("shared RPC query keys", () => {
       queryKeys.portfolio("base", b),
       queryKeys.quote("base", pair, 1n, 10n),
       queryKeys.balance("base", a, b),
+      queryKeys.assetTvl("base", a),
     ];
     const unaffected = [
       queryKeys.ticks("ethereum", pair, 0, 7, 100, [0]),
@@ -47,6 +48,7 @@ describe("shared RPC query keys", () => {
       queryKeys.portfolio("ethereum", a),
       queryKeys.quote("ethereum", pair, 1n, 10n),
       queryKeys.balance("ethereum", a, b),
+      queryKeys.assetTvl("ethereum", a),
       queryKeys.token("base", a),
       queryKeys.tokenMetadata("base", a),
       queryKeys.deployment("base"),
@@ -60,6 +62,7 @@ describe("shared RPC query keys", () => {
         QUERY_NAMES.portfolio,
         QUERY_NAMES.quote,
         QUERY_NAMES.balance,
+        QUERY_NAMES.assetTvl,
       ].map((name) =>
         client.invalidateQueries({ queryKey: [name, "eip155:8453"] }),
       ),

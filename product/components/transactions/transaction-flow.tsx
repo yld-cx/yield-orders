@@ -528,6 +528,7 @@ function TransactionSession({
         QUERY_NAMES.pair,
         QUERY_NAMES.ticks,
         QUERY_NAMES.balance,
+        QUERY_NAMES.assetTvl,
       ].map((name) =>
         queries.invalidateQueries({ queryKey: [name, getNetwork(network).id] }),
       ),

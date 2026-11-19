@@ -16,6 +16,7 @@ import {
 } from "@yld-cx/sdk/ethereum";
 import { PRODUCT_MARKET, type Market } from "@yld-cx/sdk";
 import { useMarket } from "@/hooks/use-market";
+import { useAssetTvl } from "@/hooks/use-asset-tvl";
 import { useYieldBook } from "@/hooks/use-yield-book";
 import { compactPriceText, discoveryBaseTick } from "@/lib/market-values";
 import { displayReference, type MarketReference } from "@/lib/market-reference";
@@ -116,6 +117,7 @@ function MarketContent({
     initialBookWindow(initialTick),
   );
   const natural = displayTokens(market);
+  const tvl = useAssetTvl(getNetwork(market.network).slug, natural[0].address);
   const display = state.inverted
     ? ([natural[1], natural[0]] as const)
     : natural;
@@ -219,6 +221,10 @@ function MarketContent({
                 ? `~ ${referencePrice} ${display[1].symbol}`
                 : "—"}
             </dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Asset TVL</dt>
+            <dd className="mt-1 font-semibold tabular-nums">{tvl}</dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">
@@ -346,7 +352,7 @@ function MarketContent({
       </div>
       <MarketPositions market={market} />
       {!exists && (
-        <Card className="items-center text-center [&_h2]:text-xl [&_p]:max-w-xl [&_p]:text-muted-foreground">
+        <Card className="mt-4 items-center text-center [&_h2]:text-xl [&_p]:max-w-xl [&_p]:text-muted-foreground">
           <CardContent className="space-y-4">
             <h2>Create Market</h2>
             <p>

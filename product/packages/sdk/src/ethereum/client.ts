@@ -256,6 +256,14 @@ export class EthereumClient {
       blockNumber,
     });
   }
+  tokenLiability(asset: Address) {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: protocolAbi,
+      functionName: "tokenLiability",
+      args: [asset],
+    });
+  }
   getTick(id: bigint, blockNumber?: bigint) {
     return this.publicClient.readContract({
       address: this.address,

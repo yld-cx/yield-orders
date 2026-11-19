@@ -29,6 +29,7 @@ import { fallbackToken, tokenImageUrl } from "@/lib/token-metadata";
 import { marketPath } from "@/lib/registry";
 import { useMarketFilters } from "@/hooks/use-market-filters";
 import { useMarketList } from "@/hooks/use-market-list";
+import { useAssetTvl } from "@/hooks/use-asset-tvl";
 import { MARKET_TAGS, MarketTab } from "@/lib/market-filters";
 import {
   Empty,
@@ -59,6 +60,9 @@ function MarketRowSkeleton({ marketKey }: { marketKey?: string }) {
         </div>
       </TableCell>
       <TableCell className="p-4">
+        <Skeleton className="ml-auto h-4 w-24 motion-reduce:animate-none" />
+      </TableCell>
+      <TableCell className="p-4">
         <Skeleton className="mx-auto size-4 motion-reduce:animate-none" />
       </TableCell>
     </TableRow>
@@ -78,6 +82,7 @@ function MarketRow({ config }: { config: MarketConfiguration }) {
     token0: token(config.token0.address),
     token1: token(config.token1.address),
   });
+  const tvl = useAssetTvl(network, tokens[0].address);
   const pending = tokens.map(
     (token) => !metadata.some((item) => item.address === token.address),
   );
@@ -145,6 +150,7 @@ function MarketRow({ config }: { config: MarketConfiguration }) {
           </span>
         </Link>
       </TableCell>
+      <TableCell className="p-4 text-right tabular-nums">{tvl}</TableCell>
       <TableCell className="p-4 text-center align-middle">
         <ArrowRight className="mx-auto" size={18} aria-hidden="true" />
       </TableCell>
@@ -254,7 +260,7 @@ export function MarketTable() {
           ))}
         </div>
         <Card className="gap-0 p-0">
-          <CardContent className="space-y-2 py-2">
+          <CardContent className="space-y-2 p-0">
             {error ? (
               <Empty>
                 <EmptyHeader>
@@ -268,23 +274,22 @@ export function MarketTable() {
                 </EmptyContent>
               </Empty>
             ) : loading || markets.length > 0 ? (
-              <Table className="table-fixed">
+              <Table className="min-w-[30rem] table-fixed">
                 {loading && (
                   <TableCaption className="sr-only" role="status">
                     {loadingLabel}
                   </TableCaption>
                 )}
-                <colgroup>
-                  <col className="w-[90%]" />
-                  <col className="w-[10%]" />
-                </colgroup>
-                <TableHeader className="sr-only">
+                <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[90%] px-4 text-right first:text-left">
-                      Market
+                    <TableHead className="w-[60%] px-4 text-right first:text-left">
+                      Pair
+                    </TableHead>
+                    <TableHead className="w-[30%] px-4 text-right">
+                      Asset TVL
                     </TableHead>
                     <TableHead className="w-[10%] px-4 text-center">
-                      Open
+                      <span className="sr-only">Open</span>
                     </TableHead>
                   </TableRow>
                 </TableHeader>
