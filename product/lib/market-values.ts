@@ -12,6 +12,7 @@ import {
   humanPrice,
   snappedPrice,
 } from "@yld-cx/sdk/ethereum";
+import { roundedAmountText } from "@/lib/utils";
 
 export function tickPrice(
   tick:
@@ -51,7 +52,7 @@ export function priceText(value: string) {
 
 export function compactPriceText(value: string) {
   if (BigInt(value.split(".")[0]) < LARGE_PRICE_THRESHOLD)
-    return priceText(value);
+    return roundedAmountText(value);
   return new Intl.NumberFormat("en-US", {
     notation: "compact",
     maximumFractionDigits: 2,

@@ -158,7 +158,6 @@ describe("single-side discovery", () => {
         selection={{ kind: "tick", canonicalTick: market.baseTick }}
         onSelect={vi.fn()}
         onMarket={vi.fn()}
-        marketAvailable
         referencePrice="3000"
         book={book}
         onNavigate={vi.fn()}

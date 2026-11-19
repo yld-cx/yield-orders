@@ -34,7 +34,6 @@ export function YieldBook({
   selection,
   onSelect,
   onMarket,
-  marketAvailable,
   referencePrice,
   book,
   onNavigate,
@@ -47,7 +46,6 @@ export function YieldBook({
   selection: Selection;
   onSelect: (level: BookLevel) => void;
   onMarket: () => void;
-  marketAvailable: boolean;
   referencePrice?: string;
   book: ReturnType<typeof useYieldBook>;
   onNavigate: (direction: "higher" | "lower") => void;
@@ -125,7 +123,7 @@ export function YieldBook({
               <span>Market · AMM</span>
             </span>
             <span className="col-span-3 text-muted-foreground">
-              {marketAvailable && referencePrice
+              {referencePrice
                 ? `~ ${priceText(referencePrice)} ${display[1].symbol}`
                 : "—"}
             </span>

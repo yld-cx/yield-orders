@@ -187,7 +187,7 @@ export class UniswapClient {
       impact !== undefined &&
       (typeof impact !== "number" ||
         !Number.isFinite(impact) ||
-        impact < 0 ||
+        impact < -100 ||
         impact > 100)
     )
       throw new SwapError("Invalid reference price impact", 502);

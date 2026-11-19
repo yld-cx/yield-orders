@@ -17,6 +17,15 @@ export interface MarketSwapPreview {
   calls: Awaited<ReturnType<typeof swapCalls>>;
 }
 
+export class SwapRateLimitError extends Error {
+  constructor(
+    message: string,
+    public readonly retryAfter: number,
+  ) {
+    super(message);
+  }
+}
+
 export async function swapRequest(
   input: SwapInput,
   signal?: AbortSignal,
@@ -30,7 +39,17 @@ export async function swapRequest(
       : AbortSignal.timeout(30000),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "Swap unavailable");
+  if (!response.ok) {
+    const message = result.error ?? "Swap unavailable";
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    if (
+      response.status === 429 &&
+      Number.isFinite(retryAfter) &&
+      retryAfter > 0
+    )
+      throw new SwapRateLimitError(message, retryAfter * 1000);
+    throw new Error(message);
+  }
   if (
     result.chainId !== input.chainId ||
     result.mode !== input.mode ||

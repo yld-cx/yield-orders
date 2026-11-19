@@ -14,7 +14,35 @@ import {
   marginalYieldPercent,
   MAX_AMOUNT,
 } from "@yld-cx/sdk/ethereum";
-import { priceText } from "@/lib/market-values";
+import { compactPriceText, priceText } from "@/lib/market-values";
+import { roundedAmountText } from "@/lib/utils";
+
+describe("rounded summary values", () => {
+  it.each([
+    ["0", "0"],
+    ["12.4", "12.4"],
+    ["4.125", "4.13"],
+    ["999.999", "1,000"],
+    ["0.000534615", "0.000535"],
+    ["0.9999", "1"],
+    ["0.00009999", "0.0001"],
+    ["9007199254740993.125", "9,007,199,254,740,993.13"],
+    [`0.${"0".repeat(254)}1`, `0.${"0".repeat(254)}1`],
+  ])(
+    "rounds %s to %s without losing large or tiny values",
+    (value, expected) => {
+      expect(roundedAmountText(value)).toBe(expected);
+    },
+  );
+
+  it("rounds reference prices while retaining compact large prices", () => {
+    expect(compactPriceText("0.000534615")).toBe("0.000535");
+    expect(compactPriceText("4.123456789")).toBe("4.12");
+    expect(compactPriceText("3000")).toBe("3K");
+    expect(priceText("4.123456789")).toBe("4.1235");
+  });
+});
+
 describe("protocol price and Tick identity", () => {
   it("accepts supported high-decimal amounts and generated extreme prices", () => {
     expect(tokenAmount(`0.${"0".repeat(254)}1`, 255)).toBe(1n);

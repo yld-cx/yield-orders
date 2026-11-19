@@ -28,8 +28,12 @@ const routerAbi = parseAbi([
   "function execute(bytes commands, bytes[] inputs, uint256 deadline)",
 ]);
 
-for (const promising of [true, false])
-  test(`complete resolver dry-run ${promising ? "selects and values a profitable batch" : "filters wrong-price liquidity before execution quotes"}`, async (t) => {
+for (const [promising, priceImpact] of [
+  [true, 0.01],
+  [false, 0.01],
+  [true, -100],
+] as const)
+  test(`complete resolver dry-run ${priceImpact < 0 ? "skips unreliable signed reference impacts" : promising ? "selects and values a profitable batch" : "filters wrong-price liquidity before execution quotes"}`, async (t) => {
     const config = manifest.chains["1"];
     const saved = structuredClone(config);
     Object.assign(config, {
@@ -85,7 +89,7 @@ for (const promising of [true, false])
               swapper: RESOLVER,
               slippage: 0.5,
               quoteId: "pipeline",
-              priceImpact: 0.01,
+              priceImpact,
               input: { token: A, amount: amount.toString() },
               output: {
                 token: Q,
@@ -276,7 +280,7 @@ for (const promising of [true, false])
     );
     assert.equal(
       requests.filter((r) => r.endpoint === "swap").length,
-      promising ? 4 : 0,
+      promising && priceImpact >= 0 ? 4 : 0,
       "only executable candidates build transactions; price/valuation quotes do not",
     );
     assert.deepEqual(groups[0], [
@@ -291,7 +295,11 @@ for (const promising of [true, false])
       1,
       "the price quote supplies the discovery block without another RPC",
     );
-    if (promising) {
+    if (priceImpact < 0) {
+      assert.deepEqual(reads, []);
+      assert.equal(simulations, 0);
+      assert.ok(metrics.some((m) => m.type === "reference_price_impact_skip"));
+    } else if (promising) {
       assert.deepEqual(reads, [10]);
       assert.deepEqual(
         groups.at(-1),

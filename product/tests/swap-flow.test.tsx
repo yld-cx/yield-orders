@@ -9,6 +9,7 @@ import {
   atomicRequestUnsupported,
   swapCalls,
   swapRequest,
+  SwapRateLimitError,
 } from "../lib/swap-flow.ts";
 import {
   PERMIT2,
@@ -64,6 +65,36 @@ describe("swap quote identity", () => {
     expect(await swapRequest(input)).toEqual(current);
     expect(JSON.parse(fetcher.mock.calls[0][1]?.body as string)).toEqual(input);
   });
+  it("exposes the server's retry delay for a rate-limited quote", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json(
+        { error: "Too many swap requests" },
+        { status: 429, headers: { "Retry-After": "37" } },
+      ),
+    );
+    await expect(swapRequest(input)).rejects.toMatchObject({
+      message: "Too many swap requests",
+      retryAfter: 37000,
+    });
+    await expect(swapRequest(input)).rejects.toBeInstanceOf(SwapRateLimitError);
+  });
+  it.each([null, "invalid", "-1", "Infinity"])(
+    "does not schedule a retry for an unusable Retry-After header: %s",
+    async (retryAfter) => {
+      vi.stubGlobal("fetch", async () =>
+        Response.json(
+          { error: "Too many swap requests" },
+          {
+            status: 429,
+            headers: retryAfter === null ? {} : { "Retry-After": retryAfter },
+          },
+        ),
+      );
+      await expect(swapRequest(input)).rejects.not.toBeInstanceOf(
+        SwapRateLimitError,
+      );
+    },
+  );
   it.each([
     { tokenIn: OWNER },
     { tokenOut: TOKEN },

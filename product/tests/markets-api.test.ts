@@ -5,16 +5,34 @@ import { getTrendingMarkets } from "@/server/markets";
 const mocks = vi.hoisted(() => ({
   sdk: vi.fn(),
   discovery: vi.fn(),
+  metadata: vi.fn(),
+  liability: vi.fn(),
 }));
 vi.mock("@/lib/rpc", () => ({ getSdk: mocks.sdk }));
+vi.mock("@/lib/token-metadata", () => ({
+  fetchTokenMetadata: mocks.metadata,
+}));
 vi.mock("@/server/token-discovery", () => ({
   discoverTokens: mocks.discovery,
 }));
 const configs = registry.getMarkets("eip155:8453");
+const quote = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const assetOf = (market: (typeof configs)[number]) =>
+  [market.token0.address, market.token1.address].find(
+    (address) => address !== quote,
+  )!;
+const metadata = registry.getTokens("eip155:8453").map((token) => ({
+  ...token,
+  status: "available",
+  symbol: token.address === quote ? "USDC" : "ASSET",
+  name: "Token",
+}));
 const request = (query = "chainId=8453") =>
   new Request(`https://yld.cx/api/markets?${query}`);
 beforeEach(() => {
-  mocks.sdk.mockClear();
+  mocks.sdk.mockReset().mockReturnValue({ tokenLiability: mocks.liability });
+  mocks.liability.mockReset().mockResolvedValue(0n);
+  mocks.metadata.mockReset().mockResolvedValue(metadata);
   mocks.discovery
     .mockReset()
     .mockResolvedValue([
@@ -27,22 +45,76 @@ describe("lightweight market explorer", () => {
     "chainId=8453",
     "chainId=8453&tag=all",
     "chainId=8453&search=ignored&page=999",
-  ])("returns registry order without any RPC: %s", async (query) => {
-    const response = await GET(request(query));
-    expect(await response.json()).toEqual({
-      markets: configs,
-    });
-    expect(response.headers.get("cache-control")).toBe(
+  ])(
+    "returns funded markets first in a cacheable response: %s",
+    async (query) => {
+      mocks.liability.mockImplementation(async (asset) =>
+        asset === assetOf(configs[2])
+          ? 1n
+          : asset === assetOf(configs[10])
+            ? 1000n
+            : 0n,
+      );
+      const response = await GET(request(query));
+      expect(await response.json()).toEqual({
+        markets: [
+          configs[2],
+          configs[10],
+          ...configs.filter((_, index) => index !== 2 && index !== 10),
+        ],
+      });
+      expect(response.headers.get("cache-control")).toBe(
+        "public, max-age=0, s-maxage=86400",
+      );
+      expect(mocks.sdk).toHaveBeenCalledExactlyOnceWith("base");
+      expect(mocks.liability).toHaveBeenCalledTimes(
+        new Set(configs.map(assetOf)).size,
+      );
+      expect(mocks.liability).not.toHaveBeenCalledWith(quote);
+      expect(mocks.discovery).not.toHaveBeenCalled();
+    },
+  );
+  it("preserves YieldList order when all asset TVLs are zero", async () => {
+    const response = await GET(request());
+    expect(await response.json()).toEqual({ markets: configs });
+  });
+  it("coalesces concurrent YieldList sorting checks", async () => {
+    await Promise.all([GET(request()), GET(request())]);
+    expect(mocks.metadata).toHaveBeenCalledTimes(1);
+    expect(mocks.liability).toHaveBeenCalledTimes(
+      new Set(configs.map(assetOf)).size,
+    );
+  });
+  it("falls back to the default YieldList on an RPC failure and retries on the next request", async () => {
+    mocks.liability.mockRejectedValueOnce(new Error("RPC unavailable"));
+    const response = await GET(request());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ markets: configs });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    mocks.liability.mockResolvedValue(1n);
+    expect((await GET(request())).headers.get("cache-control")).toBe(
       "public, max-age=0, s-maxage=86400",
     );
+    expect(mocks.metadata).toHaveBeenCalledTimes(2);
+  });
+  it("falls back to the default YieldList when asset metadata is unavailable", async () => {
+    mocks.metadata.mockResolvedValueOnce(
+      metadata.map((token) => ({ ...token, status: "unavailable" })),
+    );
+    const response = await GET(request());
+    expect(await response.json()).toEqual({ markets: configs });
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(mocks.sdk).not.toHaveBeenCalled();
-    expect(mocks.discovery).not.toHaveBeenCalled();
   });
   it("discovers trending tokens without tick scans and caches for one day", async () => {
     const response = await GET(request("chainId=8453&tag=trending"));
     const body = await response.json();
     expect(body.markets).toHaveLength(2);
+    expect(body.markets[0].key).toContain(
+      "0xffffffffffffffffffffffffffffffffffffffff",
+    );
     expect(mocks.sdk).not.toHaveBeenCalled();
+    expect(mocks.metadata).not.toHaveBeenCalled();
     expect(response.headers.get("cache-control")).toBe(
       "public, max-age=0, s-maxage=86400",
     );

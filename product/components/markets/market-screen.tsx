@@ -149,6 +149,9 @@ function MarketContent({
     ? displayReference(reference, displayInverse)
     : undefined;
   const referencePrice = indicative ? compactPriceText(indicative) : undefined;
+  const ammPrice = reference
+    ? displayReference(reference, displayInverse, "amm")
+    : undefined;
   const selectedApy =
     state.selection.kind !== "tick"
       ? "—"
@@ -254,8 +257,7 @@ function MarketContent({
             })
           }
           onMarket={selectMarket}
-          marketAvailable={!!reference?.ammAvailable}
-          referencePrice={indicative}
+          referencePrice={ammPrice}
           book={book}
           onNavigate={navigate}
           canHigher={

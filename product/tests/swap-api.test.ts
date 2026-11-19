@@ -151,6 +151,24 @@ describe("Uniswap SDK integration", () => {
       );
     },
   );
+  it.each([-100, -1, 0, 1.99, 85.21, 100, undefined])(
+    "preserves signed price-impact annotations without invalidating quotes: %s",
+    async (priceImpact) => {
+      const r = { ...response(), quote: { ...response().quote, priceImpact } };
+      const price = await service([r]).client.price(input);
+      expect(price.estimatedAmountOut).toBe("200");
+      expect(price.priceImpact).toBe(priceImpact);
+    },
+  );
+  it.each([-101, 101, "1", null])(
+    "rejects malformed price-impact annotations: %s",
+    async (priceImpact) => {
+      const r = { ...response(), quote: { ...response().quote, priceImpact } };
+      await expect(service([r]).client.price(input)).rejects.toThrow(
+        "Invalid reference price impact",
+      );
+    },
+  );
   it("requests exact onchain Permit2 authorization and pins router version", async () => {
     const r = response();
     delete (r as Partial<typeof r>).swapTransaction;
