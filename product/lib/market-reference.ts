@@ -2,16 +2,15 @@ import { decimalFraction, formatRatio } from "@yld-cx/sdk/ethereum";
 import { MAX_AMOUNT, type Token } from "@yld-cx/sdk";
 
 export interface MarketReference {
-  status: "available" | "unavailable";
-  source: "amm" | "metadata" | "configured" | null;
-  /** Human token1 per token0; always canonical, never executable. */
-  price?: string;
+  price: {
+    amm?: string;
+    meta?: string;
+    configured?: string;
+  };
   baseTick?: number;
   timestamp: number;
-  ammAvailable: boolean;
 }
-// Target $10 using trusted metadata; otherwise sample 0.001 token.
-// Keep the raw amount bounded. No user-supplied quote size.
+
 export function referenceAmount(token: Pick<Token, "decimals" | "priceUsd">) {
   const unit = 10n ** BigInt(token.decimals);
   let amount = unit / 1000n || 1n;
@@ -21,9 +20,18 @@ export function referenceAmount(token: Pick<Token, "decimals" | "priceUsd">) {
   }
   return amount < MAX_AMOUNT ? amount : MAX_AMOUNT;
 }
-export function displayReference(reference: MarketReference, inverse: boolean) {
-  if (!reference.price) return;
-  if (!inverse) return reference.price;
-  const [n, d] = decimalFraction(reference.price);
+export function displayReference(
+  reference: MarketReference,
+  inverse: boolean,
+  field?: keyof MarketReference["price"],
+) {
+  const price = field
+    ? reference.price[field]
+    : (reference.price.amm ??
+      reference.price.meta ??
+      reference.price.configured);
+  if (!price) return;
+  if (!inverse) return price;
+  const [n, d] = decimalFraction(price);
   return n > 0n ? formatRatio(d, n, 256) : undefined;
 }

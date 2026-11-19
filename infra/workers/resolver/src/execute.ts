@@ -354,8 +354,9 @@ export async function resolveChain(
         );
         if (
           reference.priceImpact !== undefined &&
-          reference.priceImpact >
-            setting(env.MAX_REFERENCE_PRICE_IMPACT_PERCENT, 0.1, 0, 1)
+          (reference.priceImpact < 0 ||
+            reference.priceImpact >
+              setting(env.MAX_REFERENCE_PRICE_IMPACT_PERCENT, 0.1, 0, 1))
         ) {
           log({
             type: "reference_price_impact_skip",

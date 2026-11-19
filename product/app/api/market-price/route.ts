@@ -29,7 +29,8 @@ export async function GET(request: Request) {
     return Response.json(reference, {
       headers: {
         "Cache-Control":
-          reference.status === "available"
+          reference.baseTick !== undefined ||
+          Object.keys(reference.price).length > 0
             ? `public, max-age=0, s-maxage=${PRODUCT_MARKET.referenceCacheSeconds}`
             : "no-store",
       },

@@ -1,5 +1,14 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { SwapError } from "@yld-cx/sdk/uniswap";
 import { POST } from "../app/api/swap/quote/route.ts";
+const mocks = vi.hoisted(() => ({ quote: vi.fn() }));
+vi.mock("@yld-cx/sdk/uniswap", async (original) => ({
+  ...(await original<typeof import("@yld-cx/sdk/uniswap")>()),
+  UniswapClient: class {
+    quote = mocks.quote;
+  },
+}));
+beforeEach(() => vi.clearAllMocks());
 const input = {
   chainId: 8453,
   mode: "wallet-router",
@@ -58,17 +67,42 @@ describe("public swap boundary", () => {
       ).status,
     ).toBe(400);
   });
-  it("rejects pairs outside Yieldlist before upstream requests", async () => {
-    expect(
-      (
-        await POST(
-          request({
-            ...input,
-            tokenOut: "0x2222222222222222222222222222222222222222",
-          }),
-        )
-      ).status,
-    ).toBe(400);
+  it.each([false, true])(
+    "quotes tokens outside Yieldlist, inverted: %s",
+    async (inverted) => {
+      const unlisted = "0x2222222222222222222222222222222222222222";
+      const swap = {
+        ...input,
+        tokenIn: inverted ? unlisted : input.tokenIn,
+        tokenOut: inverted ? input.tokenIn : unlisted,
+      };
+      const quote = {
+        ...swap,
+        amountIn: swap.amount,
+        estimatedAmountOut: "200",
+      };
+      mocks.quote.mockResolvedValueOnce(quote);
+      const response = await POST(request(swap));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(quote);
+      expect(mocks.quote).toHaveBeenCalledWith(swap);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    },
+  );
+  it("reports upstream no-route results for unlisted pairs", async () => {
+    mocks.quote.mockRejectedValueOnce(
+      new SwapError("No compatible route for these tokens", 422),
+    );
+    const response = await POST(
+      request({
+        ...input,
+        tokenOut: "0x2222222222222222222222222222222222222222",
+      }),
+    );
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: "No compatible route for these tokens",
+    });
   });
   it("applies a global budget even to requests that rotate wallet identities", async () => {
     let status = 0;

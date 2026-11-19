@@ -34,7 +34,7 @@ export async function POST(request: Request) {
         403,
       );
     if (!walletSwapAvailable(input.chainId, input.tokenIn, input.tokenOut))
-      throw new SwapError("Token pair is not in Yieldlist", 400);
+      throw new SwapError("Unsupported swap chain or token pair", 400);
     const service = new UniswapClient({
       apiKey: process.env.UNISWAP_API_KEY ?? "",
     });

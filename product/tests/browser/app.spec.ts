@@ -423,12 +423,9 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/market-price?**", (route) =>
     route.fulfill({
       json: {
-        status: "available",
-        source: "amm",
-        price: "3000",
+        price: { amm: "3000" },
         baseTick: -196000,
         timestamp: Date.now(),
-        ammAvailable: true,
       },
     }),
   );
@@ -4121,10 +4118,8 @@ test("Limit and Market AMM remain selectable without an AMM reference", async ({
   await page.route("**/api/market-price?**", (route) =>
     route.fulfill({
       json: {
-        status: "unavailable",
-        source: null,
+        price: {},
         timestamp: Date.now(),
-        ammAvailable: false,
       },
     }),
   );
@@ -4149,6 +4144,50 @@ test("Limit and Market AMM remain selectable without an AMM reference", async ({
       .getByRole("tab", { name: "Swap", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await expect(page.getByLabel("Market swap", { exact: true })).toBeVisible();
+});
+
+test("unlisted tokens allow AMM swaps and use the AMM reference in both display directions", async ({
+  page,
+}) => {
+  const unlisted = "0x1111111111111111111111111111111111111111";
+  expect(
+    new Registry(yieldList).getToken("eip155:8453", unlisted),
+  ).toBeUndefined();
+  await rpc(page, false);
+  await page.route("**/api/market-price?**", (route) =>
+    route.fulfill({
+      json: {
+        price: { amm: "4.123456789", meta: "2" },
+        baseTick: -270000,
+        timestamp: Date.now(),
+      },
+    }),
+  );
+  await page.goto(`/market/base/${unlisted}:${b}`);
+  const overview = page.getByRole("region", { name: "Market overview" });
+  const market = page
+    .getByLabel("Yield Book", { exact: true })
+    .getByRole("button", { name: /Market · AMM/ });
+  await expect(
+    overview.getByText("Preview market", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    overview.getByText("Reference price", { exact: true }).locator(".."),
+  ).toContainText("~ 4.1235 USDC");
+  await expect(market).toContainText("~ 4.1235 USDC");
+  await market.click();
+  const swap = page.getByLabel("Market swap", { exact: true });
+  await expect(swap.getByLabel("Amount", { exact: true })).toBeVisible();
+  await expect(
+    swap.getByText("You provide", { exact: true }).locator(".."),
+  ).toContainText("USDC");
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
+  await expect(market).toContainText("~ 0.24251497 TKN111111");
+  await expect(
+    overview.getByText("Reference price", { exact: true }).locator(".."),
+  ).toContainText("~ 0.24251497 TKN111111");
+  await market.click();
+  await expect(swap.getByLabel("Amount", { exact: true })).toBeVisible();
 });
 
 test("market startup RPC requests stay batched", async ({ page }, testInfo) => {

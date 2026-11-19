@@ -36,13 +36,13 @@ async function loadReference(
   b: Address,
 ): Promise<MarketReference> {
   const n = getNetwork(network);
-  const timestamp = Date.now();
   const fallback = registry.getMarket(n.id, a, b)?.baseTick;
-  const unavailable: MarketReference = {
-    status: "unavailable",
-    source: null,
-    timestamp,
-    ammAvailable: false,
+  const reference: MarketReference = {
+    price: {},
+    timestamp: Date.now(),
+    ...(fallback === undefined
+      ? {}
+      : { baseTick: nearestProductTick(fallback) }),
   };
   try {
     const sdk = getSdk(network);
@@ -58,6 +58,23 @@ async function loadReference(
           m.address === token.address && m.status === "available" && !m.stale,
       )?.priceUsd,
     }));
+    if (fallback !== undefined)
+      reference.price.configured = humanPrice(
+        priceAtTick(fallback),
+        token0.decimals,
+        token1.decimals,
+      );
+    const baseTick = calculatedBaseTick(
+      tokens[0],
+      tokens[1],
+      PRODUCT_MARKET.stepTicks,
+    );
+    if (baseTick !== undefined) {
+      const [n0, d0] = decimalFraction(tokens[0].priceUsd!);
+      const [n1, d1] = decimalFraction(tokens[1].priceUsd!);
+      reference.price.meta = formatRatio(n0 * d1, d0 * n1, 256);
+      reference.baseTick = baseTick;
+    }
     if (walletSwapAvailable(n.chain.id, a, b)) {
       try {
         const amount = referenceAmount(tokens[0]).toString();
@@ -76,11 +93,7 @@ async function loadReference(
           !same(quote.tokenIn, a) ||
           !same(quote.tokenOut, b) ||
           quote.amountIn !== amount ||
-          BigInt(quote.estimatedAmountOut) <= 0n ||
-          quote.priceImpact === undefined ||
-          quote.priceImpact > 1 ||
-          quote.priceImpact < 0 ||
-          !Number.isFinite(quote.priceImpact)
+          BigInt(quote.estimatedAmountOut) <= 0n
         )
           throw new Error("Unusable AMM reference");
         const price = formatRatio(
@@ -88,63 +101,20 @@ async function loadReference(
           BigInt(amount) * 10n ** BigInt(token1.decimals),
           256,
         );
-        const baseTick = snappedPrice(
+        reference.price.amm = price;
+        reference.timestamp = quote.quotedAt;
+        reference.baseTick = snappedPrice(
           price,
           token0.decimals,
           token1.decimals,
           PRODUCT_MARKET.stepTicks,
         ).priceTick;
-        return {
-          status: "available",
-          source: "amm",
-          price,
-          baseTick,
-          timestamp: quote.quotedAt,
-          ammAvailable: true,
-        };
       } catch {
-        /* Try trusted metadata before the configured reference. */
+        /* Metadata and configured prices remain available if quoting fails. */
       }
     }
-    const baseTick = calculatedBaseTick(
-      tokens[0],
-      tokens[1],
-      PRODUCT_MARKET.stepTicks,
-    );
-    if (baseTick !== undefined) {
-      const [n0, d0] = decimalFraction(tokens[0].priceUsd!);
-      const [n1, d1] = decimalFraction(tokens[1].priceUsd!);
-      return {
-        status: "available",
-        source: "metadata",
-        price: formatRatio(n0 * d1, d0 * n1, 256),
-        baseTick,
-        timestamp,
-        ammAvailable: false,
-      };
-    }
-    if (fallback !== undefined)
-      return {
-        status: "available",
-        source: "configured",
-        baseTick: nearestProductTick(fallback),
-        price: humanPrice(
-          priceAtTick(fallback),
-          token0.decimals,
-          token1.decimals,
-        ),
-        timestamp,
-        ammAvailable: false,
-      };
   } catch {
     /* A configured tick remains useful when token reads fail. */
   }
-  return fallback === undefined
-    ? unavailable
-    : {
-        ...unavailable,
-        status: "available",
-        source: "configured",
-        baseTick: nearestProductTick(fallback),
-      };
+  return reference;
 }

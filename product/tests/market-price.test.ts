@@ -39,23 +39,21 @@ describe("indicative references", () => {
     const values = await Promise.all(
       Array.from({ length: 8 }, () => getMarketPrice("base", a, b)),
     );
-    expect(
-      values.every((value) => value.price === "3000" && value.source === "amm"),
-    ).toBe(true);
+    expect(values.every((value) => value.price.amm === "3000")).toBe(true);
     expect(mocks.price).toHaveBeenCalledTimes(1);
     await getMarketPrice("base", a, b);
     expect(mocks.price).toHaveBeenCalledTimes(2);
     expect(values[0]).not.toHaveProperty("transaction");
     expect(values[0]).not.toHaveProperty("permitTransaction");
   });
-  it.each([undefined, -1, 2, NaN])(
-    "rejects unusable impact %s and uses trusted metadata",
+  it.each([undefined, -100, 1.99, 85.21])(
+    "prefers the AMM reference over metadata regardless of impact annotation %s",
     async (impact) => {
       mocks.price.mockResolvedValue({
         tokenIn: a,
         tokenOut: b,
         amountIn: "3333333333333333",
-        estimatedAmountOut: "10000000",
+        estimatedAmountOut: "12000000",
         priceImpact: impact,
         quotedAt: Date.now(),
       });
@@ -64,21 +62,20 @@ describe("indicative references", () => {
         { address: b, status: "available", priceUsd: "1" },
       ]);
       const value = await getMarketPrice("base", a, b);
-      expect(value).toMatchObject({
-        source: "metadata",
-        price: "3000",
-        ammAvailable: false,
-      });
+      expect(Number(value.price.amm)).toBeCloseTo(3600, 10);
+      expect(value.price.meta).toBe("3000");
+      expect(displayReference(value, false)).toBe(value.price.amm);
+      expect(value.price.configured).toBeDefined();
     },
   );
   it("uses configured baseTick after AMM and metadata failure", async () => {
     mocks.price.mockRejectedValue(new Error("no route"));
     const value = await getMarketPrice("base", a, b);
-    expect(value).toMatchObject({
-      source: "configured",
-      baseTick: -196000,
-      ammAvailable: false,
-    });
+    expect(value.baseTick).toBe(-196000);
+    expect(value.price.configured).toBeDefined();
+    expect(value.price.amm).toBeUndefined();
+    expect(value.price.meta).toBeUndefined();
+    expect(displayReference(value, false)).toBe(value.price.configured);
   });
   it("quotes a meaningful BNKR amount and preserves its canonical USDC price", async () => {
     const bnkr = "0x22af33fe49fd1fa80c7149773dde5890d3c76f3b";
@@ -103,10 +100,72 @@ describe("indicative references", () => {
     expect(mocks.price).toHaveBeenCalledWith(
       expect.objectContaining({ amount: "41666666666666666666666" }),
     );
-    expect(value).toMatchObject({ source: "amm", ammAvailable: true });
-    expect(Number(value.price)).toBeCloseTo(0.0002125062, 12);
+    expect(Number(value.price.amm)).toBeCloseTo(0.0002125062, 12);
   });
-  it("returns an explicit unavailable state for arbitrary pairs without a reference", async () => {
+  it("quotes unlisted tokens without requiring a registry reference", async () => {
+    const unlisted = "0x2222222222222222222222222222222222222222";
+    mocks.price.mockImplementation(async ({ tokenIn, tokenOut, amount }) => ({
+      tokenIn,
+      tokenOut,
+      amountIn: amount,
+      estimatedAmountOut: "2000000000000000",
+      priceImpact: 0.01,
+      quotedAt: Date.now(),
+    }));
+    const value = await getMarketPrice("base", unlisted, a);
+    expect(value).toMatchObject({
+      price: { amm: "2" },
+    });
+    expect(mocks.price).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenIn: unlisted, tokenOut: a }),
+    );
+  });
+  it.each([-100, 1.99])(
+    "keeps DGUY's canonical AMM price when impact is %s",
+    async (priceImpact) => {
+      const dguy = "0xe34356dcd3d7bb991248f322e4ec31b5d60bc54e";
+      mocks.token.mockImplementation(async (address) => ({
+        address,
+        decimals: address === b ? 6 : 18,
+      }));
+      mocks.metadata.mockResolvedValue([
+        { address: b, status: "available", priceUsd: "1" },
+        { address: dguy, status: "available", priceUsd: "0.00051293" },
+      ]);
+      mocks.price.mockResolvedValue({
+        tokenIn: b,
+        tokenOut: dguy,
+        amountIn: "10000000",
+        estimatedAmountOut: "20540924467984177591223",
+        priceImpact,
+        quotedAt: Date.now(),
+      });
+      const value = await getMarketPrice("base", b, dguy);
+      expect(displayReference(value, false)).toBe(value.price.amm);
+      expect(Number(value.price.amm)).toBeCloseTo(2054.092446798418, 8);
+      expect(Number(displayReference(value, true, "amm"))).toBeCloseTo(
+        0.000486832995,
+        10,
+      );
+      expect(value.baseTick).toBeDefined();
+    },
+  );
+  it("uses a valid AMM route as the reference without token pricing metadata", async () => {
+    const unlisted = "0x2222222222222222222222222222222222222222";
+    mocks.price.mockResolvedValue({
+      tokenIn: unlisted,
+      tokenOut: a,
+      amountIn: "1000",
+      estimatedAmountOut: "2000000000000000",
+      priceImpact: -100,
+      quotedAt: Date.now(),
+    });
+    expect(await getMarketPrice("base", unlisted, a)).toMatchObject({
+      price: { amm: "2" },
+    });
+  });
+  it("omits unavailable prices for arbitrary pairs without a route or reference", async () => {
+    mocks.price.mockRejectedValue(new Error("no route"));
     const response = await GET(
       new Request(
         `https://yld.cx/api/market-price?chainId=8453&tokenA=${a}&tokenB=0xffffffffffffffffffffffffffffffffffffffff`,
@@ -114,20 +173,48 @@ describe("indicative references", () => {
     );
     expect(response.headers.get("cache-control")).toBe("no-store");
     const value = await response.json();
-    expect(value).toMatchObject({
-      status: "unavailable",
-      source: null,
-      ammAvailable: false,
-    });
-    expect(mocks.price).not.toHaveBeenCalled();
+    expect(value.price).toEqual({});
+    expect(value.baseTick).toBeUndefined();
+    expect(value).not.toHaveProperty("status");
+    expect(value).not.toHaveProperty("source");
+    expect(value).not.toHaveProperty("ammAvailable");
+    expect(displayReference(value, false)).toBeUndefined();
+    expect(mocks.price).toHaveBeenCalledTimes(1);
   });
+  it.each(["unavailable", "mismatched"])(
+    "falls back to token metadata when the AMM quote is %s",
+    async (reason) => {
+      mocks.metadata.mockResolvedValue([
+        { address: a, status: "available", priceUsd: "3000" },
+        { address: b, status: "available", priceUsd: "1" },
+      ]);
+      if (reason === "unavailable") {
+        mocks.price.mockRejectedValue(new Error("no route"));
+      } else {
+        mocks.price.mockResolvedValue({
+          tokenIn: b,
+          tokenOut: a,
+          amountIn: "3333333333333333",
+          estimatedAmountOut: "12000000",
+          quotedAt: Date.now(),
+        });
+      }
+      const value = await getMarketPrice("base", a, b);
+      expect(value.price.meta).toBe("3000");
+      expect(value.price.amm).toBeUndefined();
+      expect(displayReference(value, false)).toBe("3000");
+      expect(displayReference(value, false, "amm")).toBeUndefined();
+    },
+  );
   it("ignores stale metadata pricing", async () => {
     mocks.price.mockRejectedValue(new Error("no route"));
     mocks.metadata.mockResolvedValue([
       { address: a, status: "available", priceUsd: "3000", stale: true },
       { address: b, status: "available", priceUsd: "1" },
     ]);
-    expect((await getMarketPrice("base", a, b)).source).toBe("configured");
+    const value = await getMarketPrice("base", a, b);
+    expect(value.price.meta).toBeUndefined();
+    expect(displayReference(value, false)).toBe(value.price.configured);
   });
   it("canonicalizes inverse requests and sets one-hour response caching", async () => {
     for (const [tokenA, tokenB] of [
@@ -144,8 +231,7 @@ describe("indicative references", () => {
         "public, max-age=0, s-maxage=3600",
       );
       expect(await result.json()).toMatchObject({
-        price: "3000",
-        ammAvailable: true,
+        price: { amm: "3000" },
       });
     }
     expect(mocks.price).toHaveBeenCalledTimes(2);
@@ -174,11 +260,8 @@ describe("indicative references", () => {
     expect(
       displayReference(
         {
-          status: "available",
-          source: "amm",
-          price: "2",
+          price: { amm: "2" },
           timestamp: 0,
-          ammAvailable: true,
         },
         true,
       ),
