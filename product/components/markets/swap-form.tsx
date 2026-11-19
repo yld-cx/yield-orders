@@ -16,7 +16,7 @@ import { TransactionFlow } from "@/components/transactions/transaction-flow";
 import { getSdk } from "@/lib/rpc";
 import { amountText } from "@/lib/utils";
 import { queryKeys } from "@/lib/query-keys";
-import { swapRequest } from "@/lib/swap-flow";
+import { swapRequest, SwapRateLimitError } from "@/lib/swap-flow";
 import { walletSwapAvailable } from "@/lib/swap-availability";
 
 export function SwapForm({ market, asset }: { market: Market; asset: Token }) {
@@ -80,7 +80,7 @@ function SwapSession({
   const rawAmount = raw.toString();
   const [quoteAmount, setQuoteAmount] = useState("");
   useEffect(() => {
-    const timer = setTimeout(() => setQuoteAmount(rawAmount), 300);
+    const timer = setTimeout(() => setQuoteAmount(rawAmount), 1234);
     return () => clearTimeout(timer);
   }, [rawAmount]);
   const request: SwapInput | undefined =
@@ -112,7 +112,10 @@ function SwapSession({
       quoteAmount === rawAmount,
     staleTime: QUERY_TIMING.liveRefresh,
     refetchInterval: QUERY_TIMING.liveRefresh,
-    retry: false,
+    retry: (failureCount, error) =>
+      failureCount < 1 && error instanceof SwapRateLimitError,
+    retryDelay: (_failureCount, error) =>
+      error instanceof SwapRateLimitError ? error.retryAfter : 0,
   });
   const [expiredAt, setExpiredAt] = useState<number>();
   useEffect(() => {
@@ -131,6 +134,7 @@ function SwapSession({
     !quote.isFetching &&
     quoteAmount === rawAmount &&
     quote.data.expiresAt !== expiredAt;
+  const quoteError = quote.error ?? quote.failureReason;
   return (
     <div className="space-y-4" aria-label="Market swap">
       <AmountInput
@@ -167,8 +171,8 @@ function SwapSession({
         onChange={setSlippage}
       />
       {error && <Message error>{error}</Message>}
-      {quote.isError && !error && (
-        <Message error>{explainError(quote.error)}</Message>
+      {quoteError && !error && (
+        <Message error>{explainError(quoteError)}</Message>
       )}
       <TransactionFlow
         key={`${rawAmount}/${slippage}`}

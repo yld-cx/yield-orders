@@ -3582,6 +3582,89 @@ for (const scenario of [
   });
 }
 
+test("Market Swap waits for Retry-After before retrying a rate-limited refresh", async ({
+  page,
+}) => {
+  await transactionRpc(page, { pair: true, tick: true });
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  const now = Date.now();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(now + 1000);
+  let requests = 0;
+  let retryAt = 0;
+  await page.route("**/api/swap/quote", async (route) => {
+    const input = route.request().postDataJSON();
+    requests++;
+    if (requests === 2) {
+      retryAt = (await page.evaluate(() => Date.now())) + 30000;
+      await route.fulfill({
+        status: 429,
+        headers: { "Retry-After": "30" },
+        json: { error: "Too many swap requests" },
+      });
+      return;
+    }
+    const quotedAt = await page.evaluate(() => Date.now());
+    await route.fulfill({
+      json: {
+        chainId: 8453,
+        mode: "wallet-router",
+        tokenIn: input.tokenIn,
+        tokenOut: input.tokenOut,
+        amountIn: input.amount,
+        estimatedAmountOut: "100000000000000000",
+        minimumAmountOut: "99000000000000000",
+        quotedAt,
+        expiresAt: quotedAt + 45000,
+        transaction: {
+          to: swapNetwork(8453).router,
+          data: "0x12345678",
+          value: "0",
+          chainId: 8453,
+        },
+      },
+    });
+  });
+  await showMarketSection(page, "Swap");
+  const form = page.getByLabel("Market swap", { exact: true });
+  const swap = form.getByRole("button", { name: "Swap", exact: true });
+  await form.getByLabel("Amount", { exact: true }).fill("1");
+  await page.clock.runFor(1234);
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(1);
+      return swap.isEnabled();
+    })
+    .toBe(true);
+  expect(requests).toBe(1);
+  await page.clock.runFor(15000);
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(1);
+      return form
+        .getByText("Too many swap requests", { exact: true })
+        .isVisible();
+    })
+    .toBe(true);
+  await expect(swap).toBeDisabled();
+  expect(requests).toBe(2);
+  await page.clock.runFor(
+    retryAt - (await page.evaluate(() => Date.now())) - 1,
+  );
+  expect(requests).toBe(2);
+  await page.clock.runFor(1);
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(1);
+      return swap.isEnabled();
+    })
+    .toBe(true);
+  expect(requests).toBe(3);
+});
+
 test("Market Swap quotes the payment token automatically and ignores superseded quotes", async ({
   page,
 }) => {

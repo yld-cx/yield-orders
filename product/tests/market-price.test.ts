@@ -237,4 +237,25 @@ describe("indicative references", () => {
       ),
     ).toBe("0.5");
   });
+  it.each([false, true])(
+    "does not cache responses without an AMM quote, metadata fallback: %s",
+    async (withMetadata) => {
+      mocks.price.mockRejectedValue(new Error("no route"));
+      if (withMetadata)
+        mocks.metadata.mockResolvedValue([
+          { address: a, status: "available", priceUsd: "3000" },
+          { address: b, status: "available", priceUsd: "1" },
+        ]);
+      const response = await GET(
+        new Request(
+          `https://yld.cx/api/market-price?chainId=8453&tokenA=${a}&tokenB=${b}`,
+        ),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const value = await response.json();
+      expect(value.price.amm).toBeUndefined();
+      expect(value.price.meta).toBe(withMetadata ? "3000" : undefined);
+    },
+  );
 });

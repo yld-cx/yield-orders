@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { SwapError } from "@yld-cx/sdk/uniswap";
 import { POST } from "../app/api/swap/quote/route.ts";
 const mocks = vi.hoisted(() => ({ quote: vi.fn() }));
@@ -9,6 +9,7 @@ vi.mock("@yld-cx/sdk/uniswap", async (original) => ({
   },
 }));
 beforeEach(() => vi.clearAllMocks());
+afterEach(() => vi.useRealTimers());
 const input = {
   chainId: 8453,
   mode: "wallet-router",
@@ -104,10 +105,41 @@ describe("public swap boundary", () => {
       error: "No compatible route for these tokens",
     });
   });
-  it("applies a global budget even to requests that rotate wallet identities", async () => {
-    let status = 0;
-    for (let i = 0; i < 121; i++)
-      status = (await POST(request(input, "https://attacker.example"))).status;
-    expect(status).toBe(429);
+  it("limits each wallet independently and resets its window after a minute", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 60000);
+    mocks.quote.mockResolvedValue({ routeId: "test" });
+    for (let i = 0; i < 20; i++)
+      expect((await POST(request(input))).status).toBe(200);
+    const limited = await POST(request(input));
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("Retry-After")).toBe("60");
+    expect(limited.headers.get("Cache-Control")).toBe("no-store");
+    expect(mocks.quote).toHaveBeenCalledTimes(20);
+    expect(
+      (
+        await POST(
+          request({
+            ...input,
+            swapper: "0x2222222222222222222222222222222222222222",
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    vi.advanceTimersByTime(59500);
+    const almostReset = await POST(request(input));
+    expect(almostReset.status).toBe(429);
+    expect(almostReset.headers.get("Retry-After")).toBe("1");
+    vi.advanceTimersByTime(500);
+    const reset = await POST(request(input));
+    expect(reset.status).toBe(200);
+    expect(reset.headers.has("Retry-After")).toBe(false);
+  });
+  it("does not impose a global request limit across wallets", async () => {
+    mocks.quote.mockResolvedValue({ routeId: "test" });
+    for (let i = 1; i <= 121; i++) {
+      const swapper = `0x${i.toString(16).padStart(40, "0")}`;
+      expect((await POST(request({ ...input, swapper }))).status).toBe(200);
+    }
   });
 });

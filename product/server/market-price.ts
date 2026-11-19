@@ -11,6 +11,7 @@ import {
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
 import { UniswapClient, same } from "@yld-cx/sdk/uniswap";
+import { canonicalPair } from "@yld-cx/sdk/registry";
 import { registry } from "@/lib/registry";
 import { getSdk } from "@/lib/rpc";
 import { fetchTokenMetadata } from "@/lib/token-metadata";
@@ -22,6 +23,7 @@ import type { Address } from "viem";
 
 const pending = new Map<string, Promise<MarketReference>>();
 export function getMarketPrice(network: NetworkSlug, a: Address, b: Address) {
+  [a, b] = canonicalPair(getNetwork(network).id, a, b) as [Address, Address];
   const key = `${network}/${a}/${b}`;
   let result = pending.get(key);
   if (!result) {

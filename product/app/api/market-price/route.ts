@@ -28,11 +28,9 @@ export async function GET(request: Request) {
     const reference = await getMarketPrice(network.slug, a, b);
     return Response.json(reference, {
       headers: {
-        "Cache-Control":
-          reference.baseTick !== undefined ||
-          Object.keys(reference.price).length > 0
-            ? `public, max-age=0, s-maxage=${PRODUCT_MARKET.referenceCacheSeconds}`
-            : "no-store",
+        "Cache-Control": reference.price.amm
+          ? `public, max-age=0, s-maxage=${PRODUCT_MARKET.referenceCacheSeconds}`
+          : "no-store",
       },
     });
   } catch {
