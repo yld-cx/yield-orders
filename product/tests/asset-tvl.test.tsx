@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { PublicClient } from "viem";
+import { parseUnits, type PublicClient } from "viem";
 import { EthereumClient, protocolAbi } from "@yld-cx/sdk/ethereum";
 import { assetTvlOptions, useAssetTvl } from "@/hooks/use-asset-tvl";
 import { queryKeys } from "@/lib/query-keys";
@@ -98,6 +98,24 @@ describe("Asset TVL", () => {
     const client = setup();
     client.setQueryData(queryKeys.assetTvl("base", asset), 0n);
     expect(renderTvl(client)).toBe("<span>0 WETH</span>");
+    client.clear();
+  });
+
+  it.each([
+    ["2032.449873", "2,032.45"],
+    ["859.48208", "859.48"],
+    ["1689.456653", "1,689.46"],
+    ["0.016584", "0.0166"],
+    ["0.0011", "0.0011"],
+    ["0.012305", "0.0123"],
+    ["0.000000000000000001", "0.000000000000000001"],
+  ])("rounds summary TVL %s to %s", (amount, expected) => {
+    const client = setup();
+    client.setQueryData(
+      queryKeys.assetTvl("base", asset),
+      parseUnits(amount, 18),
+    );
+    expect(renderTvl(client)).toBe(`<span>${expected} WETH</span>`);
     client.clear();
   });
 

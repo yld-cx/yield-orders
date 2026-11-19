@@ -1,6 +1,6 @@
 import { networks } from "@yld-cx/sdk/ethereum";
 import { MarketTab } from "@/lib/market-filters";
-import { getTrendingMarkets } from "@/server/markets";
+import { getTrendingMarkets, getYieldListMarkets } from "@/server/markets";
 import { MARKET_CACHE_SECONDS, type MarketList } from "@/lib/market-list";
 import { registry } from "@/lib/registry";
 
@@ -24,7 +24,7 @@ export async function GET(request: Request) {
     const markets =
       tag === MarketTab.Trending
         ? await getTrendingMarkets(network.slug)
-        : registry.getMarkets(network.id);
+        : await getYieldListMarkets(network.slug);
     return Response.json({ markets } satisfies MarketList, {
       headers: {
         "Cache-Control": markets.length

@@ -3936,7 +3936,7 @@ test("market header shows reference price, APY and animated OTC and action color
   await book.getByRole("tab", { name: "Sell", exact: true }).click();
   await expect(banner.getByText("ASK APY", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expect(reference).toContainText("~ 0.000333333 WETH");
+  await expect(reference).toContainText("~ 0.000333 WETH");
 });
 
 for (const side of ["BID", "ASK"] as const)
@@ -4256,7 +4256,7 @@ test("unlisted tokens allow AMM swaps and use the AMM reference in both display 
   ).toBeVisible();
   await expect(
     overview.getByText("Reference price", { exact: true }).locator(".."),
-  ).toContainText("~ 4.1235 USDC");
+  ).toContainText("~ 4.12 USDC");
   await expect(market).toContainText("~ 4.1235 USDC");
   await market.click();
   const swap = page.getByLabel("Market swap", { exact: true });
@@ -4268,7 +4268,7 @@ test("unlisted tokens allow AMM swaps and use the AMM reference in both display 
   await expect(market).toContainText("~ 0.24251497 TKN111111");
   await expect(
     overview.getByText("Reference price", { exact: true }).locator(".."),
-  ).toContainText("~ 0.24251497 TKN111111");
+  ).toContainText("~ 0.243 TKN111111");
   await market.click();
   await expect(swap.getByLabel("Amount", { exact: true })).toBeVisible();
 });
