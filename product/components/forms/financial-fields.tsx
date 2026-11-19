@@ -1,7 +1,6 @@
 "use client";
 import { useId, type ReactNode } from "react";
 import { Info, LoaderIcon, WalletIcon } from "lucide-react";
-import { DURATIONS, type Duration } from "@yld-cx/sdk";
 import { cn } from "@yld-cx/ui/lib/utils";
 import { Field, FieldLabel } from "@yld-cx/ui/components/ui/field";
 import {
@@ -10,13 +9,6 @@ import {
   InputGroupAddon,
   InputGroupText,
 } from "@yld-cx/ui/components/ui/input-group";
-import {
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
-} from "@yld-cx/ui/components/ui/select";
 import { Alert, AlertDescription } from "@yld-cx/ui/components/ui/alert";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { formatUnits } from "viem";
@@ -114,55 +106,45 @@ export function AmountInput({
     </Field>
   );
 }
-const durationItems = DURATIONS.map((duration) => ({
-  value: String(duration),
-  label: `${duration}D`,
-  duration,
-}));
-export function DurationSelect({
+export function SlippageInput({
   value,
   onChange,
-  label = "Duration",
-  inline = false,
+  label = "Slippage",
 }: {
-  value: Duration;
-  onChange: (duration: Duration) => void;
+  value: string;
+  onChange: (value: string) => void;
   label?: string;
-  inline?: boolean;
 }) {
-  const id = useId();
-  const select = (
-    <Select
-      items={durationItems}
-      value={String(value)}
-      onValueChange={(next) => {
-        const selected = durationItems.find((item) => item.value === next);
-        if (selected) onChange(selected.duration);
-      }}
-    >
-      <SelectTrigger
-        id={id}
-        aria-label={label}
-        className={inline ? "min-w-20" : undefined}
-      >
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {durationItems.map((item) => (
-          <SelectItem key={item.value} value={item.value}>
-            {item.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-  return inline ? (
-    select
-  ) : (
-    <Field className="my-4">
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      {select}
-    </Field>
+  return (
+    <details className="space-y-2 text-xs text-muted-foreground">
+      <summary className="flex cursor-pointer list-none items-start justify-between gap-4 [&::-webkit-details-marker]:hidden">
+        <span>{label}</span>
+        <span className="text-right font-medium text-foreground tabular-nums underline decoration-dashed underline-offset-4">
+          {value || "0"}%
+        </span>
+      </summary>
+      <Field className="my-2">
+        <InputGroup>
+          <InputGroupInput
+            aria-label={label}
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            value={value}
+            onChange={(event) => {
+              const next = event.target.value.replaceAll(",", ".");
+              if (/^\d*(?:\.\d*)?$/.test(next)) onChange(next);
+            }}
+          />
+          <InputGroupAddon align="inline-end">
+            <InputGroupText>%</InputGroupText>
+          </InputGroupAddon>
+        </InputGroup>
+      </Field>
+    </details>
   );
 }
 export function Metric({

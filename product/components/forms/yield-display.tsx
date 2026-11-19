@@ -2,54 +2,12 @@
 
 import { useId, useState, type ReactNode } from "react";
 import { Info } from "lucide-react";
-import { Switch } from "@yld-cx/ui/components/ui/switch";
 import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
 } from "@yld-cx/ui/components/ui/tooltip";
-import { APY_DESCRIPTION, type YieldMode } from "@/lib/yield";
-
-export function YieldModeSwitch({
-  value,
-  onChange,
-  label = "Yield display",
-  termLabel = "Term",
-}: {
-  value: YieldMode;
-  onChange: (mode: YieldMode) => void;
-  label?: string;
-  termLabel?: string;
-}) {
-  const descriptionId = useId();
-  return (
-    <div
-      className="flex shrink-0 items-center gap-2 text-xs"
-      role="group"
-      aria-label={label}
-    >
-      <span
-        className={value === "term" ? "font-medium" : "text-muted-foreground"}
-      >
-        {termLabel}
-      </span>
-      <Switch
-        aria-label={label}
-        aria-describedby={descriptionId}
-        checked={value === "apy"}
-        onCheckedChange={(checked) => onChange(checked ? "apy" : "term")}
-      />
-      <span
-        className={value === "apy" ? "font-medium" : "text-muted-foreground"}
-      >
-        <ApyLabel />
-      </span>
-      <span id={descriptionId} className="sr-only">
-        Showing {value === "apy" ? "APY" : "Term Yield"}
-      </span>
-    </div>
-  );
-}
+import { APY_DESCRIPTION } from "@/lib/yield";
 
 export function ApyLabel({ children = "APY" }: { children?: ReactNode }) {
   const [open, setOpen] = useState(false);

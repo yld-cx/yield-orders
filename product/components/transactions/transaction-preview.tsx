@@ -73,9 +73,11 @@ export function TransactionPreview({
       )}
       {action.kind === "supply" && (
         <>
-          <Metric label="You supply">{a(action.amount)}</Metric>
-          <Metric label="Estimated Quote">
-            {estimatedSupplyQuote === undefined ? "—" : q(estimatedSupplyQuote)}
+          <Metric label="You provide">{a(action.amount)}</Metric>
+          <Metric label="You receive">
+            {estimatedSupplyQuote === undefined
+              ? "—"
+              : `~ ${q(estimatedSupplyQuote)}`}
           </Metric>
           <Metric label={<ApyLabel>Estimated APY</ApyLabel>}>
             {preview.tick
@@ -100,10 +102,8 @@ export function TransactionPreview({
       )}
       {preview.position && (
         <>
-          <Metric label="Receive Asset">
-            {a(preview.position.assetAmount)}
-          </Metric>
-          <Metric label="Lock Quote">
+          <Metric label="You receive">{a(preview.position.assetAmount)}</Metric>
+          <Metric label="You provide">
             {q(preview.position.quotePrincipal)}
           </Metric>
           <Metric label="Maximum term Yield">
@@ -128,8 +128,8 @@ export function TransactionPreview({
       )}
       {preview.swap && (
         <>
-          <Metric label="Receive Asset">{a(preview.swap.assetAmount)}</Metric>
-          <Metric label="Pay Quote">{q(preview.swap.quotePrincipal)}</Metric>
+          <Metric label="You receive">{a(preview.swap.assetAmount)}</Metric>
+          <Metric label="You provide">{q(preview.swap.quotePrincipal)}</Metric>
           <Metric label="Maximum Quote payment">
             {action.kind === "swap" ? q(action.maxQuoteIn) : "—"}
           </Metric>

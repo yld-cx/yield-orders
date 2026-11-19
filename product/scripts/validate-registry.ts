@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parseTree, type Node, type ParseError } from "jsonc-parser";
-import { Registry } from "../packages/sdk/src/registry/index.js";
+import { Registry } from "@yld-cx/sdk/registry";
 const raw = await readFile(
   new URL("../public/yieldlist.json", import.meta.url),
   "utf8",

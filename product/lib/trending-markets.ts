@@ -1,6 +1,5 @@
 import {
-  DEFAULT_DURATION,
-  DISCOVERY_DEFAULTS,
+  PRODUCT_MARKET,
   type MarketConfiguration,
   type NetworkId,
 } from "@yld-cx/sdk";
@@ -33,8 +32,8 @@ export function trendingMarkets(
         key,
         token0: { network, address: a },
         token1: { network, address: b },
-        defaultDuration: DEFAULT_DURATION,
-        stepTicks: DISCOVERY_DEFAULTS.stepTicks,
+        defaultDuration: PRODUCT_MARKET.duration,
+        stepTicks: PRODUCT_MARKET.stepTicks,
       },
     ];
   });

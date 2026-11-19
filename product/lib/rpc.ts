@@ -35,8 +35,9 @@ export function getSdk(network: string): EthereumClient {
         transport: http(rpcUrls[n.slug], {
           timeout: RPC_TIMEOUT_MS,
           retryCount: RPC_RETRY_COUNT,
+          batch: { batchSize: 100, wait: 10 },
         }),
-        batch: { multicall: true },
+        batch: { multicall: { wait: 10 } },
       }) as PublicClient,
       n.id,
     );

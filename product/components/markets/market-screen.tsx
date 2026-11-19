@@ -1,34 +1,38 @@
 "use client";
-import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
-import { Badge } from "@yld-cx/ui/components/ui/badge";
-import { useState } from "react";
+import { useReducer, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowLeftRight } from "lucide-react";
+import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
+import { Badge } from "@yld-cx/ui/components/ui/badge";
+import { Button } from "@yld-cx/ui/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@yld-cx/ui/components/ui/tabs";
 import { displayTokens } from "@yld-cx/sdk/registry";
 import {
   getNetwork,
-  candidateLevels,
   explainError,
-  priceAtTick,
-  humanPrice,
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
-import type { Duration, Market, TickIdentity } from "@yld-cx/sdk";
+import { PRODUCT_MARKET, type Market } from "@yld-cx/sdk";
 import { useMarket } from "@/hooks/use-market";
-import { useYieldBook, type BookTick } from "@/hooks/use-yield-book";
-import { amountText } from "@/lib/utils";
+import { useAssetTvl } from "@/hooks/use-asset-tvl";
+import { useYieldBook } from "@/hooks/use-yield-book";
 import { compactPriceText, discoveryBaseTick } from "@/lib/market-values";
-import { DEFAULT_YIELD_MODE, tickYieldText } from "@/lib/yield";
-import { ApyLabel } from "@/components/forms/yield-display";
-import { Button } from "@yld-cx/ui/components/ui/button";
+import { displayReference, type MarketReference } from "@/lib/market-reference";
 import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@yld-cx/ui/components/ui/tabs";
-import { cn } from "@yld-cx/ui/lib/utils";
+  bookDirection,
+  bookWindow,
+  initialBookWindow,
+  moveBookWindow,
+  nearestProductTick,
+  orderSelection,
+  type BookSide,
+  type OrderAction,
+} from "@/lib/market-selection";
+import { queryKeys } from "@/lib/query-keys";
+import { ApyLabel } from "@/components/forms/yield-display";
+import { tickYieldText } from "@/lib/yield";
 import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
@@ -37,12 +41,7 @@ import { SupplyForm } from "./supply-form";
 import { UseForm } from "./use-form";
 import { TokenIcon } from "./token-icon";
 import { MarketPositions } from "./market-positions";
-
-enum MarketPanel {
-  Provide = "provide",
-  YieldBook = "book",
-  Use = "use",
-}
+import { SwapForm } from "./swap-form";
 
 export function MarketScreen({
   network,
@@ -52,7 +51,25 @@ export function MarketScreen({
   pair: string;
 }) {
   const result = useMarket(network, pair);
-  if (result.isPending) return <LoadingScreen label="Loading market…" />;
+  const reference = useQuery({
+    queryKey: queryKeys.reference(network, pair),
+    queryFn: async (): Promise<MarketReference> => {
+      const [a, b] = pair.split(":");
+      const params = new URLSearchParams({
+        chainId: String(getNetwork(network).chain.id),
+        tokenA: a,
+        tokenB: b,
+      });
+      const response = await fetch(`/api/market-price?${params}`, {
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!response.ok) throw new Error("Reference unavailable");
+      return response.json();
+    },
+    staleTime: PRODUCT_MARKET.referenceCacheSeconds * 1000,
+  });
+  if (result.isPending || reference.isPending)
+    return <LoadingScreen label="Loading market…" />;
   if (result.error || !result.market)
     return (
       <Message error>
@@ -65,6 +82,7 @@ export function MarketScreen({
       market={result.market}
       pairId={result.pairId}
       exists={!!result.pair.data?.[3]}
+      reference={reference.data}
     />
   );
 }
@@ -73,144 +91,116 @@ function MarketContent({
   market,
   pairId,
   exists,
+  reference,
 }: {
   market: Market;
   pairId: bigint;
   exists: boolean;
+  reference?: MarketReference;
 }) {
-  const [inverted, setInverted] = useState(false);
-  const [duration, setDuration] = useState<Duration>(market.defaultDuration);
-  const [selectedIdentity, setSelectedIdentity] = useState<TickIdentity>();
-  const [activePanel, setActivePanel] = useState(MarketPanel.YieldBook);
   const params = useSearchParams();
-  // Capture the initial reference. Background metadata refreshes must not move
-  // a user's discovery center or clear their selected price level.
-  const [initialBaseTick] = useState(market.baseTick);
-  const baseTick = discoveryBaseTick(params.get("baseTick"), {
-    ...market,
-    baseTick: initialBaseTick,
-  });
-  const book = useYieldBook(market, pairId, baseTick);
-  const network = getNetwork(market.network).slug;
-  const [supplyAsset, setSupplyAsset] = useState(
-    () => displayTokens(market)[0].address,
-  );
-  const selectionInRange =
-    !selectedIdentity ||
-    candidateLevels(baseTick, market.stepTicks).includes(
-      selectedIdentity.direction === 0
-        ? selectedIdentity.priceTick
-        : -selectedIdentity.priceTick,
-    );
-  if (selectedIdentity && !selectionInRange) setSelectedIdentity(undefined);
-  const selected = selectionInRange
-    ? book.levels.find(
-        (level) =>
-          level.id === selectedIdentity?.id && level.durationDays === duration,
-      )
-    : undefined;
-  const changeBaseTick = (next: number) => {
-    const query = new URLSearchParams(window.location.search);
-    if (next === initialBaseTick) query.delete("baseTick");
-    else query.set("baseTick", String(next));
-    const search = query.toString();
-    window.history.pushState(
-      null,
-      "",
-      `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`,
-    );
-  };
-  const natural = displayTokens(market);
-  const display = inverted ? ([natural[1], natural[0]] as const) : natural;
-  const ticks = book.ticks.filter(
-    (t) => t.state.durationDays === BigInt(duration),
-  );
-  const ask = ticks.filter(
-    (t) => t.state.asset.toLowerCase() === display[0].address.toLowerCase(),
-  );
-  const bid = ticks.filter(
-    (t) => t.state.asset.toLowerCase() === display[1].address.toLowerCase(),
-  );
-  const referencePrice = compactPriceText(
-    humanPrice(
-      priceAtTick(baseTick),
-      market.token0.decimals,
-      market.token1.decimals,
-      display[0].address.toLowerCase() !== market.token0.address.toLowerCase(),
+  const [initialTick] = useState(() =>
+    nearestProductTick(
+      discoveryBaseTick(params.get("baseTick"), {
+        baseTick: reference?.baseTick ?? market.baseTick,
+        stepTicks: PRODUCT_MARKET.stepTicks,
+      }),
     ),
   );
-  const bidSelected =
-    supplyAsset.toLowerCase() === display[1].address.toLowerCase();
-  const yieldTick =
-    selected ??
-    (bidSelected ? bid : ask).find((t) => t.state.availableSupply > 0n);
-  const estimatedYield =
-    yieldTick?.status === "exists"
-      ? tickYieldText(yieldTick.state, DEFAULT_YIELD_MODE.markets)
-      : "—";
-  const incomplete = book.failed > 0 || book.discovery.isError;
-  const available = (side: BookTick[], index: 0 | 1) =>
-    incomplete
-      ? "Incomplete"
-      : book.discovery.isPending
-        ? "…"
-        : `${amountText(
-            side.reduce((sum, t) => sum + t.state.availableSupply, 0n),
-            display[index].decimals,
-          )} ${display[index].symbol}`;
-  const changeDuration = (next: Duration) => {
-    setDuration(next);
-    setSelectedIdentity(undefined);
-  };
-  if (book.discovery.isPending)
-    return <LoadingScreen label="Loading market…" />;
+  const [state, dispatch] = useReducer(orderSelection, {
+    action: "limit",
+    side: "bid",
+    inverted: false,
+    selection: { kind: "none" },
+  });
+  const [windowStart, setWindowStart] = useState(() =>
+    initialBookWindow(initialTick),
+  );
+  const natural = displayTokens(market);
+  const tvl = useAssetTvl(getNetwork(market.network).slug, natural[0].address);
+  const display = state.inverted
+    ? ([natural[1], natural[0]] as const)
+    : natural;
+  const displayInverse =
+    display[0].address.toLowerCase() !== market.token0.address.toLowerCase();
+  const direction = bookDirection(state.side, displayInverse);
+  const window = bookWindow(windowStart);
+  const book = useYieldBook(market, pairId, window, direction);
+  const selectedTick =
+    state.selection.kind === "tick" ? state.selection.canonicalTick : undefined;
+  const selectedInWindow =
+    selectedTick !== undefined && window.includes(selectedTick);
+  // Keep the selected off-page tick live without scanning intervening levels.
+  const outside = useYieldBook(
+    market,
+    pairId,
+    selectedTick === undefined ? [] : [selectedTick],
+    direction,
+    state.selection.kind === "tick" && !selectedInWindow,
+  );
+  const selected = (selectedInWindow ? book : outside).levels.find(
+    (level) =>
+      (level.direction === 0 ? level.priceTick : -level.priceTick) ===
+      selectedTick,
+  );
+  const asset = direction === 0 ? market.token0 : market.token1;
+  const network = getNetwork(market.network).slug;
+  const indicative = reference
+    ? displayReference(reference, displayInverse)
+    : undefined;
+  const referencePrice = indicative ? compactPriceText(indicative) : undefined;
+  const selectedApy =
+    state.selection.kind !== "tick"
+      ? "—"
+      : selected?.status === "exists"
+        ? tickYieldText(selected.state, "apy")
+        : selected?.status === "failed" &&
+            !(selectedInWindow ? book : outside).discovery.isPending
+          ? "Read failed"
+          : "—";
+  const formKey = `${market.network}/${market.key}/${direction}/${selected?.id}/${state.action}/${state.selection.kind}/${state.inverted}`;
+  function navigate(target: "higher" | "lower") {
+    setWindowStart(moveBookWindow(windowStart, target, displayInverse));
+  }
+  function selectMarket() {
+    setWindowStart(initialBookWindow(reference?.baseTick ?? initialTick));
+    dispatch({ type: "market" });
+  }
   return (
     <>
-      <div className="flex flex-wrap items-center gap-3 py-6 text-xs text-muted-foreground">
-        <Link href="/">Yield</Link>
-        <span>|</span>
-        <span>
-          {display[0].symbol} / {display[1].symbol}
-        </span>
-      </div>
-      <section className="market-banner" aria-label="Market overview">
-        <div>
+      <section
+        className="market-banner relative gap-x-6 gap-y-4 py-10"
+        aria-label="Market overview"
+      >
+        <div className="absolute right-0 top-10 flex h-4 items-center">
+          <Badge variant="outline" data-intent="bid">
+            {exists ? "Open market" : "Preview market"}
+          </Badge>
+        </div>
+        <div className="self-start">
           <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
             Yield market · {getNetwork(network).name}
           </p>
-          <div className="flex flex-wrap items-center gap-3 [&>h1]:text-3xl [&>h1]:font-semibold [&>h1]:tracking-tight">
-            <h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">
               {display[0].symbol} / {display[1].symbol}
             </h1>
             <Button
               size="sm"
               variant="outline"
               title="Invert displayed pair and price denomination; onchain market stays the same"
-              onClick={() => setInverted((v) => !v)}
+              onClick={() => dispatch({ type: "invert" })}
             >
               <ArrowLeftRight size={15} />
             </Button>
           </div>
-          <p className="text-muted-foreground my-3 text-sm">
+          <p className="my-3 text-muted-foreground">
             Trade and use {display[0].symbol} or {display[1].symbol} at your
             price.
           </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" data-intent="bid">
-              {exists ? "Open market" : "Preview market"}
-            </Badge>
-            <Badge variant="secondary" data-intent="term">
-              {duration}D
-            </Badge>
-            {!book.discovery.isPending &&
-              !incomplete &&
-              !ticks.some((t) => t.state.availableSupply > 0n) && (
-                <Badge variant="outline">New · No liquidity</Badge>
-              )}
-          </div>
         </div>
         <div
-          className="crowned-token relative flex h-32 items-center justify-center"
+          className="crowned-token relative mt-8 flex h-32 items-center justify-center lg:mt-0"
           aria-label={`${display[0].symbol} crowned token`}
         >
           <span
@@ -223,127 +213,146 @@ function MarketContent({
             <TokenIcon token={display[0]} size={50} />
           </div>
         </div>
-        <dl className="grid grid-cols-2 gap-4 [&_dt]:text-xs [&_dt]:text-muted-foreground [&_dd]:mt-1 [&_dd]:break-words [&_dd]:font-semibold [&_dd]:tabular-nums">
+        <dl className="flex flex-wrap gap-x-10 gap-y-4 text-sm">
           <div>
-            <dt>
-              Reference price · {display[1].symbol} / {display[0].symbol}
-            </dt>
-            <dd>
-              {referencePrice} {display[1].symbol}
+            <dt className="text-xs text-muted-foreground">Reference price</dt>
+            <dd className="mt-1 font-semibold tabular-nums">
+              {referencePrice
+                ? `~ ${referencePrice} ${display[1].symbol}`
+                : "—"}
             </dd>
           </div>
           <div>
-            <dt>Available · Ask</dt>
-            <dd>{available(ask, 0)}</dd>
+            <dt className="text-xs text-muted-foreground">Asset TVL</dt>
+            <dd className="mt-1 font-semibold tabular-nums">{tvl}</dd>
           </div>
           <div>
-            <dt>
-              <ApyLabel>{`${bidSelected ? "Bid" : "Ask"} APY`}</ApyLabel>
+            <dt className="text-xs text-muted-foreground">
+              <ApyLabel>{`${state.side.toUpperCase()} APY`}</ApyLabel>
             </dt>
-            <dd className="text-primary">
-              {incomplete ? "Incomplete" : estimatedYield}
-            </dd>
+            <dd className="mt-1 font-semibold text-primary">{selectedApy}</dd>
           </div>
           <div>
-            <dt>Available · Bid</dt>
-            <dd>{available(bid, 1)}</dd>
+            <dt className="text-xs text-muted-foreground">Term</dt>
+            <dd className="mt-1 font-semibold">
+              {PRODUCT_MARKET.duration} days
+            </dd>
           </div>
         </dl>
       </section>
-      {baseTick === 0 && (
-        <Message>
-          ⚠️ Unlisted token · Review token compatibility before interacting
-        </Message>
-      )}
-      <Tabs
-        value={activePanel}
-        onValueChange={(value) => setActivePanel(value as MarketPanel)}
-        className="my-4 gap-4"
-      >
-        <div className="sticky top-16 z-10 bg-background/95 py-2 backdrop-blur lg:hidden">
-          <TabsList className="w-full" aria-label="Market sections">
-            <TabsTrigger value={MarketPanel.Provide}>Provide</TabsTrigger>
-            <TabsTrigger value={MarketPanel.YieldBook}>Yield Book</TabsTrigger>
-            <TabsTrigger value={MarketPanel.Use}>Use</TabsTrigger>
-          </TabsList>
-        </div>
-        <div className="grid items-start gap-4 lg:grid-cols-[1fr_1.4fr_1fr]">
-          {/* CSS controls visibility so desktop always shows all three columns. */}
-          <TabsContent
-            value={MarketPanel.Provide}
-            keepMounted
-            hidden={false}
-            inert={false}
-            className={cn(
-              "min-w-0 lg:block",
-              activePanel !== MarketPanel.Provide && "hidden",
-            )}
-          >
-            <SupplyForm
-              key={`supply/${supplyAsset}/${duration}/${selected?.id ?? "draft"}`}
-              market={market}
-              display={display}
-              duration={duration}
-              onDurationChange={changeDuration}
-              selectedTick={selected}
-              assetAddress={supplyAsset}
-              onAssetChange={(address) => {
-                if (address !== supplyAsset) {
-                  setSupplyAsset(address);
-                  setSelectedIdentity(undefined);
+      <div className="grid items-start gap-4 lg:grid-cols-2">
+        <YieldBook
+          display={display}
+          side={state.side}
+          onSideChange={(side: BookSide) => dispatch({ type: "side", side })}
+          selection={state.selection}
+          onSelect={(level) =>
+            dispatch({
+              type: "tick",
+              canonicalTick:
+                level.direction === 0 ? level.priceTick : -level.priceTick,
+            })
+          }
+          onMarket={selectMarket}
+          marketAvailable={!!reference?.ammAvailable}
+          referencePrice={indicative}
+          book={book}
+          onNavigate={navigate}
+          canHigher={
+            moveBookWindow(windowStart, "higher", displayInverse) !==
+            windowStart
+          }
+          canLower={
+            moveBookWindow(windowStart, "lower", displayInverse) !== windowStart
+          }
+        />
+        <Card className="min-w-0" aria-label="Yield Order">
+          <CardContent className="space-y-4">
+            <div className="flex h-8 items-center justify-between">
+              <h2 className="font-semibold">Yield Order</h2>
+              <Badge
+                variant="outline"
+                data-intent={
+                  state.action === "limit"
+                    ? "term"
+                    : state.action === "rent"
+                      ? "rent"
+                      : "swap"
                 }
-              }}
-            />
-          </TabsContent>
-          <TabsContent
-            value={MarketPanel.YieldBook}
-            keepMounted
-            hidden={false}
-            inert={false}
-            className={cn(
-              "min-w-0 lg:block",
-              activePanel !== MarketPanel.YieldBook && "hidden",
+              >
+                {state.action === "limit" ? "Provide" : "Use"}
+              </Badge>
+            </div>
+            <Tabs
+              value={state.action}
+              onValueChange={(action) =>
+                dispatch({ type: "action", action: action as OrderAction })
+              }
+            >
+              <TabsList
+                className="grid w-full grid-cols-3"
+                aria-label="Order action"
+              >
+                <TabsTrigger
+                  className="text-foreground dark:text-foreground"
+                  value="limit"
+                  data-intent="term"
+                >
+                  Limit
+                </TabsTrigger>
+                <TabsTrigger
+                  className="text-foreground dark:text-foreground"
+                  value="swap"
+                  data-intent="swap"
+                >
+                  Swap
+                </TabsTrigger>
+                <TabsTrigger
+                  className="text-foreground dark:text-foreground"
+                  value="rent"
+                  data-intent="rent"
+                >
+                  Rent
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            {state.action === "limit" ? (
+              <SupplyForm
+                key={formKey}
+                market={market}
+                display={display}
+                duration={PRODUCT_MARKET.duration}
+                selectedTick={selected}
+                assetAddress={asset.address}
+                isPending={
+                  (selectedInWindow ? book : outside).discovery.isPending
+                }
+              />
+            ) : state.action === "swap" && state.selection.kind === "market" ? (
+              <SwapForm key={formKey} market={market} asset={asset} />
+            ) : (
+              <UseForm
+                key={formKey}
+                market={market}
+                display={display}
+                tick={selected}
+                mode={state.action === "rent" ? "use" : "swap"}
+                isPending={
+                  selectedTick !== undefined &&
+                  (selectedInWindow ? book : outside).discovery.isPending
+                }
+                isIncomplete={
+                  selected?.status === "failed" &&
+                  !(selectedInWindow ? book : outside).discovery.isPending
+                }
+              />
             )}
-          >
-            <YieldBook
-              referencePrice={referencePrice}
-              stepTicks={market.stepTicks}
-              onBaseTickChange={changeBaseTick}
-              display={display}
-              duration={duration}
-              onDurationChange={changeDuration}
-              selected={selected}
-              onSelect={(level) => {
-                setSelectedIdentity(level);
-                setSupplyAsset(level.asset.toLowerCase());
-              }}
-              book={book}
-            />
-          </TabsContent>
-          <TabsContent
-            value={MarketPanel.Use}
-            keepMounted
-            hidden={false}
-            inert={false}
-            className={cn(
-              "min-w-0 lg:block",
-              activePanel !== MarketPanel.Use && "hidden",
-            )}
-          >
-            <UseForm
-              key={`use/${selected?.id ?? "empty"}`}
-              market={market}
-              display={display}
-              tick={selected}
-              isPending={book.discovery.isPending}
-              isIncomplete={incomplete}
-            />
-          </TabsContent>
-        </div>
-      </Tabs>
+          </CardContent>
+        </Card>
+      </div>
       <MarketPositions market={market} />
       {!exists && (
-        <Card className="items-center text-center [&_h2]:text-xl [&_h3]:text-lg [&_p]:max-w-xl [&_p]:text-muted-foreground">
+        <Card className="mt-4 items-center text-center [&_h2]:text-xl [&_p]:max-w-xl [&_p]:text-muted-foreground">
           <CardContent className="space-y-4">
             <h2>Create Market</h2>
             <p>

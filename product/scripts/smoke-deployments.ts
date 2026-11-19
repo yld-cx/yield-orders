@@ -1,9 +1,5 @@
 import { createPublicClient, http, keccak256, type PublicClient } from "viem";
-import {
-  networks,
-  deploymentFor,
-  EthereumClient,
-} from "../packages/sdk/src/ethereum/index.js";
+import { networks, deploymentFor, EthereumClient } from "@yld-cx/sdk/ethereum";
 for (const network of networks) {
   const url =
     process.env[`${network.slug.toUpperCase()}_RPC_URL`] ||

@@ -1,0 +1,28 @@
+{
+  "name": "yld-resolver",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "typecheck": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "test:runtime": "node --test test/runtime.test.mjs",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:runtime"
+  },
+  "dependencies": {
+    "@yld-cx/sdk": "file:../../../product/packages/sdk",
+    "viem": "2.57.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261110.1",
+    "@types/node": "^24.0.0",
+    "miniflare": "^5.20261110.1-beta",
+    "typescript": "6.0.3",
+    "wrangler": "4.160.1"
+  }
+}

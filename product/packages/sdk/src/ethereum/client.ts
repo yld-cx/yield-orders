@@ -256,6 +256,14 @@ export class EthereumClient {
       blockNumber,
     });
   }
+  tokenLiability(asset: Address) {
+    return this.publicClient.readContract({
+      address: this.address,
+      abi: protocolAbi,
+      functionName: "tokenLiability",
+      args: [asset],
+    });
+  }
   getTick(id: bigint, blockNumber?: bigint) {
     return this.publicClient.readContract({
       address: this.address,
@@ -338,6 +346,8 @@ export class EthereumClient {
   async discover(
     pairId: bigint,
     config: {
+      /** Optional explicit canonical window; does not restrict protocol grids. */
+      canonicalTicks?: readonly number[];
       baseTick?: number;
       stepTicks?: number;
       radius?: number;
@@ -350,12 +360,18 @@ export class EthereumClient {
     } = {},
   ): Promise<DiscoveryResult> {
     const radius = config.radius ?? DISCOVERY_DEFAULTS.radius;
-    const identities = tickCandidates(
-      pairId,
-      config.baseTick,
-      config.stepTicks,
-      radius,
-    ).filter(
+    if (
+      config.canonicalTicks &&
+      (config.canonicalTicks.length > 257 ||
+        new Set(config.canonicalTicks).size !== config.canonicalTicks.length)
+    )
+      throw new Error("Invalid discovery window");
+    const candidates = config.canonicalTicks
+      ? config.canonicalTicks.flatMap((tick) =>
+          tickCandidates(pairId, tick, config.stepTicks ?? 1, 0),
+        )
+      : tickCandidates(pairId, config.baseTick, config.stepTicks, radius);
+    const identities = candidates.filter(
       (tick) =>
         (config.duration === undefined ||
           tick.durationDays === config.duration) &&

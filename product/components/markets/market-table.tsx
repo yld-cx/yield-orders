@@ -1,5 +1,5 @@
 "use client";
-import { Category, type Token } from "@yld-cx/sdk";
+import { Category, type Token, type MarketConfiguration } from "@yld-cx/sdk";
 import { Card, CardContent } from "@yld-cx/ui/components/ui/card";
 import {
   TableCell,
@@ -12,7 +12,7 @@ import {
 } from "@yld-cx/ui/components/ui/table";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   Search,
@@ -24,20 +24,13 @@ import {
 } from "lucide-react";
 import { displayTokens } from "@yld-cx/sdk/registry";
 import { getNetwork } from "@yld-cx/sdk/ethereum";
-import { type Duration, type Tick } from "@yld-cx/sdk";
-import { useMarketLiquidity } from "@/hooks/use-market-liquidity";
 import { useTokenMetadata } from "@/hooks/use-token-metadata";
-import { fallbackToken } from "@/lib/token-metadata";
+import { fallbackToken, tokenImageUrl } from "@/lib/token-metadata";
 import { marketPath } from "@/lib/registry";
-import { amountText } from "@/lib/utils";
 import { useMarketFilters } from "@/hooks/use-market-filters";
 import { useMarketList } from "@/hooks/use-market-list";
-import {
-  DEFAULT_MARKET_SORT,
-  MARKET_TAGS,
-  MarketSort,
-  MarketTab,
-} from "@/lib/market-filters";
+import { useAssetTvl } from "@/hooks/use-asset-tvl";
+import { MARKET_TAGS, MarketTab } from "@/lib/market-filters";
 import {
   Empty,
   EmptyHeader,
@@ -47,16 +40,13 @@ import {
 } from "@yld-cx/ui/components/ui/empty";
 import { Button } from "@yld-cx/ui/components/ui/button";
 import { Input } from "@yld-cx/ui/components/ui/input";
-import { DurationSelect } from "@/components/forms/financial-fields";
 import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
 import { PairIcons } from "./token-icon";
-import { YieldModeSwitch } from "@/components/forms/yield-display";
-import { DEFAULT_YIELD_MODE, tickYieldText, type YieldMode } from "@/lib/yield";
 import { MARKET_PAGE_SIZE as PAGE_SIZE } from "@/lib/market-list";
 
-function MarketRowSkeleton() {
+function MarketRowSkeleton({ marketKey }: { marketKey?: string }) {
   return (
-    <TableRow aria-hidden="true">
+    <TableRow aria-hidden="true" data-market-key={marketKey}>
       <TableCell className="p-4">
         <div className="flex items-center gap-3">
           <div className="flex -space-x-2">
@@ -69,14 +59,9 @@ function MarketRowSkeleton() {
           </div>
         </div>
       </TableCell>
-      {Array.from({ length: 4 }, (_, i) => (
-        <TableCell key={i} className="p-4">
-          <Skeleton
-            className={`ml-auto h-5 ${i % 2 === 0 ? "w-20" : "w-12"} motion-reduce:animate-none`}
-          />
-          <Skeleton className="ml-auto mt-1 h-4 w-16 motion-reduce:animate-none" />
-        </TableCell>
-      ))}
+      <TableCell className="p-4">
+        <Skeleton className="ml-auto h-4 w-24 motion-reduce:animate-none" />
+      </TableCell>
       <TableCell className="p-4">
         <Skeleton className="mx-auto size-4 motion-reduce:animate-none" />
       </TableCell>
@@ -84,17 +69,8 @@ function MarketRowSkeleton() {
   );
 }
 
-function MarketRow({
-  row: { config, result, query },
-  duration,
-  yieldMode,
-}: {
-  row: ReturnType<typeof useMarketLiquidity>[number];
-  duration: Duration;
-  yieldMode: YieldMode;
-}) {
+function MarketRow({ config }: { config: MarketConfiguration }) {
   const network = getNetwork(config.network).slug;
-  const market = result.market;
   const metadata = useTokenMetadata(network, [
     config.token0.address,
     config.token1.address,
@@ -102,42 +78,65 @@ function MarketRow({
   const token = (address: string) =>
     metadata.find((token) => token.address === address) ??
     fallbackToken(config.network, address);
-  const tokens = displayTokens<Pick<Token, "address" | "symbol" | "imageUrl">>(
-    market ?? {
-      token0: token(config.token0.address),
-      token1: token(config.token1.address),
-    },
+  const tokens = displayTokens<Pick<Token, "address" | "symbol" | "imageUrl">>({
+    token0: token(config.token0.address),
+    token1: token(config.token1.address),
+  });
+  const tvl = useAssetTvl(network, tokens[0].address);
+  const pending = tokens.map(
+    (token) => !metadata.some((item) => item.address === token.address),
   );
-  const router = useRouter();
-  if (!result.error && (result.isPending || query.isPending))
-    return <MarketRowSkeleton />;
-  const ticks =
-    query.data?.ticks.filter((t) => t.durationDays === duration) ?? [];
-  function summary(asset: string) {
-    const side = ticks.filter(
-      (t) => t.state.asset.toLowerCase() === asset.toLowerCase(),
-    );
-    return {
-      available: side.reduce((sum, t) => sum + t.state.availableSupply, 0n),
-      working: side.reduce((sum, t) => sum + t.state.activeWorking, 0n),
-      side,
+  const [loadedImages, setLoadedImages] = useState<Record<string, string>>({});
+  const sources = tokens.map(
+    (token) => tokenImageUrl(token.imageUrl) ?? "/token.svg",
+  );
+  const sourceKey = JSON.stringify(
+    pending.some(Boolean) ? [] : [...new Set(sources)],
+  );
+  useEffect(() => {
+    const images = (JSON.parse(sourceKey) as string[]).map((source) => {
+      const image = new Image();
+      const done = () =>
+        setLoadedImages((loaded) => ({
+          ...loaded,
+          [source]: image.getAttribute("src") ?? source,
+        }));
+      image.onload = done;
+      image.onerror = () => {
+        if (image.getAttribute("src") !== "/token.svg")
+          image.src = "/token.svg";
+        else done();
+      };
+      image.src = source;
+      return image;
+    });
+    return () => {
+      for (const image of images) image.onload = image.onerror = null;
     };
-  }
-  const ask = summary(tokens[0].address),
-    bid = summary(tokens[1].address);
+  }, [sourceKey]);
+  const router = useRouter();
   const tag = config.tags?.[0] ?? Category.Token;
+  const marketKey = `${config.network}/${config.key}`;
+  if (pending.some(Boolean) || sources.some((source) => !loadedImages[source]))
+    return <MarketRowSkeleton marketKey={marketKey} />;
+  const readyTokens = tokens.map((token, i) => ({
+    ...token,
+    imageUrl:
+      loadedImages[sources[i]] === "/token.svg" ? undefined : token.imageUrl,
+  }));
   return (
     <TableRow
+      data-market-key={marketKey}
       className="cursor-pointer"
       onClick={() => router.push(marketPath(config))}
     >
       <TableCell className="p-4 text-right first:text-left">
         <Link
           href={marketPath(config)}
-          className="flex items-center gap-3"
+          className="flex min-h-10 items-center gap-3"
           aria-label={`Open ${tokens[0].symbol} / ${tokens[1].symbol}`}
         >
-          <PairIcons tokens={tokens} />
+          <PairIcons tokens={readyTokens} />
           <span className="flex flex-col gap-1">
             <strong>
               {tokens[0].symbol}{" "}
@@ -151,70 +150,18 @@ function MarketRow({
           </span>
         </Link>
       </TableCell>
-      {[ask, bid].map((s, i) => (
-        <Fragment key={i}>
-          <TableCell className="p-4 text-right first:text-left">
-            <div className={i === 0 ? "text-ask" : "text-bid"}>
-              {query.isError || result.error
-                ? "Read failed"
-                : query.data?.failed
-                  ? "Incomplete"
-                  : `${amountText(s.available, tokens[i].address === market?.token0.address ? market.token0.decimals : market!.token1.decimals)} ${tokens[i].symbol}`}
-            </div>
-            <small>
-              {query.isSuccess && !query.data.failed
-                ? "Available"
-                : "Refresh to retry"}
-            </small>
-          </TableCell>
-          <TableCell className="p-4 text-right first:text-left">
-            <YieldReference
-              duration={duration}
-              yieldMode={yieldMode}
-              ticks={query.data?.failed || query.isError ? [] : s.side}
-            />
-          </TableCell>
-        </Fragment>
-      ))}
+      <TableCell className="p-4 text-right tabular-nums">{tvl}</TableCell>
       <TableCell className="p-4 text-center align-middle">
         <ArrowRight className="mx-auto" size={18} aria-hidden="true" />
       </TableCell>
     </TableRow>
   );
 }
-function YieldReference({
-  duration,
-  ticks,
-  yieldMode,
-}: {
-  duration: Duration;
-  ticks: Tick[];
-  yieldMode: YieldMode;
-}) {
-  const tick = ticks.find((t) => t.state.availableSupply > 0n);
-  const estimatedYield = tick ? tickYieldText(tick.state, yieldMode) : "—";
-  return (
-    <>
-      <div className="text-primary">{estimatedYield}</div>
-      <small>
-        {tick
-          ? yieldMode === "apy"
-            ? "Annualized"
-            : `${duration}D reference`
-          : "No liquidity yet"}
-      </small>
-    </>
-  );
-}
 export function MarketTable() {
-  const [yieldMode, setYieldMode] = useState<YieldMode>(
-    DEFAULT_YIELD_MODE.markets,
-  );
   const {
     network,
     search,
     tag: category,
-    duration,
     page,
     updateFilters,
   } = useMarketFilters();
@@ -228,15 +175,12 @@ export function MarketTable() {
     loadingLabel,
     error,
     empty,
-  } = useMarketList({ network, tag: category, search, duration, page });
-  const sortBy = DEFAULT_MARKET_SORT[category] ?? MarketSort.BidLiquidity;
-  const sortByBidLiquidity = sortBy === MarketSort.BidLiquidity;
+  } = useMarketList({ network, tag: category, search, page });
   const failed = !!error;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const start = (currentPage - 1) * PAGE_SIZE;
-  const rows = useMarketLiquidity(network, markets, duration);
   const loading = listLoading;
-  const visibleMarkets = rows;
+  const visibleMarkets = markets;
   useEffect(() => {
     if (!loading && !failed && page !== currentPage)
       updateFilters({ page: currentPage }, true);
@@ -294,20 +238,6 @@ export function MarketTable() {
                 }
               />
             </div>
-            <DurationSelect
-              inline
-              label="Market duration"
-              value={duration}
-              onChange={(duration) => updateFilters({ duration })}
-            />
-            <div className="w-full sm:w-auto">
-              <YieldModeSwitch
-                label="Markets yield display"
-                termLabel="Term"
-                value={yieldMode}
-                onChange={setYieldMode}
-              />
-            </div>
           </div>
         </div>
         <div
@@ -330,7 +260,7 @@ export function MarketTable() {
           ))}
         </div>
         <Card className="gap-0 p-0">
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-2 p-0">
             {error ? (
               <Empty>
                 <EmptyHeader>
@@ -344,7 +274,7 @@ export function MarketTable() {
                 </EmptyContent>
               </Empty>
             ) : loading || markets.length > 0 ? (
-              <Table className="min-w-[48rem] table-fixed">
+              <Table className="min-w-[30rem] table-fixed">
                 {loading && (
                   <TableCaption className="sr-only" role="status">
                     {loadingLabel}
@@ -352,29 +282,11 @@ export function MarketTable() {
                 )}
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[30%] px-4 text-right first:text-left">
-                      Market
+                    <TableHead className="w-[60%] px-4 text-right first:text-left">
+                      Pair
                     </TableHead>
-                    <TableHead className="w-[15%] px-4 text-right first:text-left">
-                      Ask liquidity
-                    </TableHead>
-                    <TableHead
-                      className="w-[15%] px-4 text-right first:text-left"
-                      aria-label={yieldMode === "apy" ? "Ask APY" : "Ask Yield"}
-                    >
-                      {yieldMode === "apy" ? "Ask APY" : "Ask Yield"}
-                    </TableHead>
-                    <TableHead
-                      className="w-[15%] px-4 text-right first:text-left"
-                      aria-sort={sortByBidLiquidity ? "descending" : undefined}
-                    >
-                      Bid liquidity
-                    </TableHead>
-                    <TableHead
-                      className="w-[15%] px-4 text-right first:text-left"
-                      aria-label={yieldMode === "apy" ? "Bid APY" : "Bid Yield"}
-                    >
-                      {yieldMode === "apy" ? "Bid APY" : "Bid Yield"}
+                    <TableHead className="w-[30%] px-4 text-right">
+                      Asset TVL
                     </TableHead>
                     <TableHead className="w-[10%] px-4 text-center">
                       <span className="sr-only">Open</span>
@@ -387,12 +299,7 @@ export function MarketTable() {
                         <MarketRowSkeleton key={i} />
                       ))
                     : visibleMarkets.map((m) => (
-                        <MarketRow
-                          key={`${m.config.network}/${m.config.key}`}
-                          row={m}
-                          duration={duration}
-                          yieldMode={yieldMode}
-                        />
+                        <MarketRow key={`${m.network}/${m.key}`} config={m} />
                       ))}
                 </TableBody>
               </Table>

@@ -1,7 +1,4 @@
 import {
-  DEFAULT_DURATION,
-  DURATIONS,
-  type Duration,
   type Category,
   type MarketConfiguration,
   type Token,
@@ -15,17 +12,6 @@ export const enum MarketTab {
   YieldList = "all",
 }
 
-export enum MarketSort {
-  SourceOrder = "source-order",
-  BidLiquidity = "bid-liquidity",
-}
-
-export const DEFAULT_MARKET_SORT: Partial<
-  Record<Category | MarketTab, MarketSort>
-> = {
-  [MarketTab.Trending]: MarketSort.SourceOrder,
-};
-
 export const MARKET_TAGS = [
   MarketTab.Trending,
   MarketTab.YieldList,
@@ -34,7 +20,6 @@ export const MARKET_TAGS = [
 export interface MarketFilters {
   search: string;
   tag: Category | MarketTab;
-  duration: Duration;
   network: NetworkSlug;
   page: number;
 }
@@ -70,10 +55,6 @@ export function parseMarketFilters(
     tag:
       MARKET_TAGS.find((tag) => tag === params.get("tag")) ??
       MarketTab.YieldList,
-    duration:
-      DURATIONS.find(
-        (duration) => String(duration) === params.get("duration"),
-      ) ?? DEFAULT_DURATION,
     network: network && isNetworkSlug(network) ? network : fallbackNetwork,
     page: Number.isSafeInteger(page) && page > 0 ? page : 1,
   };
@@ -87,7 +68,7 @@ export function marketFilterParams(
   if (filters.search) params.set("search", filters.search);
   else params.delete("search");
   params.set("tag", filters.tag);
-  params.set("duration", String(filters.duration));
+  params.delete("duration");
   params.set("network", filters.network);
   if (filters.page > 1) params.set("page", String(filters.page));
   else params.delete("page");

@@ -1,9 +1,9 @@
 "use client";
-import { queryKeys } from "@/lib/query-keys";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
-  DISCOVERY_DEFAULTS,
+  PRODUCT_MARKET,
   QUERY_TIMING,
+  type Direction,
   type Market,
   type Tick,
   type TickIdentity,
@@ -16,6 +16,7 @@ import {
   explainError,
   type DiscoveryRead,
 } from "@yld-cx/sdk/ethereum";
+import { queryKeys } from "@/lib/query-keys";
 import { getSdk } from "@/lib/rpc";
 
 export type BookTick = Tick;
@@ -31,75 +32,79 @@ export type BookLevel = TickIdentity & {
 export function useYieldBook(
   market: Market,
   pairId: bigint,
-  baseTick = market.baseTick,
+  canonicalTicks: readonly number[],
+  direction: Direction,
+  enabled = true,
 ) {
   const network = getNetwork(market.network).slug;
   const discovery = useQuery({
-    queryKey: queryKeys.ticks(network, market.key, baseTick, market.stepTicks),
+    queryKey: queryKeys.ticks(
+      network,
+      market.key,
+      direction,
+      PRODUCT_MARKET.duration,
+      PRODUCT_MARKET.stepTicks,
+      canonicalTicks,
+    ),
     queryFn: () =>
       getSdk(network).discover(pairId, {
-        baseTick,
-        stepTicks: market.stepTicks,
+        canonicalTicks,
+        direction,
+        duration: PRODUCT_MARKET.duration,
+        stepTicks: PRODUCT_MARKET.stepTicks,
       }),
-    placeholderData: keepPreviousData,
+    enabled,
     staleTime: QUERY_TIMING.marketRefresh,
-    refetchInterval: QUERY_TIMING.liveRefresh,
+    refetchInterval: enabled ? QUERY_TIMING.liveRefresh : false,
   });
-  const reads: DiscoveryRead[] =
-    discovery.data?.reads ??
-    (discovery.isError
-      ? tickCandidates(pairId, baseTick, market.stepTicks).map((identity) => ({
-          identity,
-          status: "failed",
-          error: explainError(discovery.error),
-        }))
-      : []);
-  const levels: BookLevel[] = reads.map((read) => {
-    const identity = read.identity;
-    const asset = (identity.direction === 0 ? market.token0 : market.token1)
-      .address as TickState["asset"];
-    const priceX128 =
-      read.status === "exists"
-        ? read.tick.state.priceX128
-        : priceAtTick(identity.priceTick);
-    if (discovery.isError)
+  const identities = canonicalTicks
+    .flatMap((tick) =>
+      tickCandidates(pairId, tick, PRODUCT_MARKET.stepTicks, 0),
+    )
+    .filter(
+      (tick) =>
+        tick.direction === direction &&
+        tick.durationDays === PRODUCT_MARKET.duration,
+    );
+  const reads = new Map(
+    discovery.data?.reads.map((read) => [read.identity.id, read]),
+  );
+  const levels: BookLevel[] = identities.map((identity) => {
+    const read: DiscoveryRead | undefined = reads.get(identity.id);
+    const base = {
+      ...identity,
+      asset: (direction === 0 ? market.token0 : market.token1)
+        .address as TickState["asset"],
+      priceX128: priceAtTick(identity.priceTick),
+    };
+    if (discovery.isError || !read)
       return {
-        ...identity,
-        asset,
-        priceX128,
+        ...base,
         status: "failed",
-        error: explainError(discovery.error),
+        error: discovery.isError
+          ? explainError(discovery.error)
+          : "Price level unavailable",
       };
     if (read.status === "exists")
       return {
-        ...identity,
-        asset,
-        priceX128,
-        status: read.status,
+        ...base,
+        status: "exists",
+        priceX128: read.tick.state.priceX128,
         state: read.tick.state,
       };
     if (read.status === "failed")
-      return {
-        ...identity,
-        asset,
-        priceX128,
-        status: read.status,
-        error: read.error,
-      };
-    return { ...identity, asset, priceX128, status: read.status };
+      return { ...base, status: "failed", error: read.error };
+    return { ...base, status: "missing" };
   });
-  const ticks = levels.filter(
-    (level): level is BookLevel & { status: "exists" } =>
-      level.status === "exists",
-  );
   return {
-    baseTick,
     discovery,
     levels,
-    ticks,
-    checked: reads.length,
-    missing: levels.filter((r) => r.status === "missing").length,
-    failed: levels.filter((r) => r.status === "failed").length,
-    radius: discovery.data?.radius ?? DISCOVERY_DEFAULTS.radius,
+    ticks: levels.filter(
+      (level): level is BookLevel & { status: "exists" } =>
+        level.status === "exists",
+    ),
+    checked: discovery.data?.reads.length ?? 0,
+    missing: levels.filter((level) => level.status === "missing").length,
+    failed: levels.filter((level) => level.status === "failed").length,
   };
 }

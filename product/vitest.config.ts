@@ -3,6 +3,10 @@ import { fileURLToPath } from "node:url";
 export default defineConfig({
   resolve: {
     alias: {
+      // Vitest executes these modules in Node, outside Next's server compiler.
+      "server-only": fileURLToPath(
+        new URL("./node_modules/server-only/empty.js", import.meta.url),
+      ),
       "@yld-cx/ui": fileURLToPath(
         new URL("./packages/ui/src", import.meta.url),
       ),
@@ -12,6 +16,9 @@ export default defineConfig({
       ),
       "@yld-cx/sdk/registry": fileURLToPath(
         new URL("./packages/sdk/src/registry/index.ts", import.meta.url),
+      ),
+      "@yld-cx/sdk/uniswap": fileURLToPath(
+        new URL("./packages/sdk/src/uniswap/index.ts", import.meta.url),
       ),
       "@yld-cx/sdk": fileURLToPath(
         new URL("./packages/sdk/src/index.ts", import.meta.url),

@@ -1,3 +1,4 @@
+import { PERMIT2, permit2Abi, swapNetwork } from "@yld-cx/sdk/uniswap";
 import { readFileSync } from "node:fs";
 import { test, expect, type Page, type Route } from "@playwright/test";
 import yieldList from "../../public/yieldlist.json" with { type: "json" };
@@ -17,24 +18,11 @@ import {
   pairIdFor,
   tickIdFor,
   priceAtTick,
-  snappedPrice,
-  humanPrice,
-  tickCandidates,
   deploymentFor,
-} from "../../packages/sdk/src/ethereum/index.js";
-import { Registry, pairKey } from "../../packages/sdk/src/registry/index.js";
-import {
-  DISCOVERY_DEFAULTS,
-  MAX_TICK,
-  DURATIONS,
-  QUERY_TIMING,
-  YIELD_BOOK_LAYOUT,
-} from "../../packages/sdk/src/constants.js";
-import type {
-  ProviderPosition,
-  UsePosition,
-  TickState,
-} from "../../packages/sdk/src/types/index.js";
+} from "@yld-cx/sdk/ethereum";
+import { Registry, pairKey } from "@yld-cx/sdk/registry";
+import { DISCOVERY_DEFAULTS } from "@yld-cx/sdk";
+import type { ProviderPosition, UsePosition, TickState } from "@yld-cx/sdk";
 type TickOverrides = Map<bigint, Partial<TickState> | null>;
 const metadataRoute = /(?:https:\/\/md\.yld\.cx|\/api\/md)\/tokens\?/;
 const a = "0x4200000000000000000000000000000000000006",
@@ -45,7 +33,6 @@ const configuredPairs = configuredMarkets.map((market) => market.key);
 const configuredAddresses = [
   ...new Set(configuredPairs.flatMap((pair) => pair.split(":"))),
 ];
-const marketPageSize = 10;
 function trendingFixtures(addresses: readonly string[]) {
   const registry = new Registry(yieldList);
   const seen = new Set([b]);
@@ -85,9 +72,7 @@ async function fulfillTrending(
 const directId = tickIdFor(pairIdFor(a, b), 0, -196123, 7);
 const pairId = pairIdFor(a, b),
   id7 = tickIdFor(pairId, 0, -196000, 7),
-  id30 = tickIdFor(pairId, 0, -196000, 30),
-  bid7 = tickIdFor(pairId, 1, 196000, 7),
-  bid30 = tickIdFor(pairId, 1, 196000, 30);
+  bid7 = tickIdFor(pairId, 1, 196000, 7);
 function tokenContractCall(
   data: Hex,
   address = a,
@@ -125,6 +110,16 @@ function contractCall(
   if (token) return token;
   try {
     const decoded = decodeFunctionData({ abi: protocolAbi, data });
+    if (decoded.functionName === "tokenLiability")
+      return {
+        success: true,
+        returnData: encodeFunctionResult({
+          abi: protocolAbi,
+          functionName: "tokenLiability",
+          result:
+            decoded.args[0].toLowerCase() === a ? 12450000000000000000n : 0n,
+        }),
+      };
     if (decoded.functionName === "getPair") {
       const aa = decoded.args[0].toLowerCase() as typeof a,
         bb = decoded.args[1].toLowerCase() as typeof b;
@@ -148,11 +143,10 @@ function contractCall(
       if (
         !pairExists ||
         tickOverrides?.get(id) === null ||
-        (![id7, id30, bid7, bid30, directId].includes(id) &&
-          !tickOverrides?.has(id))
+        (![id7, bid7, directId].includes(id) && !tickOverrides?.has(id))
       )
         throw new Error("missing");
-      const bid = id === bid7 || id === bid30;
+      const bid = id === bid7;
       return {
         success: true,
         returnData: encodeFunctionResult({
@@ -161,7 +155,7 @@ function contractCall(
           result: {
             asset: bid ? b : a,
             quote: bid ? a : b,
-            durationDays: id === id30 || id === bid30 ? 30n : 7n,
+            durationDays: 7n,
             priceX128: priceAtTick(
               bid ? 196000 : id === directId ? -196123 : -196000,
             ),
@@ -183,7 +177,7 @@ function contractCall(
           abi: protocolAbi,
           functionName: "quoteUse",
           result: [
-            decoded.args[0] === bid7 || decoded.args[0] === bid30
+            decoded.args[0] === bid7
               ? (decoded.args[1] * 10n ** 12n) / 3000n
               : (decoded.args[1] * 3000n) / 10n ** 12n,
             decoded.args[1] / 100n,
@@ -290,16 +284,19 @@ async function rpc(
 }
 async function showMarketSection(
   page: Page,
-  section: "Provide" | "Yield Book" | "Use",
+  section: "Provide" | "Yield Book" | "Use" | "Swap",
 ) {
-  await expect(page.locator(".yield-book")).toBeAttached();
-  const sections = page.getByRole("tablist", { name: "Market sections" });
-  if (await sections.isVisible()) {
-    await sections.getByRole("tab", { name: section, exact: true }).click();
-    await expect(
-      page.getByRole("tabpanel", { name: section, exact: true }),
-    ).toBeVisible();
+  await expect(page.getByLabel("Yield Book", { exact: true })).toBeAttached();
+  if (section === "Yield Book") return;
+  if (section === "Swap") {
+    await page.getByRole("button", { name: /Market · AMM/ }).click();
+    return;
   }
+  const tab = page.getByLabel("Yield Order", { exact: true }).getByRole("tab", {
+    name: section === "Provide" ? "Limit" : "Rent",
+    exact: true,
+  });
+  if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
 }
 
 async function injectWallets(page: Page, transactions = false) {
@@ -423,6 +420,18 @@ test.beforeAll(async ({ request }) => {
   }
 });
 test.beforeEach(async ({ page }) => {
+  await page.route("**/api/market-price?**", (route) =>
+    route.fulfill({
+      json: {
+        status: "available",
+        source: "amm",
+        price: "3000",
+        baseTick: -196000,
+        timestamp: Date.now(),
+        ammAvailable: true,
+      },
+    }),
+  );
   await page.route(metadataRoute, async (route) => {
     const url = new URL(route.request().url());
     const chainId = Number(url.searchParams.get("chainId"));
@@ -474,1005 +483,17 @@ test.beforeEach(async ({ page }) => {
   await rpc(page);
 });
 
-test("APY and Term switch preserves 7D/30D Ask/Bid references without extra reads", async ({
-  page,
-}) => {
-  await page.clock.install();
-  let reads = 0;
-  page.on("request", (request) => {
-    if (/mainnet\.base\.org|\/api\/|md\.yld\.cx/.test(request.url())) reads++;
-  });
-  await page.goto("/");
-  const row = page.getByRole("row").filter({
-    has: page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  });
-  const mode = page.getByRole("switch", { name: "Markets yield display" });
-  await expect(mode).toBeChecked();
-  for (const [days, apy, term] of [
-    [7, "3.7161%", "0.07%"],
-    [30, "3.7118%", "0.3%"],
-  ] as const) {
-    if (days === 30) {
-      await page
-        .getByRole("combobox", { name: "Market duration", exact: true })
-        .click();
-      await page.getByRole("option", { name: "30D", exact: true }).click();
-    }
-    await expect(row.getByText(apy, { exact: true })).toHaveCount(2);
-    await expect(row.getByText("Annualized", { exact: true })).toHaveCount(2);
-    for (const side of ["Ask", "Bid"])
-      await expect(
-        page.getByRole("columnheader", { name: `${side} APY`, exact: true }),
-      ).toBeVisible();
-    await page.waitForLoadState("networkidle");
-    const before = reads;
-    await mode.click();
-    await expect(mode).not.toBeChecked();
-    await expect(row.getByText(term, { exact: true })).toHaveCount(2);
-    await expect(
-      row.getByText(`${days}D reference`, { exact: true }),
-    ).toHaveCount(2);
-    for (const side of ["Ask", "Bid"])
-      await expect(
-        page.getByRole("columnheader", { name: `${side} Yield`, exact: true }),
-      ).toBeVisible();
-    // Keyboard interaction returns to APY without changing discovery or fetching data.
-    await mode.press("Space");
-    await expect(mode).toBeChecked();
-    await expect(row.getByText(apy, { exact: true })).toHaveCount(2);
-    expect(reads).toBe(before);
-  }
-  const emptyRow = page.getByRole("row").filter({
-    has: page.getByRole("link", { name: "Open cbBTC / USDC", exact: true }),
-  });
-  for (let i = 0; i < 2; i++) {
-    await expect(
-      emptyRow.getByText("No liquidity yet", { exact: true }),
-    ).toHaveCount(2);
-    await expect(emptyRow.getByText("—", { exact: true })).toHaveCount(2);
-    await mode.click();
-  }
-});
-
-test("Provide shows APY without a switch while Rent retains its quoted Term Yield", async ({
-  page,
-}) => {
-  await page.goto(`/market/base/${key}`);
-  const supply = page.getByLabel("Provide liquidity", { exact: true });
-  const rent = page
-    .getByRole("tabpanel")
-    .filter({ has: page.getByLabel("You receive") });
-  for (const [days, id, apy] of [
-    [7, id7, "3.7161%"],
-    [30, id30, "3.7118%"],
-  ] as const) {
-    await showMarketSection(page, "Yield Book");
-    if (days === 30)
-      await page
-        .getByRole("group", { name: "Book term", exact: true })
-        .getByRole("button", { name: "30D", exact: true })
-        .click();
-    await page.locator(`[data-tick-id="${id}"]`).click();
-    await showMarketSection(page, "Provide");
-    await supply.getByLabel("Amount", { exact: true }).fill("2");
-    await showMarketSection(page, "Use");
-    await rent.getByLabel("You receive", { exact: true }).fill("1");
-    await showMarketSection(page, "Provide");
-    await expect(supply.getByRole("switch")).toHaveCount(0);
-    await expect(supply.getByText(apy, { exact: true })).toBeVisible();
-    await expect(
-      supply.getByText("Estimated APY", { exact: true }),
-    ).toBeVisible();
-    await expect(page.getByRole("tooltip")).toHaveCount(0);
-    const info = supply
-      .getByRole("button", { name: "About APY", exact: true })
-      .first();
-    await info.click();
-    await expect(page.getByRole("tooltip")).toHaveText(
-      "APY is indicative and assumes reinvestment at the same rate.",
-    );
-    await expect(page.getByRole("tooltip")).toHaveCSS(
-      "background-color",
-      "rgb(21, 26, 32)",
-    );
-    await expect(page.getByRole("tooltip")).toHaveCSS(
-      "color",
-      "rgb(245, 247, 246)",
-    );
-    await info.press("Escape");
-    await expect(page.getByRole("tooltip")).toHaveCount(0);
-    await showMarketSection(page, "Use");
-    await expect(rent.getByText("Term Yield", { exact: true })).toBeVisible();
-    await expect(rent.getByText("1%", { exact: true })).toBeVisible();
-    await expect(rent.getByText("0.01 WETH", { exact: true })).toBeVisible();
-    await expect(
-      rent.getByText("Full-term Yield", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      rent
-        .locator("dl")
-        .filter({ has: page.getByText("Term", { exact: true }) })
-        .locator("dd"),
-    ).toHaveText(`${days}D`);
-    await expect(supply.getByLabel("Amount", { exact: true })).toHaveValue("2");
-    await expect(rent.getByLabel("You receive", { exact: true })).toHaveValue(
-      "1",
-    );
-    await expect(rent.getByText("1%", { exact: true })).toBeVisible();
-  }
-});
-
-for (const tag of ["all", "stable"]) {
-  test(`${tag} markets use API ranking and sort again when duration changes`, async ({
-    page,
-  }) => {
-    await page.clock.install();
-    const markets = configuredMarkets.filter(
-      (m) => tag === "all" || m.tags?.some((t) => t === tag),
-    );
-    let releaseRanking!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      releaseRanking = resolve;
-    });
-    let rankingRequested = false;
-    let listRequests = 0;
-    await page.route("**/api/markets?**", async (route) => {
-      listRequests++;
-      const params = new URL(route.request().url()).searchParams;
-      if (params.get("duration") === "7") {
-        rankingRequested = true;
-        await gate;
-      }
-      const sorted =
-        params.get("duration") === "7"
-          ? [...configuredMarkets].reverse()
-          : configuredMarkets;
-      expect(params.has("page")).toBe(false);
-      expect(params.has("search")).toBe(false);
-      expect(params.get("tag")).toBe("all");
-      await route.fulfill({ json: { markets: sorted } });
-    });
-    const metadataAddresses = new Set<string>();
-    const pairReads: string[] = [];
-    let tickReads = 0;
-    page.on("request", (request) => {
-      if (metadataRoute.test(request.url()))
-        for (const address of new URL(request.url()).searchParams
-          .get("addresses")!
-          .split(","))
-          metadataAddresses.add(address);
-      if (!request.url().startsWith("https://mainnet.base.org")) return;
-      const payload = request.postDataJSON();
-      for (const item of Array.isArray(payload) ? payload : [payload]) {
-        if (item.method !== "eth_call") continue;
-        const call = item.params[0] as { data: Hex; to: string };
-        let calls = [{ callData: call.data, target: call.to }];
-        try {
-          const batch = decodeFunctionData({
-            abi: multicall3Abi,
-            data: call.data,
-          });
-          if (batch.functionName === "aggregate3") calls = [...batch.args[0]];
-        } catch {}
-        for (const entry of calls) {
-          try {
-            const decoded = decodeFunctionData({
-              abi: protocolAbi,
-              data: entry.callData,
-            });
-            if (decoded.functionName === "getPair")
-              pairReads.push(decoded.args.join(":").toLowerCase());
-            if (decoded.functionName === "getTick") tickReads++;
-          } catch {}
-        }
-      }
-    });
-    await page.goto(`/?tag=${tag}&network=base&duration=7`);
-    const table = page.getByRole("table");
-    const links = table.getByRole("link", { name: /^Open / });
-    await expect.poll(() => rankingRequested).toBe(true);
-    await expect(table.locator("tbody")).toHaveAttribute("aria-busy", "true");
-    await expect(links).toHaveCount(0);
-    expect(metadataAddresses.size).toBe(0);
-    releaseRanking();
-    const hrefs = () =>
-      links.evaluateAll((nodes) =>
-        nodes.map((node) => node.getAttribute("href")),
-      );
-    const expected = (items: typeof markets) =>
-      items.slice(0, marketPageSize).map((m) => `/market/base/${m.key}`);
-    await expect.poll(hrefs).toEqual(expected([...markets].reverse()));
-    await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-    const visibleKeys = [...markets]
-      .reverse()
-      .slice(0, marketPageSize)
-      .map((m) => m.key);
-    expect([...pairReads].sort()).toEqual([...visibleKeys].sort());
-    const ticksBeforeRefresh = tickReads;
-    await page.clock.fastForward(QUERY_TIMING.marketRefresh + 1000);
-    await expect.poll(() => tickReads).toBeGreaterThan(ticksBeforeRefresh);
-    // Liquidity stays live without polling immutable pair data again.
-    expect(pairReads).toHaveLength(visibleKeys.length);
-    expect([...metadataAddresses].sort()).toEqual(
-      [...configuredAddresses].sort(),
-    );
-    await expect(
-      page.getByRole("columnheader", { name: "Bid liquidity" }),
-    ).toHaveAttribute("aria-sort", "descending");
-    await page.getByLabel("Search markets").fill("WETH");
-    await expect(links).toHaveCount(1);
-    await page.getByLabel("Search markets").clear();
-    await expect.poll(hrefs).toEqual(expected([...markets].reverse()));
-    expect(listRequests).toBe(1);
-    if (markets.length > marketPageSize) {
-      await page.getByRole("button", { name: "Next", exact: true }).click();
-      await expect.poll(hrefs).toEqual(
-        [...markets]
-          .reverse()
-          .slice(marketPageSize)
-          .map((m) => `/market/base/${m.key}`),
-      );
-    }
-    expect(listRequests).toBe(1);
-    await page
-      .getByRole("combobox", { name: "Market duration", exact: true })
-      .click();
-    await page.getByRole("option", { name: "30D", exact: true }).click();
-    await expect.poll(hrefs).toEqual(expected(markets));
-    expect(listRequests).toBe(2);
-  });
-}
-
-test("Trending reads only the ten visible USD* markets", async ({ page }) => {
-  const discovered = Array.from({ length: 23 }, (_, i) => {
-    const address = `0x${(i + 1).toString(16).padStart(40, "0")}`;
-    return { address, ...tokenFixture(address) };
-  });
-  await page.route("**/api/markets?**", (route) =>
-    fulfillTrending(route, [
-      discovered[0].address,
-      b,
-      ...discovered.map((token) => token.address),
-    ]),
-  );
-  const pairs = new Set<string>();
-  const decimals = new Set<string>();
-  const metadataAddresses: string[] = [];
-  page.on("request", (request) => {
-    if (metadataRoute.test(request.url()))
-      metadataAddresses.push(
-        ...new URL(request.url()).searchParams.get("addresses")!.split(","),
-      );
-    if (!request.url().startsWith("https://mainnet.base.org")) return;
-    const payload = request.postDataJSON();
-    for (const item of Array.isArray(payload) ? payload : [payload]) {
-      if (item.method !== "eth_call") continue;
-      const call = item.params[0] as { data: Hex; to: string };
-      let calls = [{ callData: call.data, target: call.to }];
-      try {
-        const batch = decodeFunctionData({
-          abi: multicall3Abi,
-          data: call.data,
-        });
-        if (batch.functionName === "aggregate3") calls = [...batch.args[0]];
-      } catch {}
-      for (const entry of calls) {
-        if (entry.callData.startsWith("0x313ce567"))
-          decimals.add(entry.target.toLowerCase());
-        try {
-          const decoded = decodeFunctionData({
-            abi: protocolAbi,
-            data: entry.callData,
-          });
-          if (decoded.functionName === "getPair")
-            pairs.add(decoded.args.join(":").toLowerCase());
-        } catch {}
-      }
-    }
-  });
-  await page.goto("/?tag=trending&network=base&ref=keep#markets");
-  await expect(
-    page.getByRole("button", { name: "Trending", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
-  await expect(
-    page.getByRole("columnheader", { name: "Bid liquidity" }),
-  ).not.toHaveAttribute("aria-sort", "descending");
-  const links = page.getByRole("table").getByRole("link", { name: /^Open / });
-  const pagination = page.getByRole("navigation", {
-    name: "Market pagination",
-  });
-  await expect(links).toHaveCount(10);
-  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-  await expect(pagination).toContainText("1–10 of 23 markets");
-  await expect(
-    pagination.getByRole("button", { name: "Previous" }),
-  ).toBeDisabled();
-  expect(
-    await links.evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute("href")),
-    ),
-  ).toEqual(
-    discovered
-      .slice(0, 10)
-      .map(({ address }) => `/market/base/${address}:${b}`),
-  );
-  expect([...pairs]).toEqual(
-    discovered.slice(0, 10).map(({ address }) => `${address}:${b}`),
-  );
-  expect([...decimals].sort()).toEqual(
-    [...discovered.slice(0, 10).map(({ address }) => address), b].sort(),
-  );
-  expect([...metadataAddresses].sort()).toEqual(
-    [...discovered.map(({ address }) => address), b].sort(),
-  );
-
-  await pagination.getByRole("button", { name: "Next" }).click();
-  await expect(page).toHaveURL(/page=2/);
-  await expect(pagination).toContainText("11–20 of 23 markets");
-  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-  expect(pairs.size).toBe(20);
-  expect(decimals.size).toBe(21);
-  expect(metadataAddresses).toHaveLength(discovered.length + 1);
-  await page.reload();
-  await expect(pagination).toContainText("Page 2 of 3");
-  await pagination.getByRole("button", { name: "Next" }).click();
-  await expect(pagination).toContainText("21–23 of 23 markets");
-  await expect(links).toHaveCount(3);
-  await expect(pagination.getByRole("button", { name: "Next" })).toBeDisabled();
-  await page.goBack();
-  await expect(pagination).toContainText("Page 2 of 3");
-
-  await page.getByLabel("Search markets").fill(discovered[22].symbol);
-  await expect(links).toHaveCount(1);
-  await expect(pagination).toContainText("Page 1 of 1");
-  expect(new URL(page.url()).searchParams.has("page")).toBe(false);
-  expect(new URL(page.url()).searchParams.get("ref")).toBe("keep");
-  expect(new URL(page.url()).hash).toBe("#markets");
-  await page.getByLabel("Search markets").clear();
-  await pagination.getByRole("button", { name: "Next" }).click();
-  await page.getByRole("button", { name: "YieldList", exact: true }).click();
-  await expect
-    .poll(() =>
-      links.evaluateAll((nodes) =>
-        nodes.map((node) => node.getAttribute("href")),
-      ),
-    )
-    .toEqual(
-      configuredPairs
-        .slice(0, marketPageSize)
-        .map((pair) => `/market/base/${pair}`),
-    );
-  await expect(pagination).toContainText(
-    `Page 1 of ${Math.ceil(configuredPairs.length / marketPageSize)}`,
-  );
-  expect(new URL(page.url()).searchParams.has("page")).toBe(false);
-
-  await page.getByRole("button", { name: "Trending", exact: true }).click();
-  await pagination.getByRole("button", { name: "Next" }).click();
-  await page
-    .getByRole("combobox", { name: "Market duration", exact: true })
-    .click();
-  await page.getByRole("option", { name: "30D", exact: true }).click();
-  await expect(pagination).toContainText("Page 1 of 3");
-  await pagination.getByRole("button", { name: "Next" }).click();
-  await page.getByRole("combobox", { name: "Network", exact: true }).click();
-  await page.getByRole("option", { name: "Robinhood", exact: true }).click();
-  await expect(
-    page.getByText("No matching markets", { exact: true }),
-  ).toBeVisible();
-  expect(new URL(page.url()).searchParams.has("page")).toBe(false);
-});
-
-for (const tag of ["all", "trending"]) {
-  test(`${tag} searches shared metadata by symbol, name, address and pair`, async ({
-    page,
-  }) => {
-    await page.route("**/api/markets?**", (route) =>
-      fulfillTrending(route, [a]),
-    );
-    await page.goto(`/?tag=${tag}&network=base&search=WETH%2FUSDC`);
-    const link = page.getByRole("link", {
-      name: "Open WETH / USDC",
-      exact: true,
-    });
-    await expect(link).toBeVisible();
-    for (const search of [
-      "weth",
-      "USDC | WETH",
-      "Wrapped Ether USD Coin",
-      a,
-      key,
-    ]) {
-      await page.getByLabel("Search markets").fill(search);
-      await expect(link).toBeVisible();
-    }
-    await expect(link).toHaveAttribute("href", `/market/base/${key}`);
-  });
-
-  test(`${tag} uses standard metadata fallback for search and onchain data in visible rows`, async ({
-    page,
-  }) => {
-    await page.route(metadataRoute, (route) => route.fulfill({ status: 503 }));
-    await page.route("**/api/markets?**", (route) =>
-      fulfillTrending(route, [a]),
-    );
-    await page.goto(`/?tag=${tag}&network=base&search=${a}`);
-    const link = page.getByRole("link", {
-      name: "Open WETH / USDC",
-      exact: true,
-    });
-    await expect(link).toBeVisible();
-    for (const search of [
-      key,
-      `${a.slice(0, 6)}…${a.slice(-4)}/${b.slice(0, 6)}…${b.slice(-4)}`,
-    ]) {
-      await page.getByLabel("Search markets").fill(search);
-      await expect(link).toBeVisible();
-    }
-  });
-}
-
-test("Trending keeps the requested page while loading and offers retry on discovery failure", async ({
-  page,
-}) => {
-  let release!: () => void;
-  const ready = new Promise<void>((resolve) => (release = resolve));
-  let unavailable = true;
-  await page.route("**/api/markets?**", async (route) => {
-    await ready;
-    await fulfillTrending(route, [a], unavailable ? 503 : 200);
-  });
-  await page.goto("/?tag=trending&page=99&network=base");
-  await expect(
-    page.getByRole("status").filter({ hasText: "Loading trending markets…" }),
-  ).toBeVisible();
-  expect(new URL(page.url()).searchParams.get("page")).toBe("99");
-  release();
-  await expect(
-    page.getByText("Trending markets unavailable", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByRole("table")).toHaveCount(0);
-  expect(new URL(page.url()).searchParams.get("page")).toBe("99");
-  unavailable = false;
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("navigation", { name: "Market pagination" }),
-  ).toContainText("Page 1 of 1");
-  await expect
-    .poll(() => new URL(page.url()).searchParams.has("page"))
-    .toBe(false);
-});
-
-test("market tabs show one mobile column and preserve form drafts", async ({
-  page,
-  isMobile,
-}) => {
-  await page.goto(`/market/base/${key}`);
-  const sections = page.getByRole("tablist", { name: "Market sections" });
-  const provide = page.getByLabel("Provide liquidity", { exact: true });
-  const book = page.getByRole("heading", { name: "Yield Book", exact: true });
-  const use = page.getByRole("heading", { name: "Rent or swap", exact: true });
-
-  await expect(book).toBeVisible();
-  if (!isMobile) {
-    await expect(sections).toBeHidden();
-    await expect(provide).toBeVisible();
-    await expect(use).toBeVisible();
-    return;
-  }
-
-  const provideTab = sections.getByRole("tab", {
-    name: "Provide",
-    exact: true,
-  });
-  const bookTab = sections.getByRole("tab", {
-    name: "Yield Book",
-    exact: true,
-  });
-  const useTab = sections.getByRole("tab", { name: "Use", exact: true });
-  await expect(bookTab).toHaveAttribute("aria-selected", "true");
-  await expect(provide).toBeHidden();
-  await expect(use).toBeHidden();
-  const initialTabs = await sections.boundingBox();
-  const header = await page.getByRole("banner").boundingBox();
-  const overview = await page
-    .getByRole("region", { name: "Market overview" })
-    .boundingBox();
-  expect(initialTabs!.y).toBeGreaterThanOrEqual(overview!.y + overview!.height);
-  await page.evaluate((top) => window.scrollTo(0, top), initialTabs!.y);
-  await expect
-    .poll(async () => Math.round((await sections.boundingBox())!.y))
-    .toBeLessThan(Math.round(initialTabs!.y));
-  const pinnedTabs = await sections.boundingBox();
-  expect(pinnedTabs!.y).toBeGreaterThanOrEqual(header!.y + header!.height);
-  await page.evaluate(() => window.scrollBy(0, 100));
-  await expect
-    .poll(async () => Math.round((await sections.boundingBox())!.y))
-    .toBe(Math.round(pinnedTabs!.y));
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await expect
-    .poll(async () => Math.round((await sections.boundingBox())!.y))
-    .toBe(Math.round(initialTabs!.y));
-  await expect(bookTab).toBeVisible();
-  const level = page.locator(`[data-tick-id="${id7}"]`);
-  await level.click();
-
-  await provideTab.click();
-  await expect(provide).toBeVisible();
-  await expect(provide).toBeInViewport();
-  await expect(book).toBeHidden();
-  await expect(use).toBeHidden();
-  const amount = provide.getByLabel("Amount", { exact: true });
-  await amount.fill("2");
-
-  await bookTab.click();
-  await expect(level).toHaveAttribute("aria-pressed", "true");
-  await useTab.click();
-  await expect(use).toBeVisible();
-  await expect(provide).toBeHidden();
-  await expect(book).toBeHidden();
-  const receive = page.getByLabel("You receive", { exact: true });
-  await receive.fill("1");
-
-  await provideTab.click();
-  await expect(amount).toHaveValue("2");
-  await useTab.click();
-  await expect(receive).toHaveValue("1");
-
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await expect(sections).toBeHidden();
-  await expect(provide).toBeVisible();
-  await expect(book).toBeVisible();
-  await expect(use).toBeVisible();
-  await expect(amount).toHaveValue("2");
-  await expect(receive).toHaveValue("1");
-});
-
-test("mobile market tabs avoid forced scrolling and use the active panel height", async ({
-  page,
-  isMobile,
-}) => {
-  test.skip(!isMobile, "Market section tabs are only shown on mobile");
-  await page.goto(`/market/base/${key}`);
-  const sections = page.getByRole("tablist", { name: "Market sections" });
-  const bookTab = sections.getByRole("tab", {
-    name: "Yield Book",
-    exact: true,
-  });
-  await expect(bookTab).toHaveAttribute("aria-selected", "true");
-  const initialTabs = await sections.boundingBox();
-
-  for (const top of [initialTabs!.y - 400, initialTabs!.y + 100]) {
-    await page.evaluate((top) => window.scrollTo(0, top), top);
-    for (const name of ["Provide", "Use", "Yield Book"]) {
-      const position = await page.evaluate(() => window.scrollY);
-      const tab = sections.getByRole("tab", { name, exact: true });
-      await tab.click();
-      await expect(tab).toHaveAttribute("aria-selected", "true");
-      // Let layout, scroll anchoring, and any scheduled scrolling finish.
-      await page.evaluate(
-        () =>
-          new Promise<void>((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-          ),
-      );
-      const maxScroll = await page.evaluate(
-        () => document.documentElement.scrollHeight - window.innerHeight,
-      );
-      // Shorter panels may naturally clamp scrolling to the new page bottom.
-      expect(await page.evaluate(() => window.scrollY)).toBeCloseTo(
-        Math.min(position, maxScroll),
-        0,
-      );
-      const panel = page.getByRole("tabpanel", { name, exact: true });
-      expect((await panel.locator("..").boundingBox())!.height).toBeCloseTo(
-        (await panel.boundingBox())!.height,
-        0,
-      );
-    }
-  }
-});
-
-test("market keeps one spinner through initial reads and preserves content during refresh", async ({
-  page,
-}) => {
-  let releasePair!: () => void;
-  let releaseBook!: () => void;
-  const pairReady = new Promise<void>((resolve) => (releasePair = resolve));
-  let bookReady = new Promise<void>((resolve) => (releaseBook = resolve));
-  let bookRequests = 0;
-  const pairCall = encodeFunctionData({
-    abi: protocolAbi,
-    functionName: "getPair",
-    args: [a, b],
-  }).slice(2);
-  await page.route("https://mainnet.base.org", async (route) => {
-    if (route.request().postData()!.includes(pairCall)) await pairReady;
-    else {
-      bookRequests++;
-      await bookReady;
-    }
-    await route.fallback();
-  });
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(`/market/base/${key}`);
-  const loading = page
-    .getByRole("status")
-    .filter({ hasText: "Loading market…" });
-  await expect(loading).toBeVisible();
-  await expect(loading.locator('[aria-hidden="true"]')).toHaveCSS(
-    "animation-name",
-    "none",
-  );
-  const spinner = loading.locator("svg");
-  await expect(spinner).toHaveCSS("color", "rgb(0, 255, 76)");
-  await page.emulateMedia({ reducedMotion: "no-preference" });
-  await expect(spinner).toHaveCSS("animation-name", "spin");
-  await expect(spinner).toHaveCSS("animation-iteration-count", "infinite");
-  await expect(spinner).toHaveCSS("animation-timing-function", "linear");
-  const initialSpinner = await loading.boundingBox();
-  const initialFooter = await page.locator("footer").boundingBox();
-  releasePair();
-  await expect.poll(() => bookRequests).toBeGreaterThan(0);
-  await expect(loading).toBeVisible();
-  expect(await loading.boundingBox()).toEqual(initialSpinner);
-  expect(await page.locator("footer").boundingBox()).toEqual(initialFooter);
-  await expect(page.getByRole("heading", { name: "Yield Book" })).toHaveCount(
-    0,
-  );
-  releaseBook();
-  await expect(page.getByRole("heading", { name: "Yield Book" })).toBeVisible();
-  await expect(loading).toHaveCount(0);
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  await showMarketSection(page, "Provide");
-  await page.getByLabel("Amount", { exact: true }).fill("1");
-  await showMarketSection(page, "Yield Book");
-  const ask = page.getByRole("group", { name: "Ask price levels" });
-  await ask.evaluate((element) => {
-    element.scrollTop = 0;
-  });
-  bookReady = new Promise<void>((resolve) => (releaseBook = resolve));
-  await page.getByRole("button", { name: "Refresh discovery" }).click();
-  await expect(
-    page.getByRole("button", { name: "Refresh discovery" }),
-  ).toBeDisabled();
-  await expect(loading).toHaveCount(0);
-  await expect(
-    page.getByLabel("Provide liquidity", { exact: true }),
-  ).toContainText(humanPrice(priceAtTick(-196000), 18, 6));
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1");
-  releaseBook();
-  await expect(
-    page.getByRole("button", { name: "Refresh discovery" }),
-  ).toBeEnabled();
-  expect(await ask.evaluate((element) => element.scrollTop)).toBe(0);
-});
-
-test("market lookup reserves space while loading", async ({ page }) => {
-  let release!: () => void;
-  const ready = new Promise<void>((resolve) => (release = resolve));
-  await page.route("https://mainnet.base.org", async (route) => {
-    await ready;
-    await route.fallback();
-  });
-  await page.goto("/market/open");
-  await page.getByRole("combobox", { name: "Token A selection" }).click();
-  await page.getByRole("option", { name: "WETH", exact: true }).click();
-  const loading = page
-    .getByRole("status")
-    .filter({ hasText: "Checking market…" });
-  await expect(loading).toBeVisible();
-  const description = page.getByText(/^Creating a market /);
-  const before = await description.boundingBox();
-  release();
-  await expect(
-    page.getByRole("button", { name: "View Market →" }),
-  ).toBeVisible();
-  await expect(loading).toHaveCount(0);
-  expect(await description.boundingBox()).toEqual(before);
-});
-
-test("market table keeps cell positions while loading only visible rows", async ({
-  page,
-}) => {
-  const pairs: string[] = [],
-    ticks: bigint[] = [];
-  const requests: string[][] = [];
-  page.on("request", (request) => {
-    if (
-      request.url() !== "https://mainnet.base.org/" &&
-      request.url() !== "https://mainnet.base.org"
-    )
-      return;
-    const payload = request.postDataJSON();
-    const items = Array.isArray(payload) ? payload : [payload];
-    requests.push(items.map((item) => item.method));
-    for (const item of items) {
-      if (item.method !== "eth_call") continue;
-      const data = item.params[0].data as Hex;
-      let calls = [data];
-      try {
-        const decoded = decodeFunctionData({ abi: multicall3Abi, data });
-        if (decoded.functionName === "aggregate3")
-          calls = decoded.args[0].map((call) => call.callData);
-      } catch {}
-      for (const data of calls) {
-        try {
-          const call = decodeFunctionData({ abi: protocolAbi, data });
-          if (call.functionName === "getPair")
-            pairs.push(call.args.join(":").toLowerCase());
-          if (call.functionName === "getTick") ticks.push(call.args[0]);
-        } catch {}
-      }
-    }
-  });
-  let release!: () => void;
-  const ready = new Promise<void>((resolve) => (release = resolve));
-  await page.route("https://mainnet.base.org", async (route) => {
-    await ready;
-    await route.fallback();
-  });
-  await page.goto("/");
-  const table = page.getByRole("table");
-  const row = table.locator("tbody tr").first();
-  const configured = configuredMarkets.slice(0, marketPageSize);
-  await expect(
-    page.getByRole("navigation", { name: "Market pagination" }),
-  ).toContainText(
-    `1–${configured.length} of ${configuredMarkets.length} markets`,
-  );
-  await expect(table.locator("tbody tr")).toHaveCount(configured.length);
-  await expect(table.getByRole("link", { name: /^Open / })).toHaveCount(0);
-  await expect(row.locator('[data-slot="skeleton"]').first()).toBeVisible();
-  await expect(row.getByRole("status")).toHaveCount(0);
-  const cells = row.locator("td");
-  const before = await cells.evaluateAll((nodes) =>
-    nodes.map((node) => node.getBoundingClientRect().toJSON()),
-  );
-  release();
-  await expect(table.getByRole("link", { name: /^Open / })).toHaveCount(
-    Math.min(configuredMarkets.length, marketPageSize),
-  );
-  const after = await cells.evaluateAll((nodes) =>
-    nodes.map((node) => node.getBoundingClientRect().toJSON()),
-  );
-  expect(after).toHaveLength(before.length);
-  for (const [index, bounds] of after.entries()) {
-    expect(bounds.x).toBe(before[index].x);
-    expect(bounds.width).toBe(before[index].width);
-    // Collapsed borders can shift half a pixel when skeleton rows are replaced.
-    expect(Math.abs(bounds.y - before[index].y)).toBeLessThanOrEqual(1);
-    expect(Math.abs(bounds.height - before[index].height)).toBeLessThanOrEqual(
-      1,
-    );
-  }
-  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-  expect(requests.flat()).not.toContain("eth_getCode");
-  expect(pairs).toHaveLength(configured.length);
-  expect(new Set(pairs).size).toBe(configured.length);
-  expect([...pairs].sort()).toEqual(
-    configured.map((market) => market.key).sort(),
-  );
-  const expected = (duration: 7 | 30) =>
-    configured
-      .flatMap((config) => {
-        const [tokenA, tokenB] = config.key.split(":") as [typeof a, typeof b];
-        return tickCandidates(
-          pairIdFor(tokenA, tokenB),
-          config.baseTick ?? DISCOVERY_DEFAULTS.baseTick,
-          config.stepTicks,
-        )
-          .filter((tick) => tick.durationDays === duration)
-          .map((tick) => tick.id);
-      })
-      .sort();
-  expect([...ticks].sort()).toEqual(expected(7));
-  ticks.length = 0;
-  await page
-    .getByRole("combobox", { name: "Market duration", exact: true })
-    .click();
-  await page.getByRole("option", { name: "30D", exact: true }).click();
-  await expect(
-    page.getByRole("combobox", { name: "Market duration", exact: true }),
-  ).toContainText("30D");
-  await expect.poll(() => ticks.length).toBe(expected(30).length);
-  await expect(page.locator('table [data-slot="skeleton"]')).toHaveCount(0);
-  expect([...ticks].sort()).toEqual(expected(30));
-  expect(pairs).toHaveLength(configured.length);
-});
-
-test("market search, tags, network isolation and responsive layout", async ({
-  page,
-}, testInfo) => {
-  await page.goto("/");
-  await expect(
-    page.getByRole("button", { name: "YieldList", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
-  await expect(
-    page.getByRole("heading", { name: "Yield Markets" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
-  const market = page.getByRole("link", {
-    name: "Open WETH / USDC",
-    exact: true,
-  });
-  const pairName = await market.locator("strong").boundingBox();
-  const metadata = await market.locator("small").boundingBox();
-  expect(metadata!.y).toBeGreaterThanOrEqual(pairName!.y + pairName!.height);
-  const controls = await Promise.all([
-    page.locator('a[href="/market/open"]').boundingBox(),
-    page.getByRole("textbox", { name: "Search markets" }).boundingBox(),
-    page
-      .getByRole("combobox", { name: "Market duration", exact: true })
-      .boundingBox(),
-  ]);
-  const centers = controls.map((box) => box!.y + box!.height / 2);
-  expect(Math.max(...centers) - Math.min(...centers)).toBeLessThan(2);
-  await page
-    .getByRole("combobox", { name: "Market duration", exact: true })
-    .click();
-  await page.getByRole("option", { name: "30D", exact: true }).click();
-  await expect(
-    page.getByRole("combobox", { name: "Market duration", exact: true }),
-  ).toContainText("30D");
-  await page.screenshot({
-    path: testInfo.outputPath("inline-market-toolbar.png"),
-    fullPage: true,
-  });
-  await page.getByLabel("Search markets").fill("cbBTC");
-  await expect(
-    page.getByRole("link", { name: "Open cbBTC / USDC", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toHaveCount(0);
-  await page.getByLabel("Search markets").clear();
-  await page.getByRole("button", { name: "Stable", exact: true }).click();
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open cbBTC / USDC", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Meme", exact: true }).click();
-  const memePairs = configuredMarkets
-    .filter((config) => config.tags?.some((tag) => tag === "meme"))
-    .slice(0, marketPageSize)
-    .map((config) => `/market/base/${config.key}`);
-  const memeMarkets = page
-    .getByRole("region", { name: "Markets", exact: true })
-    .getByRole("link", { name: /^Open / });
-  await expect(memeMarkets).toHaveCount(memePairs.length);
-  await expect
-    .poll(() =>
-      memeMarkets.evaluateAll((links) =>
-        links.map((link) => link.getAttribute("href")),
-      ),
-    )
-    .toEqual(memePairs);
-  await page.getByLabel("Search markets").fill("WETH");
-  await expect(page.getByText("No matching markets")).toBeVisible();
-  await page.getByRole("button", { name: "YieldList", exact: true }).click();
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
-  await page.getByRole("combobox", { name: "Network", exact: true }).click();
-  await page.getByRole("option", { name: "Robinhood", exact: true }).click();
-  await expect(
-    page.getByRole("combobox", { name: "Network", exact: true }),
-  ).toContainText("Robinhood");
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDG", exact: true }),
-  ).toBeVisible();
-  await page.getByLabel("Search markets").fill("missing-market");
-  await expect(page.locator('[data-slot="empty"]')).toBeVisible();
-  await expect(page.getByRole("table")).toHaveCount(0);
-  const overflow = await page.evaluate(
-    () =>
-      document.documentElement.scrollWidth >
-      document.documentElement.clientWidth,
-  );
-  expect(overflow).toBe(false);
-});
-test("shared market filters restore after reload and browser history, with a centered empty state", async ({
-  page,
-  context,
-}, testInfo) => {
-  await context.addCookies([
-    {
-      name: "yld.network",
-      value: "ethereum",
-      url: testInfo.project.use.baseURL!,
-    },
-  ]);
-  await page.goto("/?search=WETH&tag=blue-chip&duration=30&network=base");
-  const network = page.getByRole("combobox", { name: "Network", exact: true });
-  const search = page.getByRole("textbox", { name: "Search markets" });
-  const duration = page.getByRole("combobox", {
-    name: "Market duration",
-    exact: true,
-  });
-  await expect(network).toContainText("Base");
-  await expect(search).toHaveValue("WETH");
-  await expect(duration).toContainText("30D");
-  await expect(
-    page.getByRole("button", { name: "Blue-chip", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toHaveAttribute("href", /market\/base\//);
-  await page.reload();
-  await expect(network).toContainText("Base");
-  await expect(search).toHaveValue("WETH");
-  await expect(duration).toContainText("30D");
-  await page.getByRole("button", { name: "Meme", exact: true }).click();
-  await expect(page).toHaveURL(/tag=meme/);
-  const empty = page.locator('[data-slot="empty"]');
-  await expect(empty).toBeVisible();
-  await expect(page.getByRole("table")).toHaveCount(0);
-  const emptyBox = await empty.boundingBox();
-  const descriptionBox = await empty
-    .locator('[data-slot="empty-description"]')
-    .boundingBox();
-  expect(
-    Math.abs(
-      emptyBox!.x +
-        emptyBox!.width / 2 -
-        (descriptionBox!.x + descriptionBox!.width / 2),
-    ),
-  ).toBeLessThan(2);
-  for (const [title, color] of [
-    ["Launch a market", "rgb(231, 185, 77)"],
-    ["Trade and Earn", "rgb(0, 255, 76)"],
-    ["Rent or swap", "rgb(211, 195, 255)"],
-  ]) {
-    await expect(
-      page
-        .getByRole("heading", { name: title, exact: true })
-        .locator("..")
-        .locator("svg"),
-    ).toHaveCSS("color", color);
-  }
-  await page.screenshot({
-    path: testInfo.outputPath("market-empty-state.png"),
-    fullPage: true,
-  });
-  await page
-    .getByRole("button", { name: "Clear filters", exact: true })
-    .click();
-  await expect(search).toHaveValue("");
-  await expect
-    .poll(() => new URL(page.url()).searchParams.has("search"))
-    .toBe(false);
-  await expect(duration).toContainText("30D");
-  await expect(
-    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
-  ).toBeVisible();
-  await page.goBack();
-  await expect(search).toHaveValue("WETH");
-  await expect(empty).toBeVisible();
-  await page.goForward();
-  await expect(search).toHaveValue("");
-  await expect(empty).toHaveCount(0);
-  await network.click();
-  await page.getByRole("option", { name: "Ethereum", exact: true }).click();
-  await expect(page).toHaveURL(/network=ethereum/);
-  await expect(duration).toContainText("30D");
-  await page.goBack();
-  await expect(network).toContainText("Base");
-});
-
 for (const rememberedWallet of [false, true]) {
   test(`Safe auto-connects after a delayed handshake${rememberedWallet ? " over a remembered browser wallet" : " on first visit"}`, async ({
     page,
     baseURL,
     context,
   }) => {
+    test.skip(
+      process.env.PLAYWRIGHT_SERVER === "development",
+      "The Safe HTTPS proxy requires the production build; next dev does not hydrate at the spoofed origin.",
+    );
+    test.setTimeout(60000);
     // Keep both frames on HTTPS. Serve the app from the local build while
     // preserving real origins for CSP and Safe's postMessage validation.
     const appOrigin = "https://yld.cx";
@@ -1486,6 +507,9 @@ for (const rememberedWallet of [false, true]) {
     await injectWallets(page);
     if (rememberedWallet) {
       await page.goto(appOrigin);
+      await expect(
+        page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+      ).toBeVisible({ timeout: 15000 });
       await page
         .getByRole("button", { name: "Connect wallet", exact: true })
         .click();
@@ -1530,6 +554,9 @@ for (const rememberedWallet of [false, true]) {
     );
     await page.goto("https://app.safe.global/safe-app-test");
     const app = page.frameLocator('iframe[title="Safe App"]');
+    await expect(
+      app.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+    ).toBeVisible({ timeout: 15000 });
     if (rememberedWallet)
       await expect(
         app.getByRole("button", { name: "0x0000…0001" }),
@@ -1540,8 +567,7 @@ for (const rememberedWallet of [false, true]) {
     const dialog = app.getByRole("dialog");
     await expect(dialog.getByText("Safe", { exact: true })).toBeVisible();
     await expect(dialog.getByText("Network: Base")).toBeVisible();
-    // Finish proxied requests before Playwright closes the page.
-    await page.unrouteAll({ behavior: "wait" });
+    await page.unrouteAll({ behavior: "ignoreErrors" });
   });
 }
 
@@ -1963,16 +989,20 @@ test("multiple injected providers, wallet selection, account and network switchi
   ).toEqual([]);
   await page.goto(`/market/base/${key}`);
   await expect(page.getByRole("heading", { name: "Yield Book" })).toBeVisible();
+  await page
+    .getByLabel("Yield Book", { exact: true })
+    .getByRole("tab", { name: "Sell", exact: true })
+    .click();
   await page.locator(`[data-tick-id="${id7}"]`).click();
   await showMarketSection(page, "Provide");
   await page.getByLabel("Amount", { exact: true }).fill("1");
   await expect(
     page
-      .getByLabel("Provide liquidity", { exact: true })
+      .getByLabel("Limit order", { exact: true })
       .getByRole("button", { name: "Switch network" }),
   ).toBeVisible();
   await page
-    .getByLabel("Provide liquidity", { exact: true })
+    .getByLabel("Limit order", { exact: true })
     .getByRole("button", { name: "Switch network" })
     .click();
   await expect(
@@ -1983,9 +1013,7 @@ test("network selector switches the connected wallet and preserves market filter
   page,
 }) => {
   await injectWallets(page);
-  await page.goto(
-    "/?network=ethereum&search=WETH&duration=30&ref=test#markets",
-  );
+  await page.goto("/?network=ethereum&search=WETH&ref=test#markets");
   await page
     .getByRole("button", { name: "Connect wallet", exact: true })
     .click();
@@ -2011,7 +1039,7 @@ test("network selector switches the connected wallet and preserves market filter
   await expect(page.getByLabel("Search markets")).toHaveValue("WETH");
   await expect(
     page.getByRole("combobox", { name: "Market duration" }),
-  ).toContainText("30D");
+  ).toHaveCount(0);
   await wallet.click();
   await expect(page.getByRole("dialog")).toContainText(/network: Base/i);
   await page.getByRole("dialog").press("Escape");
@@ -2087,390 +1115,6 @@ for (const [reason, code] of [
   });
 }
 
-async function chooseBaseTick(page: Page, tick: number) {
-  await showMarketSection(page, "Yield Book");
-  await page.getByRole("combobox", { name: "Base tick", exact: true }).click();
-  await expect(page.getByRole("option")).toHaveCount(7);
-  await page.getByRole("option", { name: String(tick), exact: true }).click();
-  await expect(
-    page.getByRole("combobox", { name: "Base tick", exact: true }),
-  ).toContainText(String(tick));
-}
-async function expectDiscoveryGrid(
-  page: Page,
-  center: number,
-  pair = pairId,
-  duration: (typeof DURATIONS)[number] = DURATIONS[0],
-) {
-  await showMarketSection(page, "Yield Book");
-  const identities = tickCandidates(pair, center, DISCOVERY_DEFAULTS.stepTicks);
-  const visible = identities
-    .filter((tick) => tick.durationDays === duration)
-    .map((tick) => tick.id.toString())
-    .sort();
-  await expect
-    .poll(async () =>
-      page
-        .locator(".yield-book [data-tick-id]")
-        .evaluateAll((rows) =>
-          rows.map((row) => row.getAttribute("data-tick-id")!).sort(),
-        ),
-    )
-    .toEqual(visible);
-  await expect(
-    page.getByText(`${identities.length} ticks checked`, { exact: false }),
-  ).toBeVisible();
-}
-
-test("Base tick drives the compact reference price, preserves selection and refresh scroll, and keeps inversion canonical", async ({
-  page,
-}, testInfo) => {
-  const overrides: TickOverrides = new Map();
-  await rpc(page, true, overrides);
-  await page.clock.install();
-  await page.goto(`/market/base/${key}?ref=keep&tag=all#book`);
-  const center = -196000,
-    next = center + DISCOVERY_DEFAULTS.stepTicks;
-  await expectDiscoveryGrid(page, center);
-  const referenceRow = page.getByRole("group", {
-    name: "Reference price and base tick",
-    exact: true,
-  });
-  const overview = page.getByRole("region", { name: "Market overview" });
-  await expect(referenceRow).toContainText("3.08K USDC");
-  await expect(overview).toContainText("3.08K USDC");
-  const otherLevel = page
-    .getByRole("group", { name: "Ask price levels" })
-    .getByRole("button")
-    .first();
-  await otherLevel.click();
-  await expect(referenceRow).toContainText("3.08K USDC");
-  await expect(overview).toContainText("3.08K USDC");
-  await page.evaluate(() =>
-    Object.assign(window, { baseTickNavigationMarker: true }),
-  );
-  const selector = page.getByRole("combobox", {
-    name: "Base tick",
-    exact: true,
-  });
-  await selector.click();
-  await expect(page.getByRole("option")).toHaveText([
-    String(center - DISCOVERY_DEFAULTS.stepTicks * 100),
-    String(center - DISCOVERY_DEFAULTS.stepTicks * 10),
-    String(center - DISCOVERY_DEFAULTS.stepTicks),
-    String(center),
-    String(next),
-    String(center + DISCOVERY_DEFAULTS.stepTicks * 10),
-    String(center + DISCOVERY_DEFAULTS.stepTicks * 100),
-  ]);
-  await page.getByRole("option", { name: String(center), exact: true }).click();
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  await showMarketSection(page, "Provide");
-  await page.getByLabel("Amount", { exact: true }).fill("2");
-  await chooseBaseTick(page, next);
-  await expectDiscoveryGrid(page, next);
-  await expect(referenceRow).toContainText("3.4K USDC");
-  await expect(overview).toContainText("3.4K USDC");
-  const url = new URL(page.url());
-  expect(url.searchParams.get("baseTick")).toBe(String(next));
-  expect(url.searchParams.get("ref")).toBe("keep");
-  expect(url.searchParams.get("tag")).toBe("all");
-  expect(url.hash).toBe("#book");
-  expect(
-    await page.evaluate(
-      () =>
-        (window as unknown as { baseTickNavigationMarker: boolean })
-          .baseTickNavigationMarker,
-    ),
-  ).toBe(true);
-  await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("2");
-  const groups = [
-    page.getByRole("group", { name: "Ask price levels" }),
-    page.getByRole("group", { name: "Bid price levels" }),
-  ];
-  for (const group of groups)
-    await group.evaluate((element) => {
-      element.scrollTop = 0;
-    });
-  overrides.set(id7, { availableSupply: 500n * 10n ** 18n });
-  await page.clock.fastForward(QUERY_TIMING.liveRefresh + 1000);
-  await expect(page.locator(`[data-tick-id="${id7}"]`)).toContainText(
-    "500 WETH",
-  );
-  await expectDiscoveryGrid(page, next);
-  for (const group of groups)
-    expect(await group.evaluate((element) => element.scrollTop)).toBe(0);
-  await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("2");
-  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expect(selector).toContainText(String(next));
-  await expect(referenceRow).toContainText("0.000293981 WETH");
-  await expect(overview).toContainText("0.000293981 WETH");
-  expect(new URL(page.url()).searchParams.get("baseTick")).toBe(String(next));
-  await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await page
-    .locator(".yield-book")
-    .screenshot({ path: testInfo.outputPath("yield-book-base-tick.png") });
-  await page
-    .getByRole("group", { name: "Reference price and base tick", exact: true })
-    .screenshot({ path: testInfo.outputPath("base-tick-reference.png") });
-  await page
-    .getByRole("group", { name: "Book term" })
-    .getByRole("button", { name: "30D", exact: true })
-    .click();
-  await expectDiscoveryGrid(page, next, pairId, DURATIONS[1]);
-  await showMarketSection(page, "Provide");
-  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("");
-  await expect(
-    page.getByRole("combobox", { name: "Term", exact: true }),
-  ).toContainText("30D");
-  await showMarketSection(page, "Yield Book");
-  await expect(referenceRow).toContainText("3.4K USDC");
-  await expect(overview).toContainText("3.4K USDC");
-});
-
-test("Base tick shifts by one step, removes the default override and follows Back/Forward, reload and shared URLs", async ({
-  page,
-}) => {
-  const center = -196000,
-    step = DISCOVERY_DEFAULTS.stepTicks;
-  await page.goto(`/market/base/${key}?ref=keep`);
-  await chooseBaseTick(page, center + step);
-  await expectDiscoveryGrid(page, center + step);
-  await chooseBaseTick(page, center);
-  await expectDiscoveryGrid(page, center);
-  expect(new URL(page.url()).searchParams.has("baseTick")).toBe(false);
-  expect(new URL(page.url()).searchParams.get("ref")).toBe("keep");
-  await page.goBack();
-  await expectDiscoveryGrid(page, center + step);
-  await expect(
-    page.getByRole("combobox", { name: "Base tick", exact: true }),
-  ).toContainText(String(center + step));
-  await page.goForward();
-  await expectDiscoveryGrid(page, center);
-  await chooseBaseTick(page, center - step);
-  await expectDiscoveryGrid(page, center - step);
-  const sharedUrl = page.url();
-  await page.reload();
-  await expectDiscoveryGrid(page, center - step);
-  await page.goto(`/market/base/${key}`);
-  await expectDiscoveryGrid(page, center);
-  await page.goto(sharedUrl);
-  await expectDiscoveryGrid(page, center - step);
-});
-
-for (const direction of [0, 1] as const) {
-  test(`Base tick clears an out-of-range direction ${direction} selection without resurrecting it on Back`, async ({
-    page,
-  }) => {
-    const center = -196000,
-      step = DISCOVERY_DEFAULTS.stepTicks;
-    const canonicalEdge = center - DISCOVERY_DEFAULTS.radius * step;
-    const id = tickIdFor(
-      pairId,
-      direction,
-      direction === 0 ? canonicalEdge : -canonicalEdge,
-      DURATIONS[0],
-    );
-    await page.goto(`/market/base/${key}`);
-    await page.locator(`[data-tick-id="${id}"]`).click();
-    await chooseBaseTick(page, center + step);
-    await expectDiscoveryGrid(page, center + step);
-    await showMarketSection(page, "Provide");
-    await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
-    await page.goBack();
-    await expectDiscoveryGrid(page, center);
-    await expect(page.locator(`[data-tick-id="${id}"]`)).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-  });
-}
-
-test("markets without a reference price show the warning only at the default discovery center", async ({
-  page,
-}) => {
-  const btc = "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf";
-  const noReferencePair = `${b}:${btc}`,
-    pair = pairIdFor(b, btc),
-    center = DISCOVERY_DEFAULTS.baseTick,
-    step = DISCOVERY_DEFAULTS.stepTicks;
-  await page.goto(`/market/base/${noReferencePair}`);
-  await expectDiscoveryGrid(page, center, pair);
-  const warning = page.getByText(
-    /^⚠️ Unlisted token · Review token compatibility before interacting\.?$/,
-  );
-  await expect(warning).toBeVisible();
-  await expect(
-    page.getByRole("combobox", { name: "Base tick", exact: true }),
-  ).toContainText(String(center));
-  await chooseBaseTick(page, center + step);
-  await expectDiscoveryGrid(page, center + step, pair);
-  await expect(warning).toHaveCount(0);
-  await chooseBaseTick(page, center);
-  await expectDiscoveryGrid(page, center, pair);
-  expect(new URL(page.url()).searchParams.has("baseTick")).toBe(false);
-  await page.goto(
-    `/market/base/${noReferencePair}?baseTick=${step * 3}&ref=shared`,
-  );
-  await expectDiscoveryGrid(page, step * 3, pair);
-  await page.reload();
-  await expectDiscoveryGrid(page, step * 3, pair);
-});
-
-test("an off-grid URL falls back safely and grid bounds disable invalid neighbor options", async ({
-  page,
-}) => {
-  // The complete invalid-input matrix belongs to the URL parser unit tests.
-  await page.goto(`/market/base/${key}?baseTick=-195001&ref=keep`);
-  await expectDiscoveryGrid(page, -196000);
-  await expect(
-    page.getByRole("combobox", { name: "Base tick", exact: true }),
-  ).toContainText("-196000");
-  const step = DISCOVERY_DEFAULTS.stepTicks,
-    upper = Math.floor(MAX_TICK / step) * step;
-  for (const center of [upper, -upper]) {
-    await page.goto(`/market/base/${key}?baseTick=${center}`);
-    await expectDiscoveryGrid(page, center);
-    await page
-      .getByRole("combobox", { name: "Base tick", exact: true })
-      .click();
-    await expect(page.getByRole("option")).toHaveCount(7);
-    await expect(
-      page.getByRole("option", {
-        name: String(center + (center > 0 ? step : -step)),
-        exact: true,
-      }),
-    ).toBeDisabled();
-    await page.keyboard.press("Escape");
-  }
-});
-
-test("Yield Book shows five rows and scrolls best Ask and Bid next to the reference price", async ({
-  page,
-}) => {
-  await page.goto(`/market/base/${key}`);
-  const ask = page.getByRole("group", { name: "Ask price levels" });
-  const bid = page.getByRole("group", { name: "Bid price levels" });
-  await expectDiscoveryGrid(page, -196000);
-  const expectPriceOrder = async () => {
-    for (const side of [ask, bid]) {
-      const prices = await side
-        .getByRole("button")
-        .evaluateAll((rows) =>
-          rows.map((row) =>
-            Number(row.firstElementChild!.textContent!.replaceAll(",", "")),
-          ),
-        );
-      expect(prices).toEqual([...prices].sort((a, b) => b - a));
-    }
-  };
-  await expectPriceOrder();
-  const expectViewport = async (askId: bigint, bidId: bigint) => {
-    for (const [index, side] of [ask, bid].entries()) {
-      const viewport = await side.evaluate(
-        (element, id) => {
-          const row = element.querySelector(`[data-tick-id="${id}"]`)!;
-          const bounds = element.getBoundingClientRect(),
-            rowBounds = row.getBoundingClientRect();
-          return {
-            height: element.clientHeight,
-            rowHeight: rowBounds.height,
-            top: rowBounds.top - bounds.top,
-            bottom: rowBounds.bottom - bounds.top,
-            available: row.getAttribute("data-available"),
-          };
-        },
-        (index === 0 ? askId : bidId).toString(),
-      );
-      expect(viewport.height / viewport.rowHeight).toBe(
-        YIELD_BOOK_LAYOUT.visibleRows,
-      );
-      expect(viewport.available).toBe("true");
-      expect(index === 0 ? viewport.bottom : viewport.top).toBeCloseTo(
-        index === 0 ? viewport.height : 0,
-      );
-    }
-  };
-  await expectViewport(id7, bid7);
-  const refresh = page.getByRole("button", { name: "Refresh discovery" });
-  await expect(refresh.locator("svg")).toBeVisible();
-  await expect(refresh).toHaveText("");
-  for (const side of [ask, bid])
-    await side.evaluate((element) => {
-      element.scrollTop = 0;
-    });
-  await page
-    .getByRole("group", { name: "Book term" })
-    .getByRole("button", { name: "30D", exact: true })
-    .click();
-  await expectViewport(id30, bid30);
-  await expectPriceOrder();
-  await page.locator(`[data-tick-id="${id30}"]`).click();
-  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expectViewport(bid30, id30);
-  await expectPriceOrder();
-  await expect(page.locator(`[data-tick-id="${id30}"]`)).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-});
-
-for (const empty of ["ask", "bid", "both", "missing"] as const) {
-  test(`Yield Book scrolls ${empty} to the end when no executable liquidity is available`, async ({
-    page,
-  }) => {
-    const overrides: TickOverrides = new Map();
-    if (empty !== "bid")
-      overrides.set(id7, { availableSupply: 0n, activeWorking: 10n ** 18n });
-    if (empty !== "ask")
-      overrides.set(bid7, { availableSupply: 0n, activeWorking: 10n ** 6n });
-    await rpc(page, empty !== "missing", overrides);
-    await page.goto(`/market/base/${key}`);
-    await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveCount(1);
-    for (const [side, id] of [
-      ["ask", id7],
-      ["bid", bid7],
-    ] as const) {
-      const group = page.getByRole("group", {
-        name: `${side === "ask" ? "Ask" : "Bid"} price levels`,
-      });
-      const position = await group.evaluate((element, id) => {
-        const row = element.querySelector(`[data-tick-id="${id}"]`)!;
-        return {
-          scroll: element.scrollTop,
-          end: element.scrollHeight - element.clientHeight,
-          top:
-            row.getBoundingClientRect().top -
-            element.getBoundingClientRect().top,
-          bottom:
-            row.getBoundingClientRect().bottom -
-            element.getBoundingClientRect().top,
-          height: element.clientHeight,
-        };
-      }, id.toString());
-      if (empty === "both" || empty === "missing" || empty === side)
-        expect(position.scroll).toBe(position.end);
-      else
-        expect(side === "ask" ? position.bottom : position.top).toBeCloseTo(
-          side === "ask" ? position.height : 0,
-        );
-    }
-  });
-}
-
 test("Orders connection and invalid pair validation", async ({ page }) => {
   await page.goto("/orders");
   await expect(
@@ -2490,661 +1134,6 @@ test("Orders connection and invalid pair validation", async ({ page }) => {
   await expect(
     page.getByRole("button", { name: "Preview Create Market" }),
   ).toHaveCount(0);
-});
-
-test("empty edge levels select exact Ask and Bid identities, while off-grid access stays outside the app", async ({
-  page,
-}) => {
-  await page.goto(`/market/base/${key}`);
-  const edgeTick =
-    -196000 + DISCOVERY_DEFAULTS.radius * DISCOVERY_DEFAULTS.stepTicks;
-  const emptyAsk = tickIdFor(pairId, 0, edgeTick, 7);
-  const emptyBid = tickIdFor(pairId, 1, -edgeTick, 30);
-  const supply = page.getByLabel("Provide liquidity", { exact: true });
-  await page.locator(`[data-tick-id="${emptyAsk}"]`).click();
-  await expect(page.locator(`[data-tick-id="${emptyAsk}"]`)).toHaveAttribute(
-    "data-status",
-    "missing",
-  );
-  await expect(page.locator(`[data-tick-id="${emptyAsk}"]`)).toContainText(
-    "0 WETH",
-  );
-  await expect(supply).toContainText(humanPrice(priceAtTick(edgeTick), 18, 6));
-  await showMarketSection(page, "Provide");
-  await expect(
-    supply.getByRole("button", { name: "Preview Provide", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByLabel("You receive")).toHaveCount(0);
-  await showMarketSection(page, "Yield Book");
-  await page
-    .getByRole("group", { name: "Book term" })
-    .getByRole("button", { name: "30D", exact: true })
-    .click();
-  await page.locator(`[data-tick-id="${emptyBid}"]`).click();
-  await showMarketSection(page, "Provide");
-  await expect(
-    page.getByRole("tab", { name: "Bid · USDC", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
-  await expect(supply).toContainText(
-    humanPrice(priceAtTick(-edgeTick), 6, 18, true),
-  );
-  await page.getByText("Price details", { exact: true }).click();
-  await expect(
-    supply.getByText(String(-edgeTick), { exact: true }),
-  ).toBeVisible();
-  await expect(
-    supply.getByText(emptyBid.toString(), { exact: true }),
-  ).toBeVisible();
-  await expect(page.locator(`[data-tick-id="${directId}"]`)).toHaveCount(0);
-});
-
-test("Base UI keyboard navigation, tab panels and dialog focus restoration", async ({
-  page,
-}, testInfo) => {
-  await injectWallets(page);
-  await page.goto(`/market/base/${key}`);
-  await expect(page.getByRole("heading", { name: "Yield Book" })).toBeVisible();
-  await showMarketSection(page, "Provide");
-  await page.getByRole("tab", { name: "Ask · WETH", exact: true }).focus();
-  await page
-    .getByRole("tab", { name: "Ask · WETH", exact: true })
-    .press("ArrowRight");
-  await expect(
-    page.getByRole("tab", { name: "Bid · USDC", exact: true }),
-  ).toBeFocused();
-  await page
-    .getByRole("tab", { name: "Bid · USDC", exact: true })
-    .press("Enter");
-  await expect(
-    page.getByRole("tab", { name: "Bid · USDC", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
-  await expect(
-    page.getByRole("tabpanel", { name: "Bid · USDC", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page
-      .getByLabel("Provide liquidity", { exact: true })
-      .getByText("Price", { exact: true }),
-  ).toBeVisible();
-  await showMarketSection(page, "Use");
-  await page.getByRole("tab", { name: "Swap now", exact: true }).click();
-  await expect(
-    page.getByRole("tabpanel", { name: "Swap now", exact: true }),
-  ).toBeVisible();
-  await showMarketSection(page, "Provide");
-  const duration = page.getByRole("combobox", {
-    name: "Term",
-    exact: true,
-  });
-  await duration.press("Space");
-  await page
-    .getByRole("option", { name: "7D", exact: true })
-    .press("ArrowDown");
-  await page.getByRole("option", { name: "30D", exact: true }).press("Enter");
-  await expect(duration).toContainText("30D");
-  const wallet = page.getByRole("button", {
-    name: "Connect wallet",
-    exact: true,
-  });
-  await wallet.click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.getByRole("dialog").press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(wallet).toBeFocused();
-  expect(
-    await page.evaluate(
-      () => (window as unknown as { testCspEvents: string[] }).testCspEvents,
-    ),
-  ).toEqual([]);
-  await page.screenshot({
-    path: testInfo.outputPath("shadcn-market.png"),
-    fullPage: true,
-  });
-});
-
-test("market overview and inversion preserve canonical economics", async ({
-  page,
-}) => {
-  await page.goto(`/market/base/${key}`);
-  const canonical = await page
-    .locator('link[rel="canonical"]')
-    .getAttribute("href");
-  const overview = page.getByRole("region", { name: "Market overview" });
-  await expect(
-    overview.getByText("Trade and use WETH or USDC at your price."),
-  ).toBeVisible();
-  await expect(overview.getByLabel("WETH crowned token")).toBeVisible();
-  await expect(overview.getByText("1,000 WETH", { exact: true })).toBeVisible();
-  await expect(overview.getByText("1,000 USDC", { exact: true })).toBeVisible();
-  await expect(overview.getByText("3.7161%", { exact: true })).toBeVisible();
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  await showMarketSection(page, "Provide");
-  await page.getByLabel("Amount", { exact: true }).fill("1");
-  await showMarketSection(page, "Provide");
-  await page.getByText("Price details", { exact: true }).click();
-  await expect(
-    page
-      .getByLabel("Provide liquidity", { exact: true })
-      .getByText("-196000", { exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expect(overview.getByLabel("USDC crowned token")).toBeVisible();
-  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
-    "href",
-    canonical!,
-  );
-  await expect(
-    page.getByRole("tab", { name: "Bid · WETH", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("1");
-  await expect(
-    page
-      .getByLabel("Provide liquidity", { exact: true })
-      .getByText("-196000", { exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expect(
-    page.getByLabel("Provide liquidity", { exact: true }),
-  ).toContainText(humanPrice(priceAtTick(-196000), 18, 6));
-  await page.getByRole("tab", { name: "Bid · USDC", exact: true }).click();
-  await showMarketSection(page, "Provide");
-  await page.getByLabel("Amount", { exact: true }).fill("1");
-  await showMarketSection(page, "Yield Book");
-  await page.locator(`[data-tick-id="${bid7}"]`).click();
-  await showMarketSection(page, "Provide");
-  await page.getByText("Price details", { exact: true }).click();
-  await expect(page.getByText("196000", { exact: true })).toBeVisible();
-  await page.getByLabel("Amount", { exact: true }).fill("12.123456");
-  await showMarketSection(page, "Use");
-  await page.getByRole("tab", { name: "Swap now", exact: true }).click();
-  await page.getByLabel("You receive").fill("20");
-  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue(
-    "12.123456",
-  );
-  await expect(page.getByLabel("You receive")).toHaveValue("20");
-  await expect(
-    page.getByRole("tab", { name: "Swap now", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText("Quote paid", { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Preview Swap", exact: true }),
-  ).toBeVisible();
-});
-
-test("direction and term changes clear incompatible selections and amounts", async ({
-  page,
-}) => {
-  await page.goto(`/market/base/${key}`);
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  const amount = page.getByLabel("Amount", { exact: true });
-  await showMarketSection(page, "Provide");
-  await amount.fill("2");
-  await showMarketSection(page, "Yield Book");
-  await page.locator(`[data-tick-id="${id7}"]`).click();
-  await expect(amount).toHaveValue("2");
-  await showMarketSection(page, "Provide");
-  await page.getByRole("tab", { name: "Bid · USDC", exact: true }).click();
-  await expect(amount).toHaveValue("");
-  await expect(page.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
-  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
-  await showMarketSection(page, "Yield Book");
-  await page.locator(`[data-tick-id="${bid7}"]`).click();
-  await showMarketSection(page, "Provide");
-  await amount.fill("0.0000001");
-  await expect(
-    page.getByRole("alert").filter({ hasText: "6 decimal places" }),
-  ).toBeVisible();
-  await amount.fill("100");
-  await page.getByRole("combobox", { name: "Term", exact: true }).click();
-  await page.getByRole("option", { name: "30D", exact: true }).click();
-  await expect(amount).toHaveValue("");
-  await expect(page.getByText("Not selected", { exact: true })).toBeVisible();
-  await showMarketSection(page, "Yield Book");
-  await expect(
-    page
-      .getByRole("group", { name: "Book term" })
-      .getByRole("button", { name: "30D", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
-});
-
-test("row utilization, gold borders and overview Yield follow the selected side and tabs", async ({
-  page,
-  isMobile,
-}, testInfo) => {
-  await rpc(
-    page,
-    true,
-    new Map([
-      [
-        id7,
-        {
-          availableSupply: 750n * 10n ** 18n,
-          activeWorking: 250n * 10n ** 18n,
-        },
-      ],
-      [
-        bid7,
-        { availableSupply: 250n * 10n ** 6n, activeWorking: 750n * 10n ** 6n },
-      ],
-    ]),
-  );
-  await page.goto(`/market/base/${key}`);
-  const overview = page.getByRole("region", { name: "Market overview" });
-  const ask = page.locator(`[data-tick-id="${id7}"]`);
-  const bid = page.locator(`[data-tick-id="${bid7}"]`);
-  await expect(overview.getByText("7D", { exact: true })).toBeVisible();
-  for (const [row, percentage, side] of [
-    [ask, 25, "ask"],
-    [bid, 75, "bid"],
-  ] as const) {
-    const fill = row.locator('span[aria-hidden="true"]');
-    await expect(fill).toHaveCSS("right", "0px");
-    await expect
-      .poll(() =>
-        fill.evaluate((element) => {
-          const parent = element.parentElement!;
-          return (
-            (element.getBoundingClientRect().width / parent.clientWidth) * 100
-          );
-        }),
-      )
-      .toBeCloseTo(percentage, 1);
-    await expect(fill).toHaveAttribute(
-      "style",
-      new RegExp(`var\\(--${side}-surface\\)`),
-    );
-    if (!isMobile) {
-      await row.hover();
-      await expect(row).toHaveCSS("border-color", "rgb(231, 185, 77)");
-      await expect(row).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    }
-    await row.click();
-    await expect(row).toHaveAttribute("aria-pressed", "true");
-    await expect(row).toHaveCSS("border-color", "rgb(231, 185, 77)");
-    await expect(row).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    await expect(
-      overview.getByText(`${side === "ask" ? "Ask" : "Bid"} APY`, {
-        exact: true,
-      }),
-    ).toBeVisible();
-    await expect(
-      overview.getByText(side === "ask" ? "9.7328%" : "365.5444%", {
-        exact: true,
-      }),
-    ).toBeVisible();
-  }
-  const empty = page
-    .getByRole("group", { name: "Bid price levels" })
-    .getByRole("button")
-    .last();
-  await empty.click();
-  await expect(empty.locator('span[aria-hidden="true"]')).toHaveCount(0);
-  await expect(overview.getByText("—", { exact: true })).toBeVisible();
-  await showMarketSection(page, "Provide");
-  await page.getByRole("tab", { name: "Ask · WETH", exact: true }).click();
-  await showMarketSection(page, "Yield Book");
-  await expect(empty).toHaveAttribute("aria-pressed", "false");
-  await expect(overview.getByText("Ask APY", { exact: true })).toBeVisible();
-  await expect(overview.getByText("9.7328%", { exact: true })).toBeVisible();
-  await showMarketSection(page, "Provide");
-  await page.getByRole("tab", { name: "Bid · USDC", exact: true }).click();
-  await expect(overview.getByText("Bid APY", { exact: true })).toBeVisible();
-  await expect(overview.getByText("365.5444%", { exact: true })).toBeVisible();
-  await showMarketSection(page, "Yield Book");
-  await bid.click();
-  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
-  await expect(overview.getByText("Ask APY", { exact: true })).toBeVisible();
-  await expect(overview.getByText("365.5444%", { exact: true })).toBeVisible();
-  await expect(bid.locator('span[aria-hidden="true"]')).toHaveAttribute(
-    "style",
-    /var\(--ask-surface\)/,
-  );
-  await ask.scrollIntoViewIfNeeded();
-  await bid.scrollIntoViewIfNeeded();
-  await page
-    .locator(".yield-book")
-    .screenshot({ path: testInfo.outputPath("yield-book-utilization.png") });
-});
-
-test("selected ticks refresh availability and Yield without losing entered amounts", async ({
-  page,
-}) => {
-  const overrides: TickOverrides = new Map();
-  await rpc(page, true, overrides);
-  await page.clock.install();
-  await page.goto(`/market/base/${key}`);
-  await page
-    .locator('.yield-book button[data-status="exists"]')
-    .filter({ hasText: "WETH" })
-    .first()
-    .click();
-  const usePanel = page
-    .getByRole("tabpanel")
-    .filter({ has: page.getByLabel("You receive") });
-  const supply = page.getByLabel("Provide liquidity", { exact: true });
-  await showMarketSection(page, "Provide");
-  await page.getByLabel("Amount", { exact: true }).fill("3");
-  await showMarketSection(page, "Use");
-  await page.getByLabel("You receive").fill("1");
-  await expect(usePanel.getByText("1,000 WETH", { exact: true })).toBeVisible();
-  overrides.set(id7, {
-    availableSupply: 500n * 10n ** 18n,
-    activeWorking: 500n * 10n ** 18n,
-  });
-  await page.clock.fastForward(16000);
-  await expect(usePanel.getByText("500 WETH", { exact: true })).toBeVisible();
-  await showMarketSection(page, "Provide");
-  await expect(supply.getByText("62.5664%", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("3");
-  await expect(page.getByLabel("You receive")).toHaveValue("1");
-});
-
-test("selected missing levels become available for Supply after discovery refresh without losing amounts", async ({
-  page,
-}) => {
-  const newTick = -197000;
-  const newId = tickIdFor(pairId, 0, newTick, 7);
-  const overrides: TickOverrides = new Map([[newId, null]]);
-  await rpc(page, true, overrides);
-  await page.clock.install();
-  await page.goto(`/market/base/${key}`);
-  const row = page.locator(`[data-tick-id="${newId}"]`);
-  await row.click();
-  await expect(row).toContainText("0 WETH");
-  await showMarketSection(page, "Provide");
-  await page.getByLabel("Amount", { exact: true }).fill("3");
-  await expect(
-    page.getByRole("button", { name: "Preview Provide", exact: true }),
-  ).toBeVisible();
-  overrides.set(newId, {
-    priceX128: priceAtTick(newTick),
-    availableSupply: 25n * 10n ** 18n,
-  });
-  await page.clock.fastForward(QUERY_TIMING.liveRefresh + 1000);
-  await expect(row).toHaveAttribute("data-status", "exists");
-  await expect(row).toHaveAttribute("aria-pressed", "true");
-  await expect(row).toContainText("25 WETH");
-  await expect(
-    page.getByRole("button", { name: "Preview Provide", exact: true }),
-  ).toBeVisible();
-  await expect(page.getByLabel("Amount", { exact: true })).toHaveValue("3");
-});
-
-test("home branding and market overview", async ({ page }, testInfo) => {
-  await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "Tokens, on your terms." }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("img", { name: "yld.cx", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Open. Permissionless. Immutable.", { exact: false }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Telegram", exact: true }),
-  ).toHaveAttribute("href", "https://t.me/yld_cx");
-  const background = await page.evaluate(
-    () => getComputedStyle(document.body).backgroundImage,
-  );
-  expect(background.match(/linear-gradient/g)).toHaveLength(2);
-  await page.screenshot({
-    path: testInfo.outputPath("home.png"),
-    fullPage: true,
-  });
-  await page.goto(`/market/base/${key}`);
-  await expect(
-    page
-      .getByRole("region", { name: "Market overview" })
-      .getByText("1,000 WETH", { exact: true }),
-  ).toBeVisible();
-  await page.screenshot({
-    path: testInfo.outputPath("market.png"),
-    fullPage: true,
-  });
-});
-
-test("failed market reads remain incomplete rather than empty liquidity", async ({
-  page,
-}) => {
-  await page.route(/https:\/\/mainnet\.base\.org\/?$/, async (route) => {
-    const payload = route.request().postDataJSON();
-    const items = Array.isArray(payload) ? payload : [payload];
-    const hasTickRead = (data: Hex) => {
-      try {
-        const call = decodeFunctionData({ abi: protocolAbi, data });
-        if (call.functionName === "getTick") return true;
-      } catch {}
-      try {
-        const call = decodeFunctionData({ abi: multicall3Abi, data });
-        return (
-          call.functionName === "aggregate3" &&
-          call.args[0].some((item) => {
-            try {
-              return (
-                decodeFunctionData({ abi: protocolAbi, data: item.callData })
-                  .functionName === "getTick"
-              );
-            } catch {
-              return false;
-            }
-          })
-        );
-      } catch {
-        return false;
-      }
-    };
-    if (
-      items.some(
-        (item) =>
-          item.method === "eth_call" && hasTickRead(item.params[0].data),
-      )
-    ) {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify(
-          Array.isArray(payload)
-            ? items.map((item) => ({
-                id: item.id,
-                jsonrpc: "2.0",
-                error: { code: -32000, message: "RPC unavailable" },
-              }))
-            : {
-                id: payload.id,
-                jsonrpc: "2.0",
-                error: { code: -32000, message: "RPC unavailable" },
-              },
-        ),
-      });
-    } else await route.fallback();
-  });
-  await page.goto(`/market/base/${key}`);
-  await expect(
-    page.getByRole("alert").filter({ hasText: "Some reads failed" }),
-  ).toBeVisible();
-  const failedRow = page.locator(`[data-tick-id="${id7}"]`);
-  await expect(failedRow).toHaveAttribute("data-status", "failed");
-  await expect(failedRow).toContainText("Read failed");
-  await expect(failedRow).not.toContainText("0 WETH");
-  await failedRow.click();
-  await showMarketSection(page, "Provide");
-  await expect(
-    page.getByRole("button", { name: "Preview Provide", exact: true }),
-  ).toBeDisabled();
-  const overview = page.getByRole("region", { name: "Market overview" });
-  // The selected configured price remains known even when its liquidity read fails.
-  await expect(overview.getByText("Incomplete", { exact: true })).toHaveCount(
-    3,
-  );
-  await expect(
-    page.getByText("New · No liquidity", { exact: true }),
-  ).toHaveCount(0);
-  await expect(page.getByText("No liquidity yet", { exact: true })).toHaveCount(
-    0,
-  );
-});
-
-test("new markets allow Provide directly and retain standalone Create Market", async ({
-  page,
-}) => {
-  await rpc(page, false);
-  await page.goto(`/market/base/${key}`);
-  const overview = page.getByRole("region", { name: "Market overview" });
-  await expect(
-    overview.getByText("Trade and use WETH or USDC at your price."),
-  ).toBeVisible();
-  await expect(overview.getByText("3.08K USDC", { exact: true })).toBeVisible();
-  await expect(
-    overview.getByText("Preview market", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    overview.getByText("New · No liquidity", { exact: true }),
-  ).toBeVisible();
-  await showMarketSection(page, "Provide");
-  await expect(
-    page
-      .getByLabel("Provide liquidity", { exact: true })
-      .getByRole("heading", { name: "Sell and Earn", exact: true }),
-  ).toBeVisible();
-  await showMarketSection(page, "Use");
-  await expect(
-    page.getByRole("heading", { name: "Choose your price" }),
-  ).toBeVisible();
-  await showMarketSection(page, "Yield Book");
-  const count = DISCOVERY_DEFAULTS.radius * 2 + 1;
-  const ask = page.getByRole("group", { name: "Ask price levels" });
-  const bid = page.getByRole("group", { name: "Bid price levels" });
-  await expect(ask.getByRole("button")).toHaveCount(count);
-  await expect(bid.getByRole("button")).toHaveCount(count);
-  await expect(page.locator('.yield-book [data-status="missing"]')).toHaveCount(
-    count * 2,
-  );
-  await expect(
-    page.getByText(`${count * 2 * DURATIONS.length} ticks checked`, {
-      exact: false,
-    }),
-  ).toBeVisible();
-  const empty = ask.getByRole("button").last();
-  await empty.click();
-  await expect(empty).toHaveAttribute("aria-pressed", "true");
-  await showMarketSection(page, "Use");
-  await expect(
-    page.getByRole("heading", { name: "No liquidity yet" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Telegram group", exact: true }),
-  ).toHaveAttribute("href", "https://t.me/yld_group");
-  await showMarketSection(page, "Provide");
-  await expect(
-    page.getByLabel("Provide liquidity", { exact: true }),
-  ).not.toContainText("Not selected");
-  await page.getByLabel("Amount", { exact: true }).fill("1");
-  await expect(
-    page.getByRole("button", { name: "Preview Provide", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Preview Create Market", exact: true }),
-  ).toBeVisible();
-});
-
-test("standard shadcn controls retain semantic theme colors and keyboard behavior", async ({
-  page,
-}, testInfo) => {
-  await page.goto(`/market/base/${key}`);
-  const ask = page.getByRole("tab", { name: "Ask · WETH", exact: true });
-  const bid = page.getByRole("tab", { name: "Bid · USDC", exact: true });
-  const rent = page.getByRole("tab", { name: "Rent", exact: true });
-  const swap = page.getByRole("tab", { name: "Swap now", exact: true });
-  await showMarketSection(page, "Provide");
-  await expect(ask).toHaveCSS("color", "rgb(241, 162, 168)");
-  await showMarketSection(page, "Use");
-  await expect(rent).toHaveCSS("color", "rgb(211, 195, 255)");
-  await showMarketSection(page, "Provide");
-  await bid.hover();
-  await bid.click();
-  await expect(bid).toHaveCSS("color", "rgb(159, 228, 190)");
-  await showMarketSection(page, "Use");
-  await swap.click();
-  await expect(swap).toHaveCSS("color", "rgb(241, 244, 247)");
-  await showMarketSection(page, "Yield Book");
-  const monthly = page
-    .getByRole("group", { name: "Book term" })
-    .getByRole("button", { name: "30D", exact: true });
-  await monthly.click();
-  await expect(monthly).toHaveAttribute("aria-pressed", "true");
-  await expect(monthly).toHaveCSS("color", "rgb(231, 185, 77)");
-  await showMarketSection(page, "Provide");
-  await bid.focus();
-  await bid.press("ArrowLeft");
-  await expect(ask).toBeFocused();
-  await ask.press("Enter");
-  await expect(ask).toHaveAttribute("aria-selected", "true");
-  await showMarketSection(page, "Provide");
-  await expect(ask).toHaveCSS("color", "rgb(241, 162, 168)");
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page.screenshot({
-    path: testInfo.outputPath("simple-shadcn-market.png"),
-    fullPage: true,
-  });
-  expect(
-    await page.evaluate(
-      () => (window as unknown as { testCspEvents: string[] }).testCspEvents,
-    ),
-  ).toEqual([]);
-});
-
-test("CSP permits UI positioning styles and blocks untrusted parser scripts", async ({
-  page,
-  context,
-}) => {
-  // An intercepted document has a synthetic address space in Chromium.
-  // Permit its loopback HMR connection, just as the real localhost response does.
-  await context.grantPermissions(["local-network-access"]);
-  await page.route(`**/market/base/${key}`, async (route) => {
-    if (route.request().resourceType() !== "document") return route.fallback();
-    const response = await route.fetch();
-    const html = (await response.text()).replace(
-      "</head>",
-      "<script>window.untrustedScriptRan = true</script></head>",
-    );
-    await route.fulfill({ response, body: html });
-  });
-  await page.goto(`/market/base/${key}`);
-  await expect(page.getByRole("heading", { name: "Yield Book" })).toBeVisible();
-  await showMarketSection(page, "Provide");
-  await page.getByRole("combobox", { name: "Term", exact: true }).click();
-  await page.getByRole("option", { name: "30D", exact: true }).click();
-  await page.evaluate(() => {
-    const element = document.createElement("div");
-    element.id = "csp-style-check";
-    element.setAttribute("style", "width: 123px");
-    document.body.append(element);
-  });
-  await expect(page.locator("#csp-style-check")).toHaveCSS("width", "123px");
-  expect(
-    await page.evaluate(
-      () =>
-        (window as unknown as { untrustedScriptRan?: boolean })
-          .untrustedScriptRan,
-    ),
-  ).toBeUndefined();
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => (window as unknown as { testCspEvents: string[] }).testCspEvents,
-      ),
-    )
-    .toContain("script-src-elem");
-  const events = await page.evaluate(
-    () => (window as unknown as { testCspEvents: string[] }).testCspEvents,
-  );
-  expect(events.every((directive) => directive === "script-src-elem")).toBe(
-    true,
-  );
 });
 
 test("development HMR connects under the development CSP", async ({ page }) => {
@@ -3180,12 +1169,17 @@ const protocolRuntime = readFileSync(
 ).trim() as Hex;
 async function openProvidePreview(page: Page, selectedId = id7) {
   await showMarketSection(page, "Yield Book");
+  await page
+    .getByLabel("Yield Book", { exact: true })
+    .getByRole("tab", {
+      name: selectedId === bid7 ? "Buy" : "Sell",
+      exact: true,
+    })
+    .click();
   await page.locator(`[data-tick-id="${selectedId}"]`).click();
   await showMarketSection(page, "Provide");
   await page.getByLabel("Amount", { exact: true }).fill("1");
-  await page
-    .getByRole("button", { name: "Preview Provide", exact: true })
-    .click();
+  await page.getByRole("button", { name: /^(Buy|Sell) and Earn$/ }).click();
 }
 async function transactionRpc(
   page: Page,
@@ -3194,6 +1188,7 @@ async function transactionRpc(
     tick: boolean;
     direction?: 0 | 1;
     allowance?: bigint;
+    permitAllowance?: () => readonly [bigint, number, number];
     reject?: boolean;
     fail?: boolean;
     positions?: {
@@ -3202,7 +1197,13 @@ async function transactionRpc(
       tickIds?: bigint[];
     };
     balance?: bigint;
-    atomic?: "supported" | "unsupported" | "missing" | "safe";
+    atomic?:
+      | "supported"
+      | "unsupported"
+      | "missing"
+      | "safe"
+      | "ready"
+      | "other-chain-only";
     zeroFirst?: boolean;
     simulationUnsupported?: boolean;
     sendUnsupported?: boolean;
@@ -3294,6 +1295,19 @@ async function transactionRpc(
     pair = state.pair,
     ticks = overrides,
   ): { success: boolean; returnData: Hex } {
+    if (data.startsWith("0x927da105"))
+      return {
+        success: true,
+        returnData: encodeFunctionResult({
+          abi: permit2Abi,
+          functionName: "allowance",
+          result: options.permitAllowance?.() ?? [
+            10n ** 30n,
+            Math.floor(Date.now() / 1000) + 86400,
+            0,
+          ],
+        }),
+      };
     try {
       const token = decodeFunctionData({ abi: erc20Abi, data });
       if (
@@ -3486,7 +1500,7 @@ async function transactionRpc(
           } else if (action.functionName === "swap") {
             const [tickId, assetAmount] = action.args;
             const quotePrincipal =
-              tickId === bid7 || tickId === bid30
+              tickId === bid7
                 ? (assetAmount * 10n ** 12n) / 3000n
                 : (assetAmount * 3000n) / 10n ** 12n;
             const swapFee = quotePrincipal / 100n;
@@ -3563,12 +1577,17 @@ async function transactionRpc(
       if (item.method === "wallet_getCapabilities") {
         if (!options.atomic || options.atomic === "missing")
           return error("Method not found", -32601);
-        result = {
-          "0x2105":
-            options.atomic === "safe"
-              ? { atomicBatch: { supported: true } }
-              : { atomic: { status: options.atomic } },
-        };
+        result =
+          options.atomic === "other-chain-only"
+            ? {
+                "0x1": { atomic: { status: "supported" } },
+              }
+            : {
+                "0x2105":
+                  options.atomic === "safe"
+                    ? { atomicBatch: { supported: true } }
+                    : { atomic: { status: options.atomic } },
+              };
       } else if (item.method === "wallet_sendCalls") {
         if (options.sendUnsupported)
           return error("Atomicity not supported", 5760);
@@ -3952,17 +1971,19 @@ test("Rent and Swap Max use the selected level's exact available amount", async 
     [bid7, "8.765432"],
   ] as const) {
     await showMarketSection(page, "Yield Book");
+    await page
+      .getByLabel("Yield Book", { exact: true })
+      .getByRole("tab", { name: id === bid7 ? "Buy" : "Sell", exact: true })
+      .click();
     await page.locator(`[data-tick-id="${id}"]`).click();
     await showMarketSection(page, "Use");
-    for (const mode of ["Rent", "Swap now"] as const) {
+    for (const mode of ["Rent", "Swap"] as const) {
       await page.getByRole("tab", { name: mode, exact: true }).click();
-      const panel = page
-        .getByRole("tabpanel")
-        .filter({ has: page.getByLabel("You receive", { exact: true }) });
-      await panel.getByLabel("You receive", { exact: true }).fill("0.1");
+      const panel = page.getByLabel("Yield Order", { exact: true });
+      await panel.getByRole("textbox", { name: /^Amount$/ }).fill("0.1");
       await panel.getByRole("button", { name: "Max", exact: true }).click();
       await expect(
-        panel.getByLabel("You receive", { exact: true }),
+        panel.getByRole("textbox", { name: /^Amount$/ }),
       ).toHaveValue(expected);
       await expect(
         panel.getByLabel("Wallet balance", { exact: true }),
@@ -3984,14 +2005,15 @@ test("Provide Max fills the exact wallet balance for the selected token", async 
     .getByRole("dialog")
     .getByRole("button", { name: "Close", exact: true })
     .click();
-  const supply = page.getByLabel("Provide liquidity", { exact: true });
+  const supply = page.getByLabel("Limit order", { exact: true });
   const input = supply.getByLabel("Amount", { exact: true });
-  for (const [side, symbol, displayBalance, exactBalance] of [
+  for (const [side, , displayBalance, exactBalance] of [
     ["Ask", "WETH", "2.123456", "2.123456789012345678"],
     ["Bid", "USDC", "2,123,456,789,012.345678", "2123456789012.345678"],
   ] as const) {
-    await supply
-      .getByRole("tab", { name: `${side} · ${symbol}`, exact: true })
+    await page
+      .getByLabel("Yield Book", { exact: true })
+      .getByRole("tab", { name: side === "Bid" ? "Buy" : "Sell", exact: true })
       .click();
     const balance = supply.getByLabel("Wallet balance", { exact: true });
     await expect(balance).toBeVisible();
@@ -4022,7 +2044,7 @@ test("Provide hides wallet balance when disconnected and disables Max for zero b
 }) => {
   await page.goto(`/market/base/${key}`);
   await showMarketSection(page, "Provide");
-  const supply = page.getByLabel("Provide liquidity", { exact: true });
+  const supply = page.getByLabel("Limit order", { exact: true });
   await expect(
     supply.getByLabel("Wallet balance", { exact: true }),
   ).toHaveCount(0);
@@ -4508,7 +2530,7 @@ test("reopening clears stale previews, approval state and errors before refreshi
   const state = await transactionRpc(page, { pair: true, tick: true });
   const dialog = page.getByRole("dialog");
   const reopen = page.getByRole("button", {
-    name: "Preview Provide",
+    name: /^(Buy|Sell) and Earn$/,
     exact: true,
   });
   await expect(
@@ -4546,12 +2568,12 @@ test("reopening clears stale previews, approval state and errors before refreshi
   });
   await reopen.click();
   await expect(
-    dialog.getByText("Reading and simulating current state…", { exact: true }),
+    dialog.getByText("Preparing transaction preview…", { exact: true }),
   ).toBeVisible();
   const spinner = dialog
     .getByRole("status")
     .filter({
-      hasText: "Reading and simulating current state…",
+      hasText: "Preparing transaction preview…",
     })
     .locator("svg");
   await expect(spinner).toHaveCSS("animation-name", "spin");
@@ -4686,6 +2708,10 @@ test("Yield slippage accepts percentages and disables autocomplete", async ({
   page,
 }) => {
   await page.goto(`/market/base/${key}`);
+  await page
+    .getByLabel("Yield Book", { exact: true })
+    .getByRole("tab", { name: "Sell", exact: true })
+    .click();
   await page.locator(`[data-tick-id="${id7}"]`).click();
   await showMarketSection(page, "Use");
   await page.getByText("Yield slippage", { exact: true }).click();
@@ -4771,8 +2797,8 @@ test("Rent converts Yield slippage to exact basis-point caps", async ({
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await showMarketSection(page, "Use");
   await page.getByText("Yield slippage", { exact: true }).click();
-  await page.getByLabel("You receive", { exact: true }).fill("1,0");
-  await expect(page.getByLabel("You receive", { exact: true })).toHaveValue(
+  await page.getByRole("textbox", { name: /^Amount$/ }).fill("1,0");
+  await expect(page.getByRole("textbox", { name: /^Amount$/ })).toHaveValue(
     "1.0",
   );
   for (const [percent, expectedCap] of [
@@ -4812,11 +2838,12 @@ for (const direction of [0, 1] as const) {
     const dialog = page.getByRole("dialog");
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await showMarketSection(page, "Use");
-    await page.getByLabel("You receive", { exact: true }).fill("1");
+    await page.getByRole("textbox", { name: /^Amount$/ }).fill("1");
     for (const percent of ["10", ""]) {
       await page.getByText("Yield slippage", { exact: true }).click();
       await page.getByLabel("Yield slippage", { exact: true }).fill(percent);
-      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
+      await page.getByRole("tab", { name: "Swap", exact: true }).click();
+      await page.getByRole("textbox", { name: /^Amount$/ }).fill("1");
       await expect(
         page.getByText("Yield slippage", { exact: true }),
       ).toHaveCount(0);
@@ -4827,7 +2854,7 @@ for (const direction of [0, 1] as const) {
         dialog.getByRole("button", { name: "Confirm Swap", exact: true }),
       ).toBeVisible();
       const payment = direction === 0 ? "3,000 USDC" : "0.000333 WETH";
-      for (const label of ["Pay Quote", "Maximum Quote payment"])
+      for (const label of ["You provide", "Maximum Quote payment"])
         await expect(
           dialog.getByText(label, { exact: true }).locator(".."),
         ).toContainText(payment);
@@ -4844,6 +2871,7 @@ for (const direction of [0, 1] as const) {
       ]);
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
       await page.getByRole("tab", { name: "Rent", exact: true }).click();
+      await page.getByRole("textbox", { name: /^Amount$/ }).fill("1");
     }
   });
 }
@@ -4910,12 +2938,12 @@ for (const mode of ["Rent", "Swap"] as const) {
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await showMarketSection(page, "Use");
     if (mode === "Swap")
-      await page.getByRole("tab", { name: "Swap now", exact: true }).click();
+      await page.getByRole("tab", { name: "Swap", exact: true }).click();
     const explanation =
       mode === "Rent"
         ? "Repay WETH + Yield to unlock USDC, or it will be swapped at term end."
         : "Swaps are instant and final.";
-    await page.getByLabel("You receive", { exact: true }).fill("1");
+    await page.getByRole("textbox", { name: /^Amount$/ }).fill("1");
     await page
       .getByRole("button", { name: `Preview ${mode}`, exact: true })
       .click();
@@ -4939,7 +2967,6 @@ for (const mode of ["Rent", "Swap"] as const) {
       ...(mode === "Rent" ? ["Maximum accepted Yield"] : []),
     ])
       await expect(dialog.getByText(label, { exact: true })).toBeHidden();
-    await showMarketSection(page, "Use");
     if (mode === "Swap")
       await expect(
         dialog.getByText("Maximum Quote payment", { exact: true }),
@@ -4968,7 +2995,7 @@ test("Rent advances to Confirm Rent after two approval confirmations", async ({
     .getByRole("button", { name: "Close", exact: true })
     .click();
   await showMarketSection(page, "Use");
-  await page.getByLabel("You receive", { exact: true }).fill("1");
+  await page.getByRole("textbox", { name: /^Amount$/ }).fill("1");
   await page.getByRole("button", { name: "Preview Rent", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog
@@ -5143,9 +3170,7 @@ test("fresh review resets atomic fallback and attempts batching again", async ({
   ).toBeVisible();
   options.simulationUnsupported = false;
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
-  await page
-    .getByRole("button", { name: "Preview Provide", exact: true })
-    .click();
+  await page.getByRole("button", { name: /^(Buy|Sell) and Earn$/ }).click();
   await expect(
     dialog.getByRole("button", { name: "Approve & Provide", exact: true }),
   ).toBeVisible();
@@ -5244,109 +3269,6 @@ test("token discovery prioritizes configured identities without reading decimals
   ).toBeVisible();
 });
 
-test("Worker reference prices initialize discovery and refresh without moving the selected center", async ({
-  page,
-}) => {
-  let price = "5000",
-    symbol = "WETH";
-  let requests = 0;
-  await page.route(metadataRoute, async (route) => {
-    requests++;
-    const url = new URL(route.request().url());
-    await route.fulfill({
-      json: {
-        tokens: url.searchParams
-          .get("addresses")!
-          .split(",")
-          .map((address) => ({
-            chainId: 8453,
-            address,
-            status: "available",
-            symbol: address === a ? symbol : "USDC",
-            name: "Worker token",
-            geckoTerminal: {
-              attributes: {
-                price_usd: address === a ? price : "1",
-                decimals: 99,
-              },
-            },
-          })),
-      },
-    });
-  });
-  const center = snappedPrice(
-    "5000",
-    18,
-    6,
-    DISCOVERY_DEFAULTS.stepTicks,
-  ).priceTick;
-  await page.goto(`/market/base/${key}`);
-  await expectDiscoveryGrid(page, center);
-  const identity = tickIdFor(pairId, 0, center, 7);
-  await page.locator(`[data-tick-id="${identity}"]`).click();
-  const before = requests;
-  price = "10000";
-  symbol = "WETH2";
-  await page.clock.setFixedTime(
-    new Date(Date.now() + QUERY_TIMING.tokenMetadataStale + 1000),
-  );
-  await page.evaluate(() =>
-    window.dispatchEvent(new Event("visibilitychange")),
-  );
-  await expect.poll(() => requests).toBeGreaterThan(before);
-  await expect(
-    page.getByRole("heading", { name: "WETH2 / USDC" }),
-  ).toBeVisible();
-  await expectDiscoveryGrid(page, center);
-  await expect(page.locator(`[data-tick-id="${identity}"]`)).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  expect(new URL(page.url()).searchParams.has("baseTick")).toBe(false);
-});
-
-test("metadata and image failures preserve onchain interactions and the universal icon", async ({
-  page,
-}) => {
-  await page.route(metadataRoute, (route) => route.fulfill({ status: 429 }));
-  await page.route("**/api/tokens?**", (route) =>
-    route.fulfill({ status: 503, json: { tokens: [] } }),
-  );
-  await page.goto(`/market/base/${key}`);
-  await expect(
-    page.getByRole("heading", { name: "WETH / USDC" }),
-  ).toBeVisible();
-  await expectDiscoveryGrid(page, -196000);
-  await expect(
-    page.getByRole("img", { name: "WETH logo" }).first(),
-  ).toHaveAttribute("src", "/token.svg");
-  await page.route(metadataRoute, async (route) => {
-    const url = new URL(route.request().url());
-    await route.fulfill({
-      json: {
-        tokens: url.searchParams
-          .get("addresses")!
-          .split(",")
-          .map((address) => ({
-            chainId: 8453,
-            address,
-            status: "available",
-            symbol: tokenFixture(address).symbol,
-            name: tokenFixture(address).name,
-            imageUrl: "https://coin-images.coingecko.com/missing.png",
-          })),
-      },
-    });
-  });
-  await page.route("https://coin-images.coingecko.com/**", (route) =>
-    route.fulfill({ status: 404 }),
-  );
-  await page.reload();
-  const icon = page.getByRole("img", { name: "WETH logo" }).first();
-  await expect(icon).toHaveAttribute("src", "/token.svg");
-  await expect(icon).toHaveJSProperty("complete", true);
-});
-
 test("metadata requests use the environment's configured browser endpoint", async ({
   page,
   baseURL,
@@ -5370,4 +3292,1007 @@ test("metadata requests use the environment's configured browser endpoint", asyn
       ),
     ),
   ).toBe(true);
+});
+
+for (const scenario of [
+  "supported",
+  "safe",
+  "unsupported",
+  "ready",
+  "rejected",
+  "expired",
+  "already-approved",
+  "permit-only",
+  "wrong-pair",
+  "batch-unsupported",
+  "wrong-chain",
+  "allowance-changed",
+  "other-chain-only",
+] as const) {
+  const atomic =
+    scenario === "safe"
+      ? "safe"
+      : scenario === "other-chain-only"
+        ? "other-chain-only"
+        : scenario === "unsupported"
+          ? "unsupported"
+          : scenario === "ready"
+            ? "ready"
+            : "supported";
+  test(`Market Swap ${scenario} wallet batches Permit2 without offchain signatures`, async ({
+    page,
+  }) => {
+    const router = swapNetwork(8453).router;
+    let authorized = scenario === "already-approved";
+    const approved =
+      scenario === "already-approved" || scenario === "permit-only";
+    const state = await transactionRpc(page, {
+      pair: true,
+      tick: true,
+      allowance: approved ? 10n ** 18n : 0n,
+      atomic,
+      permitAllowance: () => [
+        authorized ? 10n ** 30n : 0n,
+        Math.floor(Date.now() / 1000) + 86400,
+        0,
+      ],
+    });
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    let quoteRequests = 0;
+    const submitted: { to: string; data: Hex }[][] = [];
+    const rpcMethods: string[] = [];
+    await page.route("https://mainnet.base.org", async (route) => {
+      const request = route.request().postDataJSON() as {
+        id: number;
+        method: string;
+        params: unknown[];
+      };
+      if (Array.isArray(request)) return route.fallback();
+      rpcMethods.push(request.method);
+      let result: unknown;
+      if (request.method === "wallet_sendCalls") {
+        if (scenario === "rejected" || scenario === "batch-unsupported") {
+          return route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: request.id,
+              error: {
+                code: scenario === "rejected" ? 4001 : 5760,
+                message:
+                  scenario === "rejected"
+                    ? "User rejected batch"
+                    : "Atomicity not supported",
+              },
+            }),
+          });
+        }
+        const batch = request.params[0] as {
+          atomicRequired: boolean;
+          calls: { to: string; data: Hex }[];
+        };
+        expect(batch.atomicRequired).toBe(true);
+        submitted.push(batch.calls);
+        state.allowance = 0n;
+        authorized = true;
+        result = { id: "wallet-batch-1" };
+      } else if (request.method === "eth_sendTransaction") {
+        const call = request.params[0] as { to: string; data: Hex };
+        submitted.push([call]);
+        if (call.to.toLowerCase() === a) state.allowance = 10n ** 18n;
+        if (call.to.toLowerCase() === PERMIT2.toLowerCase()) authorized = true;
+        result = `0x${"12".repeat(32)}`;
+      } else return route.fallback();
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+      });
+    });
+    await page.route("**/api/swap/**", async (route) => {
+      const input = route.request().postDataJSON() as {
+        swapper: string;
+        amount: string;
+      };
+      const transaction = {
+        to: router,
+        data: "0x12345678",
+        value: "0",
+        chainId: 8453,
+      };
+      expect(route.request().url().endsWith("/quote")).toBe(true);
+      quoteRequests++;
+      const result = {
+        mode: "wallet-router",
+        chainId: 8453,
+        tokenIn: scenario === "wrong-pair" ? b : a,
+        tokenOut: scenario === "wrong-pair" ? a : b,
+        amountIn: input.amount,
+        estimatedAmountOut: "3000000000",
+        minimumAmountOut: "2985000000",
+        routing: "CLASSIC",
+        routeVersion: "2.1.2",
+        quotedAt: Date.now(),
+        expiresAt: Date.now() + (scenario === "expired" ? -1 : 45000),
+        routeId: "browser-test",
+        transaction,
+        ...(!authorized
+          ? {
+              permitTransaction: {
+                to: PERMIT2,
+                chainId: 8453,
+                value: "0",
+                data: encodeFunctionData({
+                  abi: permit2Abi,
+                  functionName: "approve",
+                  args: [
+                    a,
+                    router,
+                    BigInt(input.amount),
+                    Math.floor(Date.now() / 1000) + 86400,
+                  ],
+                }),
+              },
+            }
+          : {}),
+      };
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(result),
+      });
+    });
+    await page
+      .getByLabel("Yield Book", { exact: true })
+      .getByRole("tab", { name: "Sell", exact: true })
+      .click();
+    await showMarketSection(page, "Swap");
+    const form = page.getByLabel("Market swap", { exact: true });
+    await form.getByLabel("Amount", { exact: true }).fill("1");
+    await expect(
+      page.getByRole("button", { name: "Get swap quote", exact: true }),
+    ).toHaveCount(0);
+    if (scenario === "wrong-pair" || scenario === "expired") {
+      await expect(form.getByRole("alert")).toContainText(
+        scenario === "wrong-pair"
+          ? "Swap quote no longer matches this order"
+          : "Swap changed or expired",
+      );
+      await expect(
+        form.getByRole("button", { name: "Swap", exact: true }),
+      ).toBeDisabled();
+      expect(submitted).toEqual([]);
+      expect(quoteRequests).toBe(1);
+      return;
+    }
+    await expect(
+      form.getByText("You receive", { exact: true }).locator(".."),
+    ).toContainText("3,000 USDC");
+    expect(quoteRequests).toBe(1);
+    if (scenario === "wrong-chain") {
+      await page.evaluate(() =>
+        (
+          window as unknown as {
+            testWallet: { chain: (chain: string) => void };
+          }
+        ).testWallet.chain("0x1"),
+      );
+      await expect(
+        page.getByRole("button", { name: "Swap", exact: true }),
+      ).toBeDisabled();
+      expect(submitted).toEqual([]);
+      return;
+    }
+    await form.getByRole("button", { name: "Swap", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByText("Minimum received", { exact: true }),
+    ).toBeVisible();
+    expect(quoteRequests).toBe(2);
+    if (
+      scenario === "rejected" ||
+      scenario === "allowance-changed" ||
+      scenario === "batch-unsupported"
+    ) {
+      if (scenario === "allowance-changed") state.allowance = 10n ** 18n;
+      await dialog
+        .getByRole("button", { name: "Approve & Swap", exact: true })
+        .click();
+      await expect(
+        dialog.getByText(
+          scenario === "rejected"
+            ? "Wallet request declined. You can try again."
+            : scenario === "allowance-changed"
+              ? "Allowance changed. Review a fresh quote."
+              : "Atomic batching is unavailable. Approve separately and review the swap.",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      expect(submitted).toEqual([]);
+      expect(rpcMethods).not.toContain("eth_sendTransaction");
+      if (scenario !== "batch-unsupported") return;
+    }
+    if (scenario === "already-approved") {
+      await dialog
+        .getByRole("button", { name: "Confirm Swap", exact: true })
+        .click();
+      await expect(
+        dialog.getByRole("button", { name: "Done", exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]).toHaveLength(1);
+      expect(submitted[0][0].to.toLowerCase()).toBe(router.toLowerCase());
+      expect(rpcMethods).not.toContain("wallet_sendCalls");
+      return;
+    }
+    if (
+      scenario === "supported" ||
+      scenario === "safe" ||
+      scenario === "permit-only"
+    ) {
+      await dialog
+        .getByRole("button", { name: "Approve & Swap", exact: true })
+        .click();
+      await expect(
+        dialog.getByRole("button", { name: "Done", exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(1);
+      expect(submitted[0]).toHaveLength(scenario === "permit-only" ? 2 : 3);
+    } else {
+      await dialog
+        .getByRole("button", { name: "Approve WETH", exact: true })
+        .click();
+      await expect(
+        dialog.getByRole("button", { name: "Authorize Permit2", exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(1);
+      await dialog
+        .getByRole("button", { name: "Authorize Permit2", exact: true })
+        .click();
+      await expect(
+        dialog.getByRole("button", { name: "Confirm Swap", exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(2);
+      await dialog
+        .getByRole("button", { name: "Confirm Swap", exact: true })
+        .click();
+      await expect(
+        dialog.getByRole("button", { name: "Done", exact: true }),
+      ).toBeVisible();
+      expect(submitted).toHaveLength(3);
+    }
+    if (scenario === "permit-only") {
+      expect(submitted[0][0].to).toBe(PERMIT2);
+      expect(
+        decodeFunctionData({
+          abi: permit2Abi,
+          data: submitted[0][0].data,
+        }).args?.slice(0, 3),
+      ).toEqual([a, router, 10n ** 18n]);
+      return;
+    }
+    expect(submitted[0][0].to.toLowerCase()).toBe(a);
+    expect(
+      decodeFunctionData({ abi: erc20Abi, data: submitted[0][0].data }).args,
+    ).toEqual([PERMIT2, 10n ** 18n]);
+    expect(submitted.at(-1)!.at(-1)!.to.toLowerCase()).toBe(
+      router.toLowerCase(),
+    );
+    expect(rpcMethods.some((method) => /signTypedData/i.test(method))).toBe(
+      false,
+    );
+  });
+}
+
+test("Market Swap quotes the payment token automatically and ignores superseded quotes", async ({
+  page,
+}) => {
+  const state = await transactionRpc(page, { pair: true, tick: true });
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  let releaseFirst!: () => void;
+  const first = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const requests: {
+    tokenIn: string;
+    tokenOut: string;
+    amount: string;
+    slippage: number;
+  }[] = [];
+  await page.route("**/api/swap/quote", async (route) => {
+    const input = route.request().postDataJSON();
+    requests.push(input);
+    const index = requests.length;
+    if (index === 1) await first;
+    await route.fulfill({
+      json: {
+        mode: "wallet-router",
+        chainId: 8453,
+        tokenIn: input.tokenIn,
+        tokenOut: input.tokenOut,
+        amountIn: input.amount,
+        estimatedAmountOut:
+          input.tokenOut === a
+            ? (BigInt(index) * 10n ** 17n).toString()
+            : "3000000000",
+        minimumAmountOut: "1",
+        routing: "CLASSIC",
+        routeVersion: "2.1.2",
+        quotedAt: Date.now(),
+        expiresAt: Date.now() + 45000,
+        routeId: "automatic-test",
+        transaction: {
+          to: swapNetwork(8453).router,
+          data: "0x12345678",
+          value: "0",
+          chainId: 8453,
+        },
+      },
+    });
+  });
+  try {
+    const book = page.getByLabel("Yield Book", { exact: true });
+    await book.getByRole("tab", { name: "Buy", exact: true }).click();
+    await showMarketSection(page, "Swap");
+    const form = page.getByLabel("Market swap", { exact: true });
+    await expect(form).not.toContainText(
+      /Swap through|Market swaps do not|→|Token spender/,
+    );
+    const amount = form.getByLabel("Amount", { exact: true });
+    await amount.fill("12.5");
+    await expect.poll(() => requests.length).toBe(1);
+    expect(requests[0]).toMatchObject({
+      tokenIn: b,
+      tokenOut: a,
+      amount: "12500000",
+    });
+    await expect(
+      form.getByText("You provide", { exact: true }).locator(".."),
+    ).toContainText("12.5 USDC");
+    await amount.fill("20");
+    await expect(
+      form.getByText("You receive", { exact: true }).locator(".."),
+    ).toContainText("0.2 WETH");
+    releaseFirst();
+    await expect(
+      form.getByText("You receive", { exact: true }).locator(".."),
+    ).toContainText("0.2 WETH");
+    await expect(
+      form.getByRole("button", { name: "Swap", exact: true }),
+    ).toBeEnabled();
+    await form.getByText("Swap slippage", { exact: true }).click();
+    await form.getByLabel("Swap slippage", { exact: true }).fill("2");
+    await expect(form.getByRole("alert")).toContainText("at most 1%");
+    await expect(
+      form.getByRole("button", { name: "Swap", exact: true }),
+    ).toBeDisabled();
+    expect(requests).toHaveLength(2);
+    await form.getByLabel("Swap slippage", { exact: true }).fill("1");
+    await expect.poll(() => requests.length).toBe(3);
+    expect(requests[2]).toMatchObject({
+      tokenIn: b,
+      amount: "20000000",
+      slippage: 1,
+    });
+    await book.getByRole("tab", { name: "Sell", exact: true }).click();
+    await amount.fill("0.01");
+    await expect.poll(() => requests.length).toBe(4);
+    expect(requests[3]).toMatchObject({
+      tokenIn: a,
+      tokenOut: b,
+      amount: "10000000000000000",
+    });
+    expect(state.writes).toEqual([]);
+  } finally {
+    releaseFirst();
+  }
+});
+
+test("simplified home explores markets without pair, tick or AMM requests", async ({
+  page,
+}) => {
+  const rpcRequests: string[] = [];
+  const protocolReads: string[] = [];
+  function trackRead(data: Hex) {
+    try {
+      const decoded = decodeFunctionData({ abi: multicall3Abi, data });
+      if (decoded.functionName === "aggregate3") {
+        decoded.args[0].forEach((call) => trackRead(call.callData));
+        return;
+      }
+    } catch {}
+    try {
+      protocolReads.push(
+        decodeFunctionData({ abi: protocolAbi, data }).functionName,
+      );
+    } catch {}
+  }
+  page.on("request", (request) => {
+    if (/api\/market-price|api\/swap/.test(request.url()))
+      rpcRequests.push(request.url());
+    if (new URL(request.url()).origin === "https://mainnet.base.org") {
+      const payload = request.postDataJSON();
+      for (const call of Array.isArray(payload) ? payload : [payload])
+        if (call.method === "eth_call") trackRead(call.params[0].data);
+    }
+  });
+  await page.goto("/");
+  const table = page.getByRole("table");
+  await expect(
+    table.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  ).toBeVisible();
+  await expect(table.getByRole("columnheader")).toHaveCount(3);
+  await expect(
+    table.getByRole("columnheader", { name: "Asset TVL", exact: true }),
+  ).toBeVisible();
+  const row = table.getByRole("row").filter({
+    has: page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  });
+  await expect(
+    row.getByRole("cell", { name: "12.45 WETH", exact: true }),
+  ).toBeVisible();
+  await expect(
+    table.getByRole("cell", { name: "0 cbBTC", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("combobox", { name: "Market duration" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("switch", { name: "Markets yield display" }),
+  ).toHaveCount(0);
+  await page.getByLabel("Search markets").fill("WETH");
+  await expect(table.getByRole("link")).toHaveCount(1);
+  expect(rpcRequests).toEqual([]);
+  expect(protocolReads.length).toBeGreaterThan(0);
+  expect(new Set(protocolReads)).toEqual(new Set(["tokenLiability"]));
+  await row.getByRole("link").click();
+  const banner = page.getByRole("region", { name: "Market overview" });
+  await expect(
+    banner.getByText("Asset TVL", { exact: true }).locator(".."),
+  ).toHaveText("Asset TVL12.45 WETH");
+});
+
+test("simplified Trending recovers from an empty discovery response", async ({
+  page,
+}) => {
+  let requests = 0;
+  await page.route("**/api/markets?**", async (route) => {
+    if (new URL(route.request().url()).searchParams.get("tag") !== "trending")
+      return route.fallback();
+    await route.fulfill({
+      json: { markets: ++requests === 1 ? [] : configuredMarkets },
+    });
+  });
+  await page.goto("/?tag=trending&network=base");
+  await expect(
+    page.getByText("No matching markets", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "YieldList", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Trending", exact: true }).click();
+  await expect.poll(() => requests).toBe(2);
+  await expect(
+    page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
+  ).toBeVisible();
+});
+
+test("market header shows reference price, APY and animated OTC and action colors", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  const book = page.getByLabel("Yield Book", { exact: true });
+  const banner = page.getByRole("region", { name: "Market overview" });
+  const order = page.getByLabel("Yield Order", { exact: true });
+  await expect(banner.getByText("Open market", { exact: true })).toBeVisible();
+  const [marketLabelBox, statusBox, bannerBox, titleBox] = await Promise.all([
+    banner.getByText("Yield market · Base", { exact: true }).boundingBox(),
+    banner.getByText("Open market", { exact: true }).boundingBox(),
+    banner.boundingBox(),
+    banner
+      .getByRole("heading", { name: "WETH / USDC", exact: true })
+      .boundingBox(),
+  ]);
+  expect(statusBox!.y + statusBox!.height / 2).toBeCloseTo(
+    marketLabelBox!.y + marketLabelBox!.height / 2,
+    0,
+  );
+  expect(marketLabelBox!.y - bannerBox!.y).toBeCloseTo(40, 0);
+  expect(
+    titleBox!.y - (marketLabelBox!.y + marketLabelBox!.height),
+  ).toBeLessThanOrEqual(4);
+  await expect(
+    banner.getByText("Term", { exact: true }).locator(".."),
+  ).toHaveText("Term7 days");
+  await expect(banner.getByText("7D", { exact: true })).toHaveCount(0);
+  const reference = banner
+    .getByText("Reference price", { exact: true })
+    .locator("..");
+  await expect(reference).toContainText("~ 3K USDC");
+  await expect(
+    book.getByRole("button", { name: /Market · AMM/ }),
+  ).toContainText("~ 3,000 USDC");
+  await expect(banner.getByText("BID APY", { exact: true })).toBeVisible();
+  await expect(
+    banner.getByRole("button", { name: "About APY", exact: true }),
+  ).toBeVisible();
+  await expect(banner).not.toContainText(/USDC \/ WETH|Indicative/i);
+  await expect(book.getByText("Yield", { exact: true })).toBeVisible();
+  await expect(book.locator(".otc-badge")).toHaveCSS(
+    "color",
+    "rgb(0, 255, 76)",
+  );
+  expect(
+    await book
+      .locator(".otc-badge")
+      .evaluate(
+        (element) => getComputedStyle(element, "::before").animationName,
+      ),
+  ).toBe("otc-border-orbit");
+  await expect(
+    book.getByRole("button", { name: "Refresh discovery", exact: true }),
+  ).toHaveText("");
+  await expect(
+    book.getByRole("button", { name: "Back to market", exact: true }),
+  ).toHaveCount(0);
+  await expect(book).not.toContainText("Amounts in");
+  await expect(order.getByRole("heading", { name: /Buy.*Earn/ })).toHaveCount(
+    0,
+  );
+  for (const [action, color] of [
+    ["Limit", "rgb(231, 185, 77)"],
+    ["Swap", "rgb(241, 244, 247)"],
+    ["Rent", "rgb(211, 195, 255)"],
+  ]) {
+    const tab = order.getByRole("tab", { name: action, exact: true });
+    await tab.click();
+    await expect(tab).toHaveCSS("color", color);
+  }
+  await book.getByRole("tab", { name: "Sell", exact: true }).click();
+  await expect(banner.getByText("ASK APY", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
+  await expect(reference).toContainText("~ 0.000333333 WETH");
+});
+
+for (const side of ["BID", "ASK"] as const)
+  for (const inverted of [false, true]) {
+    test(`book navigation follows ${side} row order (inverted ${inverted})`, async ({
+      page,
+    }) => {
+      await page.goto(`/market/base/${key}`);
+      if (inverted)
+        await page
+          .getByRole("button", { name: /^Invert displayed pair/ })
+          .click();
+      const book = page.getByLabel("Yield Book", { exact: true });
+      await book
+        .getByRole("tab", {
+          name: side === "BID" ? "Buy" : "Sell",
+          exact: true,
+        })
+        .click();
+      const rows = book.locator("[data-tick-id]");
+      await expect(rows).toHaveCount(10);
+      const initialIds = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-tick-id")),
+      );
+      const lastPrice = Number(
+        (await rows.last().locator("span").first().innerText()).replaceAll(
+          ",",
+          "",
+        ),
+      );
+      const navigation = book.getByRole("group", {
+        name: "Price level navigation",
+        exact: true,
+      });
+      await expect(navigation.getByRole("button")).toHaveCount(2);
+      await expect(navigation).toHaveText("");
+      await navigation
+        .getByRole("button", { name: "Next price levels", exact: true })
+        .click();
+      await expect
+        .poll(() => rows.first().getAttribute("data-tick-id"))
+        .not.toBe(initialIds[0]);
+      const nextIds = await rows.evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-tick-id")),
+      );
+      expect(new Set([...initialIds, ...nextIds]).size).toBe(20);
+      const nextPrice = Number(
+        (await rows.first().locator("span").first().innerText()).replaceAll(
+          ",",
+          "",
+        ),
+      );
+      if (side === "BID") expect(nextPrice).toBeLessThan(lastPrice);
+      else expect(nextPrice).toBeGreaterThan(lastPrice);
+      await navigation
+        .getByRole("button", { name: "Previous price levels", exact: true })
+        .click();
+      await expect
+        .poll(() => rows.first().getAttribute("data-tick-id"))
+        .toBe(initialIds[0]);
+    });
+  }
+
+test("simplified book preserves the selected limit price and amount across ten-level pages", async ({
+  page,
+  isMobile,
+}, testInfo) => {
+  await page.goto(`/market/base/${key}`);
+  const book = page.getByLabel("Yield Book", { exact: true });
+  const order = page.getByLabel("Yield Order", { exact: true });
+  const rows = book.locator("[data-tick-id]");
+  await expect(rows).toHaveCount(10);
+  await expect(
+    book.getByRole("tab", { name: "Buy", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    order.getByRole("tab", { name: "Limit", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(order.getByText("Provide", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("tablist", { name: "Market sections" }),
+  ).toHaveCount(0);
+  const firstIds = await rows.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-tick-id")),
+  );
+  const missing = book.locator('[data-status="missing"]').first();
+  await missing.click();
+  const selectedPrice = (
+    await missing.locator("span").first().innerText()
+  ).trim();
+  await expect(
+    order
+      .locator("dl")
+      .filter({ has: page.getByText("Price", { exact: true }) })
+      .locator("dd"),
+  ).toHaveText(`${selectedPrice} USDC / WETH`);
+  const selectedId = await missing.getAttribute("data-tick-id");
+  await order.getByLabel("Amount", { exact: true }).fill("12");
+  const price = await order
+    .locator("dl")
+    .filter({ has: page.getByText("Price", { exact: true }) })
+    .textContent();
+  await book
+    .getByRole("button", { name: "Previous price levels", exact: true })
+    .click();
+  await expect
+    .poll(() => rows.first().getAttribute("data-tick-id"))
+    .not.toBe(firstIds[0]);
+  const nextIds = await rows.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-tick-id")),
+  );
+  expect(new Set([...firstIds, ...nextIds]).size).toBe(20);
+  await expect(order.getByLabel("Amount", { exact: true })).toHaveValue("12");
+  await expect(
+    order
+      .locator("dl")
+      .filter({ has: page.getByText("Price", { exact: true }) }),
+  ).toHaveText(price!);
+  await book.getByRole("button", { name: /Market · AMM/ }).click();
+  await expect
+    .poll(() => rows.first().getAttribute("data-tick-id"))
+    .toBe(firstIds[0]);
+  await expect(
+    order.getByRole("tab", { name: "Swap", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await order.getByRole("tab", { name: "Limit", exact: true }).click();
+  await expect(book.locator(`[data-tick-id="${selectedId}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  const bookBounds = await book.boundingBox(),
+    orderBounds = await order.boundingBox();
+  expect(bookBounds && orderBounds).toBeTruthy();
+  if (isMobile)
+    expect(orderBounds!.y).toBeGreaterThan(
+      bookBounds!.y + bookBounds!.height - 1,
+    );
+  else expect(orderBounds!.y).toBeCloseTo(bookBounds!.y, 0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.screenshot({
+    path: testInfo.outputPath("simplified-market.png"),
+    fullPage: true,
+  });
+});
+
+test("market waits for a user-selected price and aligns the panel tabs", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  const book = page.getByLabel("Yield Book", { exact: true });
+  const order = page.getByLabel("Yield Order", { exact: true });
+  const selectedRows = book.locator('[data-tick-id][aria-pressed="true"]');
+  await expect(book.locator("[data-tick-id]")).toHaveCount(10);
+  await expect(selectedRows).toHaveCount(0);
+  await expect(order.getByText("Not selected", { exact: true })).toBeVisible();
+  await expect(
+    order.getByRole("button", { name: "Buy and Earn", exact: true }),
+  ).toBeDisabled();
+  const ammPrice = book
+    .getByRole("button", { name: /Market · AMM/ })
+    .locator("span.col-span-3");
+  await expect(ammPrice).toHaveText("~ 3,000 USDC");
+  await expect(ammPrice).toHaveCSS("color", "rgb(142, 152, 159)");
+  const bookTabs = await book
+    .getByRole("tablist", { name: "Book side" })
+    .boundingBox();
+  const orderTabs = await order
+    .getByRole("tablist", { name: "Order action" })
+    .boundingBox();
+  expect(bookTabs!.height).toBe(orderTabs!.height);
+  expect(bookTabs!.width).toBe(orderTabs!.width);
+  if (!isMobile) expect(bookTabs!.y).toBeCloseTo(orderTabs!.y, 1);
+  const tabSize = await order
+    .getByRole("tab", { name: "Limit", exact: true })
+    .boundingBox();
+  for (const panel of [book, order]) {
+    const tabs = await panel.getByRole("tab").all();
+    const first = await tabs[0].boundingBox();
+    for (const tab of tabs) {
+      const size = await tab.boundingBox();
+      expect(size!.width).toBeCloseTo(first!.width, 0);
+      expect(size!.height).toBe(tabSize!.height);
+    }
+  }
+  for (const action of ["Swap", "Rent"]) {
+    await order.getByRole("tab", { name: action, exact: true }).click();
+    await expect(
+      order.getByText("Choose your price", { exact: true }),
+    ).toBeVisible();
+    await expect(selectedRows).toHaveCount(0);
+  }
+  await book.getByRole("tab", { name: "Sell", exact: true }).click();
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
+  await book
+    .getByRole("button", { name: "Next price levels", exact: true })
+    .click();
+  await expect(selectedRows).toHaveCount(0);
+  await book.getByRole("button", { name: /Market · AMM/ }).click();
+  await order.getByRole("tab", { name: "Limit", exact: true }).click();
+  await expect(order.getByText("Not selected", { exact: true })).toBeVisible();
+  await expect(selectedRows).toHaveCount(0);
+});
+
+test("simplified selection maps tick and AMM taker directions and restores Limit", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  const book = page.getByLabel("Yield Book", { exact: true }),
+    order = page.getByLabel("Yield Order", { exact: true });
+  await expect(book.locator('[data-tick-id][aria-pressed="true"]')).toHaveCount(
+    0,
+  );
+  await book.locator(`[data-tick-id="${bid7}"]`).click();
+  await expect(book.locator(`[data-tick-id="${bid7}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await order.getByRole("tab", { name: "Swap", exact: true }).click();
+  await expect(order.getByRole("textbox", { name: /^Amount$/ })).toBeVisible();
+  await expect(order.getByText("Use", { exact: true })).toBeVisible();
+  await order.getByRole("tab", { name: "Rent", exact: true }).click();
+  await expect(order.getByLabel("Amount", { exact: true })).toBeVisible();
+  await expect(order.getByText("USDC", { exact: true }).first()).toBeVisible();
+  await book.getByRole("button", { name: /Market · AMM/ }).click();
+  await expect(
+    order.getByRole("tab", { name: "Swap", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(
+    order.getByText("You provide", { exact: true }).locator(".."),
+  ).toContainText("USDC");
+  await book.getByRole("tab", { name: "Sell", exact: true }).click();
+  await expect(
+    order.getByText("You provide", { exact: true }).locator(".."),
+  ).toContainText("WETH");
+  await order.getByRole("tab", { name: "Limit", exact: true }).click();
+  await expect(book.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
+  await expect(
+    book.getByRole("tab", { name: "Buy", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(book.locator(`[data-tick-id="${id7}"]`)).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(
+    page.getByRole("heading", { name: "USDC / WETH", exact: true }),
+  ).toBeVisible();
+});
+
+test("Limit and Market AMM remain selectable without an AMM reference", async ({
+  page,
+}) => {
+  await page.route("**/api/market-price?**", (route) =>
+    route.fulfill({
+      json: {
+        status: "unavailable",
+        source: null,
+        timestamp: Date.now(),
+        ammAvailable: false,
+      },
+    }),
+  );
+  await page.goto(`/market/base/${key}`);
+  const book = page.getByLabel("Yield Book", { exact: true });
+  const market = book.getByRole("button", { name: /Market · AMM/ });
+  await expect(market).toBeEnabled();
+  await expect(market).toContainText("—");
+  await expect(
+    page
+      .getByRole("region", { name: "Market overview" })
+      .getByText("Reference price", { exact: true })
+      .locator(".."),
+  ).toHaveText("Reference price—");
+  await expect(book.locator("[data-tick-id]")).toHaveCount(10);
+  await expect(page.getByLabel("Amount", { exact: true })).toBeVisible();
+  await market.click();
+  await expect(market).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page
+      .getByLabel("Yield Order", { exact: true })
+      .getByRole("tab", { name: "Swap", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByLabel("Market swap", { exact: true })).toBeVisible();
+});
+
+test("market startup RPC requests stay batched", async ({ page }, testInfo) => {
+  await transactionRpc(page, {
+    pair: true,
+    tick: true,
+    positions: { tickIds: [id7, bid7], use: {} },
+  });
+  await expect(page.locator('[data-slot="position-card"]')).toHaveCount(3);
+  const requests: { methods: string[]; contracts: string[][] }[] = [];
+  function functions(data: Hex): string[] {
+    try {
+      const aggregate = decodeFunctionData({ abi: multicall3Abi, data });
+      if (aggregate.functionName === "aggregate3")
+        return aggregate.args[0].flatMap((call) => functions(call.callData));
+    } catch {}
+    for (const abi of [protocolAbi, erc20Abi]) {
+      try {
+        return [decodeFunctionData({ abi, data }).functionName];
+      } catch {}
+    }
+    return ["unknown"];
+  }
+  page.on("request", (request) => {
+    if (new URL(request.url()).origin !== "https://mainnet.base.org") return;
+    const body = request.postDataJSON();
+    const items = Array.isArray(body) ? body : [body];
+    const reads = items.filter(
+      (item: { method: string }) =>
+        item.method.startsWith("eth_") && item.method !== "eth_sendTransaction",
+    );
+    if (!reads.length) return;
+    requests.push({
+      methods: reads.map((item: { method: string }) => item.method),
+      contracts: reads.map(
+        (item: { method: string; params: [{ data?: Hex }] }) =>
+          item.method === "eth_call" && item.params[0].data
+            ? functions(item.params[0].data)
+            : [],
+      ),
+    });
+  });
+  await page.reload();
+  await expect(page.locator('[data-slot="position-card"]')).toHaveCount(3);
+  await expect(
+    page
+      .getByLabel("Yield Book", { exact: true })
+      .locator('[data-status="exists"]'),
+  ).toHaveCount(1);
+  await expect(
+    page
+      .getByLabel("Limit order", { exact: true })
+      .getByRole("button", { name: "Max", exact: true }),
+  ).toBeEnabled();
+  const summary = {
+    httpRequests: requests.length,
+    rpcMethods: requests.reduce(
+      (sum, request) => sum + request.methods.length,
+      0,
+    ),
+    requests,
+  };
+  console.log("MARKET_STARTUP_RPC", JSON.stringify(summary));
+  await testInfo.attach("market-startup-rpc.json", {
+    body: JSON.stringify(summary, null, 2),
+    contentType: "application/json",
+  });
+  expect(requests.length).toBeGreaterThan(0);
+  expect(requests.length).toBeLessThanOrEqual(5);
+  expect(requests.some((request) => request.methods.length > 1)).toBe(true);
+  expect(
+    requests
+      .flatMap((request) => request.contracts)
+      .some(
+        (calls) =>
+          calls.length === 10 && calls.every((name) => name === "getTick"),
+      ),
+  ).toBe(true);
+});
+
+test("home keeps complete row skeletons until metadata and images are ready", async ({
+  page,
+}) => {
+  let releaseMetadata!: () => void;
+  let releaseImage!: () => void;
+  const metadataReady = new Promise<void>((resolve) => {
+    releaseMetadata = resolve;
+  });
+  const imageReady = new Promise<void>((resolve) => {
+    releaseImage = resolve;
+  });
+  const imageUrl = "https://coin-images.coingecko.com/test-token.png";
+  const [imageAddress] = configuredPairs[0].split(":");
+  await page.route(metadataRoute, async (route) => {
+    await metadataReady;
+    const params = new URL(route.request().url()).searchParams;
+    await route.fulfill({
+      json: {
+        tokens: params
+          .get("addresses")!
+          .split(",")
+          .map((address) => ({
+            chainId: Number(params.get("chainId")),
+            address,
+            status: "available",
+            ...tokenFixture(address),
+            imageUrl: address === imageAddress ? imageUrl : undefined,
+          })),
+      },
+    });
+  });
+  await page.route(imageUrl, async (route) => {
+    await imageReady;
+    await route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34"><circle cx="17" cy="17" r="17" fill="gold"/></svg>',
+    });
+  });
+  try {
+    await page.goto("/");
+    const row = page.locator(
+      `tr[data-market-key="eip155:8453/${configuredPairs[0]}"]`,
+    );
+    const link = page.locator(`a[href="/market/base/${configuredPairs[0]}"]`);
+    await expect(row).toBeAttached();
+    await expect(link).toHaveCount(0);
+    await expect(row.locator("img")).toHaveCount(0);
+    await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(6);
+    const before = await row.boundingBox();
+    const imageRequested = page.waitForRequest(imageUrl);
+    releaseMetadata();
+    await imageRequested;
+    await expect(link).toHaveCount(0);
+    await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(6);
+    expect(await row.boundingBox()).toEqual(before);
+    releaseImage();
+    await expect(link).toBeVisible();
+    const image = link.locator(`img[src="${imageUrl}"]`);
+    await expect(image).toHaveCSS("opacity", "1");
+    await expect(link.locator('img[src="/token.svg"]')).toHaveCount(1);
+    await expect(row.locator('[data-slot="skeleton"]')).toHaveCount(0);
+    expect(await row.boundingBox()).toEqual(before);
+  } finally {
+    releaseMetadata();
+    releaseImage();
+  }
 });

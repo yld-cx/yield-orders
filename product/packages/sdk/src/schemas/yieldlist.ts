@@ -1,11 +1,5 @@
 import { z } from "zod";
-import {
-  DEFAULT_DURATION,
-  DURATIONS,
-  DISCOVERY_DEFAULTS,
-  MIN_TICK,
-  MAX_TICK,
-} from "../constants.ts";
+import { MIN_TICK, MAX_TICK } from "../constants.ts";
 // Avoid even the caught eval-capability probe in nonce-only browser CSPs.
 z.config({ jitless: true });
 import { canonicalPair, decodeBase58 } from "../registry/addresses.ts";
@@ -30,41 +24,29 @@ export const networkSchema = z.string().refine((value) => {
     return false;
   }
 }, "Expected a CAIP-2 EVM or Solana network identifier");
-export const marketMetadataSchema = z
-  .strictObject({
-    tags: z
-      .array(categorySchema)
-      .max(categorySchema.options.length)
-      .refine((v) => new Set(v).size === v.length, "Duplicate tags")
-      .default([]),
-    defaultDuration: z.literal(DURATIONS).default(DEFAULT_DURATION),
-    stepTicks: z
-      .number()
-      .int()
-      .positive()
-      .max(Number.MAX_SAFE_INTEGER)
-      .default(DISCOVERY_DEFAULTS.stepTicks),
-    baseTick: z.number().int().min(MIN_TICK).max(MAX_TICK).optional(),
-    telegramPost: z
-      .url()
-      .refine((v) => {
-        const u = new URL(v);
-        return (
-          u.protocol === "https:" &&
-          u.hostname === "t.me" &&
-          !u.username &&
-          !u.password &&
-          /^\/[a-zA-Z0-9_]+\/\d+$/.test(u.pathname) &&
-          !u.search &&
-          !u.hash
-        );
-      }, "Expected an HTTPS Telegram post URL")
-      .optional(),
-  })
-  .refine(
-    (v) => v.baseTick === undefined || v.baseTick % v.stepTicks === 0,
-    "baseTick must align to stepTicks",
-  );
+export const marketMetadataSchema = z.strictObject({
+  tags: z
+    .array(categorySchema)
+    .max(categorySchema.options.length)
+    .refine((v) => new Set(v).size === v.length, "Duplicate tags")
+    .default([]),
+  baseTick: z.number().int().min(MIN_TICK).max(MAX_TICK).optional(),
+  telegramPost: z
+    .url()
+    .refine((v) => {
+      const u = new URL(v);
+      return (
+        u.protocol === "https:" &&
+        u.hostname === "t.me" &&
+        !u.username &&
+        !u.password &&
+        /^\/[a-zA-Z0-9_]+\/\d+$/.test(u.pathname) &&
+        !u.search &&
+        !u.hash
+      );
+    }, "Expected an HTTPS Telegram post URL")
+    .optional(),
+});
 export const yieldListSchema = z
   .strictObject({
     version: z.literal(1),

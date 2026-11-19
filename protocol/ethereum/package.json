@@ -27,7 +27,8 @@
     "./vectors/*": "./vectors/*",
     "./contracts/*": "./contracts/*",
     "./deployments/config.json": "./deployments/config.json",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./deployments/resolver.json": "./deployments/resolver.json"
   },
   "files": [
     "README.md",
@@ -38,7 +39,10 @@
     "contracts/libraries/ProductSumMath.sol",
     "contracts/libraries/YieldMath.sol",
     "contracts/libraries/TickMath.sol",
-    "contracts/libraries/Uint512.sol"
+    "contracts/libraries/Uint512.sol",
+    "abi/YieldResolver.json",
+    "contracts/periphery/YieldResolver.sol",
+    "deployments/resolver.json"
   ],
   "engines": {
     "node": ">=24"
@@ -65,7 +69,12 @@
     "verify:base": "YLD_NETWORK=base hardhat --build-profile production --network base run scripts/verify.ts",
     "verify:robinhood": "YLD_NETWORK=robinhood hardhat --build-profile production --network robinhood run scripts/verify.ts",
     "prepack": "npm run build:production",
-    "test:gas": "hardhat --build-profile production test nodejs test/Gas.ts"
+    "test:gas": "hardhat --build-profile production test nodejs test/Gas.ts",
+    "test:resolver": "hardhat test solidity contracts/test/YieldResolver.t.sol",
+    "test:resolver:fork:base": "hardhat --network baseFork test nodejs integration/ResolverFork.ts",
+    "test:resolver:fork:ethereum": "hardhat --network ethereumFork test nodejs integration/ResolverFork.ts",
+    "test:resolver:fork:robinhood": "hardhat --network robinhoodFork test nodejs integration/ResolverFork.ts",
+    "deploy:resolver:base": "hardhat --network base run scripts/deploy-resolver.ts"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.7.0"
@@ -74,6 +83,7 @@
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
     "@nomicfoundation/hardhat-verify": "^3.1.4",
     "@types/node": "^26.6.6",
+    "@yld-cx/sdk": "file:../../product/packages/sdk",
     "dotenv": "^18.0.10",
     "hardhat": "^3.21.2",
     "prettier": "^3.9.10",

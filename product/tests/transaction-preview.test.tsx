@@ -89,10 +89,10 @@ describe("action previews", () => {
         a,
         q,
       );
-      expect(main).toContain(">Estimated Quote</dt>");
-      expect(
-        main.split(">Estimated Quote</dt>")[1].split("</dl>")[0],
-      ).toContain(expected);
+      expect(main).toContain(">You receive</dt>");
+      expect(main.split(">You receive</dt>")[1].split("</dl>")[0]).toContain(
+        expected,
+      );
     },
   );
 
@@ -119,12 +119,7 @@ describe("action previews", () => {
           settleCursor: 0n,
         },
       });
-      for (const label of [
-        "Price",
-        "Duration",
-        "You supply",
-        "Estimated Quote",
-      ])
+      for (const label of ["Price", "Duration", "You provide", "You receive"])
         expect(main).toContain(`>${label}</dt>`);
       expect(main).toContain("3.7161%");
       expect(main).toContain("Estimated APY");
@@ -185,8 +180,8 @@ describe("action previews", () => {
       q,
     );
     for (const label of [
-      "Receive Asset",
-      "Lock Quote",
+      "You receive",
+      "You provide",
       "Maximum term Yield",
       "Term end",
     ])
@@ -226,7 +221,7 @@ describe("action previews", () => {
       a,
       q,
     );
-    for (const label of ["Receive Asset", "Pay Quote", "Maximum Quote payment"])
+    for (const label of ["You receive", "You provide", "Maximum Quote payment"])
       expect(main).toContain(`>${label}</dt>`);
     expect(main).toContain(`3 ${q.symbol}`);
     expect(main).toContain(`4 ${q.symbol}`);

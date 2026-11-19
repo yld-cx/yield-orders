@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Category } from "@yld-cx/sdk";
+import { Category, PRODUCT_MARKET } from "@yld-cx/sdk";
 import {
   Registry,
   canonicalPair,
@@ -21,9 +21,7 @@ describe("YieldList", () => {
       Object.keys(list.markets[network]).length,
     );
     expect(marketMetadataSchema.parse({})).toEqual({
-      defaultDuration: 7,
       tags: [],
-      stepTicks: 1000,
     });
   });
   it.each([
@@ -102,12 +100,23 @@ describe("YieldList", () => {
   it("accepts optional metadata without redundant fields", () => {
     expect(
       marketMetadataSchema.parse({
-        stepTicks: 1000,
-        baseTick: -196000,
-        defaultDuration: 30,
+        baseTick: -196001,
         telegramPost: "https://t.me/yld_cx/123",
-      }).defaultDuration,
-    ).toBe(30);
+      }),
+    ).toEqual({
+      tags: [],
+      baseTick: -196001,
+      telegramPost: "https://t.me/yld_cx/123",
+    });
+    const market = new Registry(list).getMarket(network, a, b)!;
+    expect(market.stepTicks).toBe(PRODUCT_MARKET.stepTicks);
+    expect(market.defaultDuration).toBe(PRODUCT_MARKET.duration);
+    expect(marketMetadataSchema.safeParse({ stepTicks: 1000 }).success).toBe(
+      false,
+    );
+    expect(
+      marketMetadataSchema.safeParse({ defaultDuration: 30 }).success,
+    ).toBe(false);
   });
   it("validates pairs independently and rejects static token metadata", () => {
     const clone = () => structuredClone(list);

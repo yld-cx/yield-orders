@@ -1,3 +1,4 @@
+import { PRODUCT_MARKET } from "../constants.ts";
 import { yieldListSchema, type YieldList } from "../schemas/yieldlist.ts";
 import type {
   Category,
@@ -28,6 +29,8 @@ export class Registry {
           };
           return {
             ...meta,
+            stepTicks: PRODUCT_MARKET.stepTicks,
+            defaultDuration: PRODUCT_MARKET.duration,
             network: id,
             key,
             token0: token(a),

@@ -10,31 +10,45 @@ const pair = `${a}:${b}`;
 const reversed = `${b.toUpperCase().replace("0X", "0x")}:${a}`;
 
 describe("shared RPC query keys", () => {
-  it("shares market lists across aliases while separating source and duration", () => {
-    const key = queryKeys.markets("base", 7, "all");
-    expect(key).toEqual(queryKeys.markets("eip155:8453", 7, "all"));
-    expect(key).not.toEqual(queryKeys.markets("base", 30, "all"));
-    expect(key).not.toEqual(queryKeys.markets("ethereum", 7, "all"));
-    expect(key).not.toEqual(queryKeys.markets("base", undefined, "trending"));
+  it("shares market lists across aliases while separating source", () => {
+    const key = queryKeys.markets("base", "all");
+    expect(key).toEqual(queryKeys.markets("eip155:8453", "all"));
+    expect(key).not.toEqual(queryKeys.markets("ethereum", "all"));
+    expect(key).not.toEqual(queryKeys.markets("base", "trending"));
+  });
+  it("keys lazy book reads by canonical pair, direction, duration, spacing and exact window", () => {
+    const key = queryKeys.ticks("base", pair, 1, 7, 100, [-196000, -195900]);
+    expect(key).toEqual(
+      queryKeys.ticks("eip155:8453", reversed, 1, 7, 100, [-196000, -195900]),
+    );
+    for (const other of [
+      queryKeys.ticks("ethereum", pair, 1, 7, 100, [-196000, -195900]),
+      queryKeys.ticks("base", pair, 0, 7, 100, [-196000, -195900]),
+      queryKeys.ticks("base", pair, 1, 7, 1000, [-196000, -195900]),
+      queryKeys.ticks("base", pair, 1, 7, 100, [-195800, -195700]),
+    ])
+      expect(other).not.toEqual(key);
   });
   it("invalidates each read group on the current network using shared key prefixes", async () => {
     const client = new QueryClient();
     const affected = [
-      queryKeys.ticks("base", pair, 0, 1000, 7),
-      queryKeys.ticks("base", `${b}:${c}`, 1000, 1000, 30),
+      queryKeys.ticks("base", pair, 0, 7, 100, [0]),
+      queryKeys.ticks("base", `${b}:${c}`, 1, 7, 100, [1000]),
       queryKeys.pair("base", pair),
       queryKeys.pair("base", `${b}:${c}`),
       queryKeys.portfolio("base", a),
       queryKeys.portfolio("base", b),
       queryKeys.quote("base", pair, 1n, 10n),
       queryKeys.balance("base", a, b),
+      queryKeys.assetTvl("base", a),
     ];
     const unaffected = [
-      queryKeys.ticks("ethereum", pair),
+      queryKeys.ticks("ethereum", pair, 0, 7, 100, [0]),
       queryKeys.pair("ethereum", pair),
       queryKeys.portfolio("ethereum", a),
       queryKeys.quote("ethereum", pair, 1n, 10n),
       queryKeys.balance("ethereum", a, b),
+      queryKeys.assetTvl("ethereum", a),
       queryKeys.token("base", a),
       queryKeys.tokenMetadata("base", a),
       queryKeys.deployment("base"),
@@ -48,6 +62,7 @@ describe("shared RPC query keys", () => {
         QUERY_NAMES.portfolio,
         QUERY_NAMES.quote,
         QUERY_NAMES.balance,
+        QUERY_NAMES.assetTvl,
       ].map((name) =>
         client.invalidateQueries({ queryKey: [name, "eip155:8453"] }),
       ),
@@ -94,19 +109,7 @@ describe("shared RPC query keys", () => {
       expect(other).not.toEqual(queryKeys.balance("base", a, b));
     client.clear();
   });
-  it("shares identical discovery reads while separating network, grid, duration and quote inputs", () => {
-    const key = queryKeys.ticks("base", pair, 0, 1000, 7);
-    expect(key).toEqual(queryKeys.ticks("eip155:8453", reversed, 0, 1000, 7));
-    for (const other of [
-      queryKeys.ticks("ethereum", pair, 0, 1000, 7),
-      queryKeys.ticks("base", `${a}:${c}`, 0, 1000, 7),
-      queryKeys.ticks("base", pair, 1000, 1000, 7),
-      queryKeys.ticks("base", pair, 0, 500, 7),
-      queryKeys.ticks("base", pair, 0, 1000, 30),
-      queryKeys.ticks("base", pair, 0, 1000),
-      queryKeys.ticks("base", pair, 0, 1000, 7, 1),
-    ])
-      expect(other).not.toEqual(key);
+  it("separates fresh quote amounts and tick ids", () => {
     expect(queryKeys.quote("base", pair, 1n, 10n)).toEqual(
       queryKeys.quote("eip155:8453", reversed, 1n, 10n),
     );

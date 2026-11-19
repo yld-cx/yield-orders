@@ -1,3 +1,4 @@
+import "server-only";
 import { getNetwork, type NetworkSlug } from "@yld-cx/sdk/ethereum";
 import { compactToken } from "@/lib/token-metadata";
 

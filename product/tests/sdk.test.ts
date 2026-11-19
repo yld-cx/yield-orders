@@ -315,6 +315,41 @@ describe("direct reads and write safety", () => {
       }).verifyDeployment(),
     ).resolves.toBeUndefined();
   });
+  it("reads an exact ten-level window on one side without a 30D scan", async () => {
+    const multicall = vi.fn(async ({ contracts }) =>
+      contracts.map(() => ({ status: "success", result: state })),
+    );
+    const sdk = client({ multicall });
+    const canonicalTicks = Array.from(
+      { length: 10 },
+      (_, i) => -196500 + i * 100,
+    );
+    const result = await sdk.discover(42n, {
+      canonicalTicks,
+      stepTicks: 100,
+      duration: 7,
+      direction: 1,
+      blockNumber: 123n,
+    });
+    expect(result.reads).toHaveLength(10);
+    expect(
+      result.reads.every(
+        (r) => r.identity.direction === 1 && r.identity.durationDays === 7,
+      ),
+    ).toBe(true);
+    expect(result.reads.map((r) => -r.identity.priceTick)).toEqual(
+      canonicalTicks,
+    );
+    expect(multicall).toHaveBeenCalledTimes(1);
+    await expect(sdk.discover(42n, { canonicalTicks: [0, 0] })).rejects.toThrow(
+      "Invalid discovery window",
+    );
+    await expect(
+      sdk.discover(42n, {
+        canonicalTicks: Array.from({ length: 258 }, (_, i) => i),
+      }),
+    ).rejects.toThrow("Invalid discovery window");
+  });
   it("keeps successful reads and distinguishes NotFound from failed RPC reads", async () => {
     const { encodeErrorResult } = await import("viem");
     const missing = new BaseError("revert", {

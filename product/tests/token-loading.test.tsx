@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PublicClient } from "viem";
 import { EthereumClient, snappedPrice } from "@yld-cx/sdk/ethereum";
-import { DISCOVERY_DEFAULTS, type Token } from "@yld-cx/sdk";
+import { DISCOVERY_DEFAULTS, PRODUCT_MARKET, type Token } from "@yld-cx/sdk";
 import { queryKeys } from "@/lib/query-keys";
 import { useMarket, useToken } from "@/hooks/use-market";
 import { calculatedBaseTick, discoveryBaseTick } from "@/lib/market-values";
@@ -169,7 +169,7 @@ describe("canonical reference price discovery", () => {
     });
     const result = renderHook(client, () => useMarket("base", `${a}:${b}`));
     expect(result.market!.baseTick).toBe(
-      snappedPrice("5000", 18, 6, 1000).priceTick,
+      snappedPrice("5000", 18, 6, PRODUCT_MARKET.stepTicks).priceTick,
     );
     expect(discoveryBaseTick("1000", result.market!)).toBe(1000);
     expect(discoveryBaseTick("1001", result.market!)).toBe(

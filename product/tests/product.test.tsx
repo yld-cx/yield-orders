@@ -7,7 +7,7 @@ import {
   marketFilterParams,
   MarketTab,
 } from "@/lib/market-filters";
-import { Category, Duration } from "@yld-cx/sdk";
+import { Category } from "@yld-cx/sdk";
 import { TransactionPreview } from "@/components/transactions/transaction-preview";
 import { distinctConnectors } from "@/components/wallet/wallet-connect";
 import type { Connector } from "wagmi";
@@ -56,7 +56,6 @@ describe("product identity and security", () => {
     const filters = {
       search: "WETH / USDC +",
       tag: Category.BlueChip,
-      duration: Duration.Monthly,
       network: "ethereum",
       page: 3,
     } as const;
@@ -85,7 +84,6 @@ describe("product identity and security", () => {
     ).toEqual({
       search: "",
       tag: MarketTab.YieldList,
-      duration: Duration.Weekly,
       network: "base",
       page: 1,
     });
