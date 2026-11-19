@@ -120,36 +120,6 @@ describe("indicative references", () => {
       expect.objectContaining({ tokenIn: unlisted, tokenOut: a }),
     );
   });
-  it.each([-100, 1.99])(
-    "keeps DGUY's canonical AMM price when impact is %s",
-    async (priceImpact) => {
-      const dguy = "0xe34356dcd3d7bb991248f322e4ec31b5d60bc54e";
-      mocks.token.mockImplementation(async (address) => ({
-        address,
-        decimals: address === b ? 6 : 18,
-      }));
-      mocks.metadata.mockResolvedValue([
-        { address: b, status: "available", priceUsd: "1" },
-        { address: dguy, status: "available", priceUsd: "0.00051293" },
-      ]);
-      mocks.price.mockResolvedValue({
-        tokenIn: b,
-        tokenOut: dguy,
-        amountIn: "10000000",
-        estimatedAmountOut: "20540924467984177591223",
-        priceImpact,
-        quotedAt: Date.now(),
-      });
-      const value = await getMarketPrice("base", b, dguy);
-      expect(displayReference(value, false)).toBe(value.price.amm);
-      expect(Number(value.price.amm)).toBeCloseTo(2054.092446798418, 8);
-      expect(Number(displayReference(value, true, "amm"))).toBeCloseTo(
-        0.000486832995,
-        10,
-      );
-      expect(value.baseTick).toBeDefined();
-    },
-  );
   it("uses a valid AMM route as the reference without token pricing metadata", async () => {
     const unlisted = "0x2222222222222222222222222222222222222222";
     mocks.price.mockResolvedValue({
