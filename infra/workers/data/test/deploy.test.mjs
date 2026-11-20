@@ -113,10 +113,10 @@ test("public RPCs are configured for every supported production network with no 
       "https://ethereum-rpc.publicnode.com",
       "https://gateway.tenderly.co/public/mainnet",
     ],
-    base: ["https://mainnet.base.org", "https://base-rpc.publicnode.com"],
+    base: ["https://base-rpc.publicnode.com", "https://mainnet.base.org"],
     robinhood: [
-      "https://rpc.mainnet.chain.robinhood.com",
       "https://robinhood-rpc.publicnode.com",
+      "https://rpc.mainnet.chain.robinhood.com",
     ],
   });
   for (const network of supportedNetworks)
