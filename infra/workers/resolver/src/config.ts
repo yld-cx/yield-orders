@@ -2,7 +2,7 @@ import type { Address } from "viem";
 import type { SwapChain } from "@yld-cx/sdk/uniswap";
 
 export const LIMITS = {
-  markets: 25,
+  markets: 1,
   candidates: 8,
   batch: 8,
   durationMs: 120000,

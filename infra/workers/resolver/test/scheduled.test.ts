@@ -6,7 +6,7 @@ import { scheduled } from "../src/scheduled.ts";
 import type { Env } from "../src/shared.ts";
 
 const controller = {
-  cron: "*/5 * * * *",
+  cron: "* * * * *",
   scheduledTime: Date.now(),
   noRetry() {},
 } as ScheduledController;
@@ -41,7 +41,7 @@ test("shipped cron configuration enables live execution and its network JSON par
     "RPC_URLS",
   ]);
   assert.equal(config.vars?.DRY_RUN, "false");
-  assert.deepEqual(config.triggers?.crons, ["*/5 * * * *"]);
+  assert.deepEqual(config.triggers?.crons, ["* * * * *"]);
   const h = harness(
     String(config.vars?.NETWORKS),
     String(config.vars?.RESOLVER_ENABLED),

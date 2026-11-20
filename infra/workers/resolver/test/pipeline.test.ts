@@ -78,7 +78,14 @@ for (const dryRun of ["true", "false"])
     );
   });
 
-for (const [promising, priceImpact, mode, threshold, withKey] of [
+for (const [
+  promising,
+  priceImpact,
+  mode,
+  threshold,
+  withKey,
+  initialCursor = 0,
+] of [
   [true, 0.01, 0, undefined, false],
   [false, 0.01, 0, undefined, false],
   [true, -100, 0, undefined, false],
@@ -86,8 +93,9 @@ for (const [promising, priceImpact, mode, threshold, withKey] of [
   [true, 0.01, 2, undefined, false],
   [true, 0.01, 0, "1", false],
   [true, 0.01, 0, "0.001", true],
+  [true, 0.01, 0, undefined, false, 2],
 ] as const)
-  test(`complete resolver dry-run: promising=${promising}, impact=${priceImpact}, mode=${mode}, minimum=${threshold ?? 0}, signer=${withKey}`, async (t) => {
+  test(`complete resolver dry-run: promising=${promising}, impact=${priceImpact}, mode=${mode}, minimum=${threshold ?? 0}, signer=${withKey}, cursor=${initialCursor}`, async (t) => {
     const config = manifest.chains["1"];
     const saved = structuredClone(config);
     Object.assign(config, {
@@ -113,15 +121,19 @@ for (const [promising, priceImpact, mode, threshold, withKey] of [
         if (new URL(String(url)).pathname === marketsApi.pathname) {
           assert.equal(new URL(String(url)).origin, marketsApi.origin);
           assert.equal(new URL(String(url)).searchParams.get("tag"), "all");
-          return Response.json({
-            markets: [
-              {
-                network: "eip155:1",
-                token0: { address: A },
-                token1: { address: Q },
-              },
-            ],
+          const markets = [assets.accountingToken, assets.wrappedNative].map(
+            (token) => ({
+              network: "eip155:1",
+              token0: { address: A },
+              token1: { address: token },
+            }),
+          );
+          markets.splice(initialCursor, 0, {
+            network: "eip155:1",
+            token0: { address: A },
+            token1: { address: Q },
           });
+          return Response.json({ markets });
         }
         assert.equal(
           new URL(String(url)).origin,
@@ -358,7 +370,7 @@ for (const [promising, priceImpact, mode, threshold, withKey] of [
       },
       estimateContractGas: async () => 2500000n,
     } as unknown as PublicClient;
-    const stored = new Map<string, unknown>();
+    const stored = new Map<string, unknown>([["marketCursor", initialCursor]]);
     const state = {
       get: async (key: string) => stored.get(key),
       put: async (key: string, value: unknown) => {
@@ -374,6 +386,7 @@ for (const [promising, priceImpact, mode, threshold, withKey] of [
       ...(withKey ? { RESOLVER_SIGNING_KEY: TEST_KEY } : {}),
     } as Env;
     await resolveChain(env, "ethereum", state, { client: rpc });
+    assert.equal(stored.get("marketCursor"), (initialCursor + 1) % 3);
     assert.equal(
       stored.has("pending"),
       false,
