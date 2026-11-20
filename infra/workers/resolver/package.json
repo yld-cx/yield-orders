@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@12.0.2",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
+    "setup": "npm ci --prefix ../../../product && npm run build --prefix ../../../product --workspace=@yld-cx/sdk && npm ci",
     "dev": "wrangler dev --test-scheduled",
     "typecheck": "tsc --noEmit",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.ts",

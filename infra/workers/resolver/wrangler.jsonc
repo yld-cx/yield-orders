@@ -2,8 +2,8 @@
   "name": "yld-resolver",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-16",
-  "compatibility_flags": ["nodejs_compat"],
   "triggers": { "crons": ["*/5 * * * *"] },
+  "observability": { "enabled": true },
   "durable_objects": {
     "bindings": [{ "name": "CHAINS", "class_name": "ChainCoordinator" }],
   },
