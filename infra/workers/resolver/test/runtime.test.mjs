@@ -25,7 +25,7 @@ function runtime(vars = {}, options = {}) {
     }),
   );
 }
-test("coordinator logs the error kind without secrets and releases its running guard after failure", async () => {
+test("coordinator logs HTTP diagnostics without secrets and releases its running guard after failure", async () => {
   const key = `0x${"ab".repeat(32)}`;
   const apiKey = "runtime-api-secret";
   const rpc =
@@ -66,11 +66,12 @@ test("coordinator logs the error kind without secrets and releases its running g
       .map(JSON.parse);
     assert.equal(failures.length, 2);
     for (const failure of failures) {
-      assert.deepEqual(failure, {
-        type: "resolver_chain_failed",
-        error: "HttpRequestError",
-        stage: "rpc_chain_check",
-      });
+      assert.equal(failure.type, "resolver_chain_failed");
+      assert.equal(failure.error, "HttpRequestError");
+      assert.equal(failure.status, 503);
+      assert.equal(failure.stage, "rpc_chain_check");
+      assert.match(failure.message, /HTTP request failed/);
+      assert.match(failure.message, /Upstream unavailable/);
     }
     const output = JSON.stringify(failures);
     for (const secret of [
