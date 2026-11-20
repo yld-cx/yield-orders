@@ -9,7 +9,7 @@ import { getNetwork } from "@yld-cx/sdk/ethereum";
 const config = experimental_readRawConfig({
   config: fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)),
 }).rawConfig;
-function runtime(vars = {}) {
+function runtime(vars = {}, options = {}) {
   return new Miniflare(
     convertV4MiniflareOptions({
       name: "resolver",
@@ -21,9 +21,71 @@ function runtime(vars = {}) {
         CHAINS: { className: "ChainCoordinator", useSQLite: true },
       },
       bindings: { ...config.vars, ...vars },
+      ...options,
     }),
   );
 }
+test("coordinator logs the error kind without secrets and releases its running guard after failure", async () => {
+  const key = `0x${"ab".repeat(32)}`;
+  const apiKey = "runtime-api-secret";
+  const rpc =
+    "https://provider.test/v2/runtime-rpc-secret?key=runtime-query-secret";
+  const logs = [];
+  let requests = 0;
+  const mf = runtime(
+    {
+      RESOLVER_ENABLED: "true",
+      DRY_RUN: "true",
+      RESOLVER_SIGNING_KEY: key,
+      UNISWAP_API_KEY: apiKey,
+      RPC_URLS: JSON.stringify({ base: [rpc] }),
+    },
+    {
+      handleStructuredLogs: (entry) => logs.push(entry.message),
+      outboundService: () => {
+        requests++;
+        return new Response(`Upstream unavailable ${rpc} ${key} ${apiKey}`, {
+          status: 503,
+        });
+      },
+    },
+  );
+  try {
+    const namespace = await mf.getDurableObjectNamespace("CHAINS");
+    const coordinator = namespace.get(namespace.idFromName("base"));
+    for (let i = 0; i < 2; i++) {
+      const response = await coordinator.fetch(
+        "https://resolver.internal/base",
+      );
+      assert.equal(response.status, 503);
+      assert.equal(await response.text(), "Chain run failed");
+    }
+    assert.equal(requests, 4);
+    const failures = logs
+      .filter((line) => line.includes("resolver_chain_failed"))
+      .map(JSON.parse);
+    assert.equal(failures.length, 2);
+    for (const failure of failures) {
+      assert.deepEqual(failure, {
+        type: "resolver_chain_failed",
+        error: "HttpRequestError",
+        stage: "rpc_chain_check",
+      });
+    }
+    const output = JSON.stringify(failures);
+    for (const secret of [
+      key,
+      apiKey,
+      rpc,
+      "runtime-rpc-secret",
+      "runtime-query-secret",
+      "provider.test",
+    ])
+      assert.equal(output.includes(secret), false);
+  } finally {
+    await mf.dispose();
+  }
+});
 test("packaged worker and SQLite coordinator start safely in the Cloudflare runtime", async () => {
   const mf = runtime({ RESOLVER_ENABLED: "false", DRY_RUN: "true" });
   try {
