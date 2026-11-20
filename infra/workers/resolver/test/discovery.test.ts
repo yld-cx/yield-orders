@@ -234,27 +234,54 @@ test("market identities need no configured baseTick and ignore cached centers", 
           network: "eip155:8453",
           token0: { address: Q },
           token1: { address: A },
+          assetTLV: "1",
         },
         {
           network: "eip155:8453",
           token0: { address: A },
           token1: { address: Q },
           baseTick: "stale or invalid",
+          assetTLV: "1",
         },
-        { network: "eip155:1", token0: { address: A }, token1: { address: Q } },
+        {
+          network: "eip155:1",
+          token0: { address: A },
+          token1: { address: Q },
+          assetTLV: "1",
+        },
         {
           network: "eip155:8453",
           token0: { address: A },
           token1: { address: A },
+          assetTLV: "1",
         },
         {
           network: "eip155:8453",
           token0: { address: "invalid" },
           token1: { address: Q },
+          assetTLV: "1",
         },
       ],
     });
   });
+  assert.deepEqual(await markets("https://yld.cx/api/markets", 8453), [market]);
+});
+
+test("markets without positive assetTLV are excluded before deduplication", async (t) => {
+  const entry = {
+    network: "eip155:8453",
+    token0: { address: A },
+    token1: { address: Q },
+  };
+  const empty = [undefined, null, "", "0", "-1", "invalid", {}, 1].map(
+    (assetTLV) => ({ ...entry, assetTLV }),
+  );
+  let entries = empty;
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({ markets: entries }),
+  );
+  assert.deepEqual(await markets("https://yld.cx/api/markets", 8453), []);
+  entries = [...empty, { ...entry, assetTLV: (1n << 200n).toString() }];
   assert.deepEqual(await markets("https://yld.cx/api/markets", 8453), [market]);
 });
 

@@ -72,11 +72,13 @@ export function rpcFor(n: Network, timeout: number): Rpc {
           // A full pass through the endpoints shares one timeout budget.
           timeout: Math.max(1, Math.floor(timeout / n.rpcUrls.length)),
           retryCount: 0,
+          batch: { batchSize: 100, wait: 10 },
           fetchFn: boundedFetch,
         }),
       ),
       { rank: false, retryCount: 2, retryDelay: 500 },
     ),
+    batch: { multicall: { wait: 10 } },
   });
   return {
     head: () => client.getBlockNumber({ cacheTime: 0 }),

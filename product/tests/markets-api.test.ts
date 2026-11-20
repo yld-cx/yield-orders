@@ -61,7 +61,13 @@ describe("lightweight market explorer", () => {
           configs[2],
           configs[10],
           ...configs.filter((_, index) => index !== 2 && index !== 10),
-        ],
+        ].map((market) =>
+          market === configs[2]
+            ? { ...market, assetTLV: "1" }
+            : market === configs[10]
+              ? { ...market, assetTLV: "1000" }
+              : market,
+        ),
       });
       expect(response.headers.get("cache-control")).toBe(
         "public, max-age=0, s-maxage=86400",
@@ -74,9 +80,25 @@ describe("lightweight market explorer", () => {
       expect(mocks.discovery).not.toHaveBeenCalled();
     },
   );
-  it("preserves YieldList order when all asset TVLs are zero", async () => {
+  it("preserves YieldList order and omits assetTLV when all asset TVLs are zero", async () => {
     const response = await GET(request());
     expect(await response.json()).toEqual({ markets: configs });
+  });
+  it("preserves raw asset TLV precision without adding liability reads", async () => {
+    const amount = (1n << 200n) + 123n;
+    mocks.liability.mockImplementation(async (asset) =>
+      asset === assetOf(configs[0]) ? amount : 0n,
+    );
+    const body = await (await GET(request())).json();
+    expect(
+      body.markets.find(
+        (market: { key: string }) => market.key === configs[0].key,
+      ).assetTLV,
+    ).toBe(amount.toString());
+    expect(mocks.liability).toHaveBeenCalledTimes(
+      new Set(configs.map(assetOf)).size,
+    );
+    expect(configs[0]).not.toHaveProperty("assetTLV");
   });
   it("coalesces concurrent YieldList sorting checks", async () => {
     await Promise.all([GET(request()), GET(request())]);
@@ -113,6 +135,11 @@ describe("lightweight market explorer", () => {
     expect(body.markets[0].key).toContain(
       "0xffffffffffffffffffffffffffffffffffffffff",
     );
+    expect(
+      body.markets.every(
+        (market: { assetTLV?: string }) => !Object.hasOwn(market, "assetTLV"),
+      ),
+    ).toBe(true);
     expect(mocks.sdk).not.toHaveBeenCalled();
     expect(mocks.metadata).not.toHaveBeenCalled();
     expect(response.headers.get("cache-control")).toBe(
