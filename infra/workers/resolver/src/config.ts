@@ -35,15 +35,15 @@ export const chainConfig: Record<
     wrappedNative: "0x4200000000000000000000000000000000000006",
     accountingToken: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
     accountingDecimals: 6,
-    rpcUrls: ["https://mainnet.base.org", "https://base-rpc.publicnode.com"],
+    rpcUrls: ["https://base-rpc.publicnode.com", "https://mainnet.base.org"],
   },
   4663: {
     wrappedNative: "0x0bd7d308f8e1639fab988df18a8011f41eacad73",
     accountingToken: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
     accountingDecimals: 6,
     rpcUrls: [
-      "https://rpc.mainnet.chain.robinhood.com",
       "https://robinhood-rpc.publicnode.com",
+      "https://rpc.mainnet.chain.robinhood.com",
     ],
   },
 };

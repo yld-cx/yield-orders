@@ -1,5 +1,8 @@
 {
+  "$schema": "node_modules/wrangler/config-schema.json",
   "name": "yld-resolver",
+  "workers_dev": false,
+  "preview_urls": false,
   "main": "src/index.ts",
   "compatibility_date": "2026-11-16",
   "triggers": { "crons": ["*/5 * * * *"] },
@@ -12,7 +15,7 @@
     "RESOLVER_ENABLED": "true",
     "DRY_RUN": "false",
     "NETWORKS": "[\"base\"]",
-    "RPC_URLS": "{\"ethereum\":[\"https://ethereum-rpc.publicnode.com\",\"https://gateway.tenderly.co/public/mainnet\"],\"base\":[\"https://mainnet.base.org\",\"https://base-rpc.publicnode.com\"],\"robinhood\":[\"https://rpc.mainnet.chain.robinhood.com\",\"https://robinhood-rpc.publicnode.com\"]}",
+    "RPC_URLS": "{\"ethereum\":[\"https://ethereum-rpc.publicnode.com\",\"https://gateway.tenderly.co/public/mainnet\"],\"base\":[\"https://base-rpc.publicnode.com\",\"https://mainnet.base.org\"],\"robinhood\":[\"https://robinhood-rpc.publicnode.com\",\"https://rpc.mainnet.chain.robinhood.com\"]}",
     "MARKETS_API": "https://yld.cx/api/markets",
   },
   "secrets": {

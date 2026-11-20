@@ -26,7 +26,7 @@ const defaults: Record<
   },
   base: {
     chain: base,
-    rpcUrls: ["https://mainnet.base.org", "https://base-rpc.publicnode.com"],
+    rpcUrls: ["https://base-rpc.publicnode.com", "https://mainnet.base.org"],
     confirmations: 64,
     overlap: 32,
     gecko: "base",
@@ -34,8 +34,8 @@ const defaults: Record<
   robinhood: {
     chain: robinhood,
     rpcUrls: [
-      "https://rpc.mainnet.chain.robinhood.com",
       "https://robinhood-rpc.publicnode.com",
+      "https://rpc.mainnet.chain.robinhood.com",
     ],
     confirmations: 64,
     overlap: 32,
