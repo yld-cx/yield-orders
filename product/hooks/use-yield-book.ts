@@ -61,11 +61,7 @@ export function useYieldBook(
     .flatMap((tick) =>
       tickCandidates(pairId, tick, PRODUCT_MARKET.stepTicks, 0),
     )
-    .filter(
-      (tick) =>
-        tick.direction === direction &&
-        tick.durationDays === PRODUCT_MARKET.duration,
-    );
+    .filter((tick) => tick.direction === direction);
   const reads = new Map(
     discovery.data?.reads.map((read) => [read.identity.id, read]),
   );

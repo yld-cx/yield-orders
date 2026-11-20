@@ -1,4 +1,4 @@
-import resolverAbi from "../../../../protocol/ethereum/abi/YieldResolver.json" with { type: "json" };
+import resolverAbi from "@yld-cx/ethereum-protocol/abi/YieldResolver.json" with { type: "json" };
 import type { Abi, Address, PublicClient } from "viem";
 import type { Candidate } from "./shared.ts";
 export const abi = resolverAbi as Abi;

@@ -15,6 +15,7 @@
     "check": "npm run typecheck && npm test && npm run build && npm run test:runtime"
   },
   "dependencies": {
+    "@yld-cx/ethereum-protocol": "file:../../../protocol/ethereum",
     "@yld-cx/sdk": "file:../../../product/packages/sdk",
     "viem": "2.57.6"
   },

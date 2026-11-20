@@ -351,7 +351,7 @@ export class EthereumClient {
       baseTick?: number;
       stepTicks?: number;
       radius?: number;
-      /** Omit to discover both supported durations (Yield Book). */
+      /** Defaults to weekly discovery. */
       duration?: Duration;
       /** Omit to read both sides. */
       direction?: TickIdentity["direction"];
@@ -368,14 +368,24 @@ export class EthereumClient {
       throw new Error("Invalid discovery window");
     const candidates = config.canonicalTicks
       ? config.canonicalTicks.flatMap((tick) =>
-          tickCandidates(pairId, tick, config.stepTicks ?? 1, 0),
+          tickCandidates(
+            pairId,
+            tick,
+            config.stepTicks ?? 1,
+            0,
+            config.duration,
+          ),
         )
-      : tickCandidates(pairId, config.baseTick, config.stepTicks, radius);
+      : tickCandidates(
+          pairId,
+          config.baseTick,
+          config.stepTicks,
+          radius,
+          config.duration,
+        );
     const identities = candidates.filter(
       (tick) =>
-        (config.duration === undefined ||
-          tick.durationDays === config.duration) &&
-        (config.direction === undefined || tick.direction === config.direction),
+        config.direction === undefined || tick.direction === config.direction,
     );
     const blockNumber =
       config.blockNumber ?? (await this.publicClient.getBlockNumber());

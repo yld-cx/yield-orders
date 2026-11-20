@@ -60,7 +60,7 @@ const display = [market.token0, market.token1] as const;
 const window = bookWindow(initialBookWindow(market.baseTick));
 const identities = window
   .flatMap((tick) => tickCandidates(42n, tick, 100, 0))
-  .filter((t) => t.direction === 1 && t.durationDays === 7);
+  .filter((t) => t.direction === 1);
 const state: TickState = {
   asset: b,
   quote: a,
@@ -184,7 +184,7 @@ describe("Limit execution", () => {
     async (direction) => {
       readBook();
       const identity = tickCandidates(42n, market.baseTick, 100, 0).find(
-        (t) => t.direction === direction && t.durationDays === 7,
+        (t) => t.direction === direction,
       )!;
       const level: BookLevel = {
         ...identity,

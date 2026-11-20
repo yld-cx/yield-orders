@@ -46,7 +46,7 @@ export class UniswapClient {
         `https://trade-api.gateway.uniswap.org/v1/${endpoint}`,
         {
           method: "POST",
-          redirect: "error",
+          redirect: "manual",
           cache: "no-store",
           signal: this.options.signal
             ? AbortSignal.any([this.options.signal, AbortSignal.timeout(10000)])

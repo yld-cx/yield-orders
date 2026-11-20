@@ -368,7 +368,7 @@ describe("direct reads and write safety", () => {
         { status: "success", result: state },
       ],
     });
-    const result = await sdk.discover(42n, { radius: 0 });
+    const result = await sdk.discover(42n, { canonicalTicks: [0, 100] });
     expect(result.reads.map((r) => r.status)).toEqual([
       "exists",
       "missing",
@@ -391,6 +391,9 @@ describe("direct reads and write safety", () => {
     ).toBe(true);
     expect(result.radius).toBe(DISCOVERY_DEFAULTS.radius);
     expect(result.reads).toHaveLength(tickCandidates(42n).length);
+    expect(result.reads.every((read) => read.identity.durationDays === 7)).toBe(
+      true,
+    );
   });
   it.each([7, 30] as const)(
     "discovers only the selected %sD duration",
@@ -400,8 +403,12 @@ describe("direct reads and write safety", () => {
           contracts.map(() => ({ status: "success", result: state })),
       );
       const sdk = client({ getBlockNumber: async () => 12n, multicall });
-      const expected = tickCandidates(42n).filter(
-        (tick) => tick.durationDays === duration,
+      const expected = tickCandidates(
+        42n,
+        undefined,
+        undefined,
+        undefined,
+        duration,
       );
       const result = await sdk.discover(42n, { duration });
       expect(result.reads.map((read) => read.identity)).toEqual(expected);
@@ -410,7 +417,7 @@ describe("direct reads and write safety", () => {
           call.contracts.map((contract) => contract.args[0]),
         ),
       ).toEqual(expected.map((tick) => tick.id));
-      expect(expected).toHaveLength(tickCandidates(42n).length / 2);
+      expect(expected).toHaveLength(tickCandidates(42n).length);
     },
   );
   it.each([0, 1] as const)(

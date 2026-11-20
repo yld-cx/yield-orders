@@ -13,7 +13,7 @@ import {
 } from "@yld-cx/sdk";
 import type { Address, PublicClient } from "viem";
 import type { MarketIdentity } from "./markets.ts";
-export const INITIAL_RADIUS = 2;
+import { LIMITS } from "./config.ts";
 
 export function baseTickFromPrice(
   market: MarketIdentity,
@@ -54,76 +54,83 @@ export function promising(
   return false;
 }
 
-export function discoveryRadii(maximum = 4) {
-  if (!Number.isInteger(maximum) || maximum < INITIAL_RADIUS || maximum > 8)
-    throw new Error("Discovery radius must be between 2 and 8");
-  const radii = [INITIAL_RADIUS];
-  while (radii.at(-1)! < maximum)
-    radii.push(Math.min(maximum, radii.at(-1)! * 2));
-  return radii;
-}
-
-/** Stop iteration once a window yields executable opportunities. */
-export async function* ticks(
+/** Read the complete configured window in one multicall at the quote block. */
+export async function ticks(
   client: PublicClient,
   yld: Address,
   market: MarketIdentity,
   reference: SwapPriceResult,
   blockNumber: bigint,
-  maximumRadius = 4,
+  radius: number = LIMITS.discoveryRadius,
 ) {
-  const baseTick = baseTickFromPrice(market, reference);
-  const seen = new Set<bigint>();
-  for (const radius of discoveryRadii(maximumRadius)) {
-    if (Date.now() - reference.quotedAt > 40000) return;
-    const identities = tickCandidates(
-      market.pairId,
-      baseTick,
-      PRODUCT_MARKET.stepTicks,
-      radius,
-    )
-      .filter((tick) => tick.durationDays === PRODUCT_MARKET.duration)
-      .filter((t) => {
-        if (seen.has(t.id)) return false;
-        seen.add(t.id);
-        return true;
-      });
-    const result = [];
-    for (
-      let offset = 0;
-      offset < identities.length;
-      offset += DISCOVERY_BATCH_SIZE
-    ) {
-      result.push(
-        ...(await client.multicall({
-          blockNumber,
-          allowFailure: true,
-          contracts: identities
-            .slice(offset, offset + DISCOVERY_BATCH_SIZE)
-            .map((t) => ({
-              address: yld,
-              abi: protocolAbi,
-              functionName: "getTick" as const,
-              args: [t.id] as const,
-            })),
-        })),
-      );
-    }
-    const available = result.flatMap((r, i) =>
-      r.status === "success" &&
-      r.result.availableSupply > 0n &&
-      promising(r.result, market, reference)
-        ? [{ id: identities[i].id, ...r.result }]
-        : [],
+  if (
+    !Number.isInteger(radius) ||
+    radius < 0 ||
+    radius > LIMITS.discoveryRadius
+  )
+    throw new Error(
+      `Discovery radius must be between 0 and ${LIMITS.discoveryRadius}`,
     );
-    yield { baseTick, radius, checked: identities.length, ticks: available };
-  }
+  const baseTick = baseTickFromPrice(market, reference);
+  if (Date.now() - reference.quotedAt > 40000)
+    return { baseTick, radius, checked: 0, ticks: [] };
+  const identities = tickCandidates(
+    market.pairId,
+    baseTick,
+    PRODUCT_MARKET.stepTicks,
+    radius,
+  );
+  if (identities.length > DISCOVERY_BATCH_SIZE)
+    throw new Error("Discovery window exceeds multicall limit");
+  const result = await client.multicall({
+    blockNumber,
+    allowFailure: true,
+    batchSize: 0,
+    contracts: identities.map((tick) => ({
+      address: yld,
+      abi: protocolAbi,
+      functionName: "getTick" as const,
+      args: [tick.id] as const,
+    })),
+  });
+  const available = result.flatMap((read, i) =>
+    read.status === "success" &&
+    read.result.availableSupply > 0n &&
+    promising(read.result, market, reference)
+      ? [{ id: identities[i].id, ...read.result }]
+      : [],
+  );
+  return { baseTick, radius, checked: identities.length, ticks: available };
 }
 export function sizes(available: bigint, cap: bigint) {
-  const maximum = available < cap ? available : cap;
+  const bounded = available < cap ? available : cap;
+  const maximum = bounded < 10n ** 30n ? bounded : 10n ** 30n;
   return [
     ...new Set([100n, 50n, 25n, 10n].map((p) => (maximum * p) / 100n)),
   ].filter((n) => n > 0n && n <= 10n ** 30n);
+}
+export function referenceAmount(decimals: number) {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 30)
+    throw new Error("Unsupported token decimals");
+  // A thousandth of a token, rounded up for low-decimal assets.
+  return 10n ** BigInt(Math.max(0, decimals - 3));
+}
+
+export function fundedSizes(
+  tick: { availableSupply: bigint; priceX128: bigint },
+  assetLiquidity: bigint,
+  quoteLiquidity: bigint,
+  cap: bigint,
+  bridgeQuoteLiquidity = 0n,
+) {
+  if (tick.priceX128 <= 0n) return [];
+  const fundingQuote =
+    quoteLiquidity > bridgeQuoteLiquidity
+      ? quoteLiquidity
+      : bridgeQuoteLiquidity;
+  const quoteFunded = (fundingQuote << 128n) / tick.priceX128;
+  const direct = assetLiquidity > quoteFunded ? assetLiquidity : quoteFunded;
+  return sizes(tick.availableSupply, direct > cap ? cap : direct);
 }
 export function quotePrincipal(amount: bigint, priceX128: bigint) {
   return (amount * priceX128 + (1n << 128n) - 1n) >> 128n;

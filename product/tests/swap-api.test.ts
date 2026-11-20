@@ -75,6 +75,7 @@ function service(
   const calls: {
     endpoint: string;
     headers: Headers;
+    redirect?: RequestRedirect;
     body: Record<string, unknown>;
   }[] = [];
   const fetcher = vi.fn(
@@ -82,6 +83,7 @@ function service(
       calls.push({
         endpoint: String(url).split("/").at(-1)!,
         headers: new Headers(options?.headers),
+        redirect: options?.redirect,
         body: JSON.parse(options?.body as string),
       });
       const body = responses.shift();
@@ -99,6 +101,19 @@ function service(
   };
 }
 describe("Uniswap SDK integration", () => {
+  it("rejects redirects without forwarding the API key to another endpoint", async () => {
+    const s = service([
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://elsewhere.test" },
+      }),
+    ]);
+    await expect(s.client.price(input)).rejects.toThrow(
+      "Swap provider unavailable",
+    );
+    expect(s.calls).toHaveLength(1);
+    expect(s.calls[0].redirect).toBe("manual");
+  });
   it("accepts split and mixed routes without requoting or decoding calldata", async () => {
     const split = response();
     split.quote.route.push([...split.quote.route[0]]);

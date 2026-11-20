@@ -7,18 +7,16 @@ export interface MarketIdentity {
   token1: Address;
 }
 export async function markets(
-  origin: string,
+  endpoint: string,
   chainId: number,
 ): Promise<MarketIdentity[]> {
-  const url = new URL("/api/markets", origin);
+  const url = new URL(endpoint);
   if (url.protocol !== "https:" || url.username || url.password)
-    throw new Error("HTTPS markets origin required");
-  url.search = new URLSearchParams({
-    chainId: String(chainId),
-    tag: "all",
-  }).toString();
+    throw new Error("HTTPS markets API URL required");
+  url.searchParams.set("chainId", String(chainId));
+  url.searchParams.set("tag", "all");
   const response = await fetch(url, {
-    redirect: "error",
+    redirect: "manual",
     signal: AbortSignal.timeout(8000),
   });
   if (!response.ok) throw new Error("Markets unavailable");
