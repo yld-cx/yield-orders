@@ -1,6 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { resolveChain } from "./execute.ts";
-import { errorKind, log, type Env } from "./shared.ts";
+import { errorDetails, log, type Env } from "./shared.ts";
 import { scheduled } from "./scheduled.ts";
 
 export class ChainCoordinator extends DurableObject<Env> {
@@ -22,7 +22,7 @@ export class ChainCoordinator extends DurableObject<Env> {
       log({
         type: "resolver_chain_failed",
         stage,
-        error: errorKind(e),
+        ...errorDetails(e, this.env),
       });
       return new Response("Chain run failed", { status: 503 });
     } finally {
