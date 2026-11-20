@@ -9,6 +9,35 @@ const env = {
   RPC_URLS: JSON.stringify({ base: urls }),
 } as Env;
 
+test("concurrent deployment reads share one HTTP batch", async (t) => {
+  const batches: { method: string; id: number }[][] = [];
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.equal(String(url), urls[0]);
+    const requests = JSON.parse(String(init.body));
+    assert.ok(Array.isArray(requests));
+    batches.push(requests);
+    return Response.json(
+      requests.map((request: { method: string; id: number }) => {
+        assert.ok(["eth_chainId", "eth_getCode"].includes(request.method));
+        return {
+          jsonrpc: "2.0",
+          id: request.id,
+          result: request.method === "eth_chainId" ? "0x2105" : "0x00",
+        };
+      }),
+    );
+  });
+  const state = { get: async () => undefined } as unknown as State;
+  await assert.rejects(
+    resolveChain(env, "base", state),
+    /Resolver identity mismatch/,
+  );
+  assert.deepEqual(
+    batches.map((batch) => batch.map((request) => request.method)),
+    [["eth_chainId"], Array(5).fill("eth_getCode")],
+  );
+});
+
 test("RPC fallback retries a transient outage across the providers once", async (t) => {
   const calls: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {

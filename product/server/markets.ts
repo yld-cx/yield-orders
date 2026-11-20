@@ -8,9 +8,10 @@ import { getSdk } from "@/lib/rpc";
 import { fetchTokenMetadata } from "@/lib/token-metadata";
 import { trendingMarkets, USD_ADDRESSES } from "@/lib/trending-markets";
 import { discoverTokens } from "@/server/token-discovery";
+import type { MarketList } from "@/lib/market-list";
 
 const trendingLoads = new Map<NetworkSlug, Promise<MarketConfiguration[]>>();
-const yieldListLoads = new Map<NetworkSlug, Promise<MarketConfiguration[]>>();
+const yieldListLoads = new Map<NetworkSlug, Promise<MarketList["markets"]>>();
 
 export function getYieldListMarkets(network: NetworkSlug) {
   let result = yieldListLoads.get(network);
@@ -43,7 +44,12 @@ export function getYieldListMarkets(network: NetworkSlug) {
         .sort(
           (a, b) => Number(funded.has(b.asset)) - Number(funded.has(a.asset)),
         )
-        .map(({ market }) => market);
+        .map(({ market, asset }) => {
+          const assetTVL = liabilities[assets.indexOf(asset)];
+          return assetTVL > 0n
+            ? { ...market, assetTVL: assetTVL.toString() }
+            : market;
+        });
     })().finally(() => yieldListLoads.delete(network));
     yieldListLoads.set(network, result);
   }

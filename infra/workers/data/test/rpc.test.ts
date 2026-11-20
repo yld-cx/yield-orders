@@ -17,8 +17,10 @@ const network = () =>
   );
 
 function reply(init: RequestInit | undefined, result: unknown) {
-  const { id } = JSON.parse(String(init?.body));
-  return Response.json({ jsonrpc: "2.0", id, result });
+  const requests = JSON.parse(String(init?.body));
+  return Response.json(
+    requests.map(({ id }: { id: number }) => ({ jsonrpc: "2.0", id, result })),
+  );
 }
 
 test("RPC overrides accept ordered URL arrays by name or chain ID", () => {
@@ -81,7 +83,7 @@ test("a healthy primary handles head, logs and block reads without contacting th
     "fetch",
     async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push(String(input));
-      const { method, params } = JSON.parse(String(init?.body));
+      const [{ method, params }] = JSON.parse(String(init?.body));
       if (method === "eth_blockNumber") return reply(init, "0x1f");
       if (method === "eth_getLogs") {
         assert.equal(params[0].address, base.address);
@@ -100,6 +102,62 @@ test("a healthy primary handles head, logs and block reads without contacting th
   assert.deepEqual(calls, [primary, primary, primary]);
 });
 
+for (const failPrimary of [false, true]) {
+  test(`concurrent block reads share one HTTP batch per provider; fallback=${failPrimary}`, async (t) => {
+    const calls: string[] = [];
+    t.mock.method(
+      globalThis,
+      "fetch",
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(url);
+        const requests = JSON.parse(String(init?.body));
+        assert.equal(requests.length, 3);
+        if (failPrimary && url === primary)
+          return new Response("Unavailable", { status: 503 });
+        return Response.json(
+          requests.map(
+            ({
+              id,
+              method,
+              params,
+            }: {
+              id: number;
+              method: string;
+              params: [string];
+            }) => {
+              assert.equal(method, "eth_getBlockByNumber");
+              const number = Number(BigInt(params[0]));
+              return {
+                jsonrpc: "2.0",
+                id,
+                result: {
+                  number: params[0],
+                  timestamp: `0x${(number * 12).toString(16)}`,
+                  hash: hash(number),
+                },
+              };
+            },
+          ),
+        );
+      },
+    );
+    const rpc = rpcFor(network(), 1000);
+    const blocks = await Promise.all(
+      [10n, 11n, 12n].map((number) => rpc.block(number)),
+    );
+    assert.deepEqual(
+      blocks.map((block) => block.timestamp),
+      [120n, 132n, 144n],
+    );
+    assert.deepEqual(
+      blocks.map((block) => block.hash),
+      [hash(10), hash(11), hash(12)],
+    );
+    assert.deepEqual(calls, failPrimary ? [primary, secondary] : [primary]);
+  });
+}
+
 test("head, logs and block reads fail over in order and return to a recovered primary", async (t) => {
   const calls: string[] = [];
   let primaryFailed = true;
@@ -111,7 +169,7 @@ test("head, logs and block reads fail over in order and return to a recovered pr
       calls.push(url);
       if (url === primary && primaryFailed)
         return new Response("Unavailable", { status: 503 });
-      const { method } = JSON.parse(String(init?.body));
+      const [{ method }] = JSON.parse(String(init?.body));
       if (method === "eth_blockNumber") return reply(init, "0x1f");
       if (method === "eth_getLogs") return reply(init, []);
       return reply(init, { number: "0xa", timestamp: "0x78", hash: hash(10) });
@@ -155,12 +213,14 @@ test("rate limits, RPC errors, network errors and timeouts reach the fallback", 
           if (failure === "rate-limit")
             return new Response("Too many requests", { status: 429 });
           if (failure === "rpc-error") {
-            const { id } = JSON.parse(String(init?.body));
-            return Response.json({
-              jsonrpc: "2.0",
-              id,
-              error: { code: -32005, message: "Limit exceeded" },
-            });
+            const requests = JSON.parse(String(init?.body));
+            return Response.json(
+              requests.map(({ id }: { id: number }) => ({
+                jsonrpc: "2.0",
+                id,
+                error: { code: -32005, message: "Limit exceeded" },
+              })),
+            );
           }
           if (failure === "network") throw new TypeError("Network unavailable");
           return new Promise<Response>((_, reject) => {

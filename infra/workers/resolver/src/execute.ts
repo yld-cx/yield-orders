@@ -167,7 +167,7 @@ export async function resolveChain(
       http(String(u), {
         timeout: 5000,
         retryCount: 0,
-        batch: { batchSize: 25, wait: 0 },
+        batch: { batchSize: 100, wait: 10 },
       }),
     ),
     { retryCount: 1, retryDelay: 300 },
@@ -176,7 +176,7 @@ export async function resolveChain(
     createPublicClient({
       chain: network.chain,
       transport,
-      batch: { multicall: true },
+      batch: { multicall: { wait: 10 } },
     })) as PublicClient;
   stage("rpc_chain_check");
   if ((await client.getChainId()) !== chainId)
