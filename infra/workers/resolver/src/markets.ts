@@ -28,7 +28,7 @@ export async function markets(
     try {
       const m = record(value);
       if (m.network !== `eip155:${chainId}`) return [];
-      if (typeof m.assetTLV !== "string" || BigInt(m.assetTLV) <= 0n) return [];
+      if (typeof m.assetTVL !== "string" || BigInt(m.assetTVL) <= 0n) return [];
       const [token0, token1] = [
         address(record(m.token0).address),
         address(record(m.token1).address),

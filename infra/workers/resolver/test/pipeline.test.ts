@@ -126,14 +126,14 @@ for (const [
               network: "eip155:1",
               token0: { address: A },
               token1: { address: token },
-              assetTLV: "1",
+              assetTVL: "1",
             }),
           );
           markets.splice(initialCursor, 0, {
             network: "eip155:1",
             token0: { address: A },
             token1: { address: Q },
-            assetTLV: "1",
+            assetTVL: "1",
           });
           return Response.json({
             markets: [

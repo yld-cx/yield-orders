@@ -45,9 +45,9 @@ export function getYieldListMarkets(network: NetworkSlug) {
           (a, b) => Number(funded.has(b.asset)) - Number(funded.has(a.asset)),
         )
         .map(({ market, asset }) => {
-          const assetTLV = liabilities[assets.indexOf(asset)];
-          return assetTLV > 0n
-            ? { ...market, assetTLV: assetTLV.toString() }
+          const assetTVL = liabilities[assets.indexOf(asset)];
+          return assetTVL > 0n
+            ? { ...market, assetTVL: assetTVL.toString() }
             : market;
         });
     })().finally(() => yieldListLoads.delete(network));
