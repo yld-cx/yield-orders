@@ -5,7 +5,7 @@
   "preview_urls": false,
   "main": "src/index.ts",
   "compatibility_date": "2026-11-16",
-  "triggers": { "crons": ["*/5 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": true },
   "durable_objects": {
     "bindings": [{ "name": "CHAINS", "class_name": "ChainCoordinator" }],

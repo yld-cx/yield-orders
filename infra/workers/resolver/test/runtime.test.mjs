@@ -25,13 +25,21 @@ function runtime(vars = {}, options = {}) {
     }),
   );
 }
-test("coordinator logs HTTP diagnostics without secrets and releases its running guard after failure", async () => {
+test("coordinator prevents overlapping runs, logs HTTP diagnostics without secrets, and releases its guard after failure", async () => {
   const key = `0x${"ab".repeat(32)}`;
   const apiKey = "runtime-api-secret";
   const rpc =
     "https://provider.test/v2/runtime-rpc-secret?key=runtime-query-secret";
   const logs = [];
   let requests = 0;
+  let release;
+  let entered;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
   const mf = runtime(
     {
       RESOLVER_ENABLED: "true",
@@ -42,8 +50,12 @@ test("coordinator logs HTTP diagnostics without secrets and releases its running
     },
     {
       handleStructuredLogs: (entry) => logs.push(entry.message),
-      outboundService: () => {
+      outboundService: async () => {
         requests++;
+        if (requests === 1) {
+          entered();
+          await gate;
+        }
         return new Response(`Upstream unavailable ${rpc} ${key} ${apiKey}`, {
           status: 503,
         });
@@ -53,10 +65,17 @@ test("coordinator logs HTTP diagnostics without secrets and releases its running
   try {
     const namespace = await mf.getDurableObjectNamespace("CHAINS");
     const coordinator = namespace.get(namespace.idFromName("base"));
+    const first = coordinator.fetch("https://resolver.internal/base");
+    await started;
+    const overlap = await coordinator.fetch("https://resolver.internal/base");
+    assert.equal(overlap.status, 409);
+    assert.equal(await overlap.text(), "Already running");
+    release();
     for (let i = 0; i < 2; i++) {
-      const response = await coordinator.fetch(
-        "https://resolver.internal/base",
-      );
+      const response =
+        i === 0
+          ? await first
+          : await coordinator.fetch("https://resolver.internal/base");
       assert.equal(response.status, 503);
       assert.equal(await response.text(), "Chain run failed");
     }
@@ -84,6 +103,7 @@ test("coordinator logs HTTP diagnostics without secrets and releases its running
     ])
       assert.equal(output.includes(secret), false);
   } finally {
+    release();
     await mf.dispose();
   }
 });

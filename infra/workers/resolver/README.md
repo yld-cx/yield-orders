@@ -2,7 +2,7 @@
 
 Cloudflare Worker + Durable Objects for executing Yield Orders against Uniswap liquidity with Morpho flash loans. Requires Node.js 24+.
 
-Runs every five minutes. Reads nearby ticks through multicall, requests `BEST_PRICE` quotes across V2/V3/V4, and simulates batches before submitting profitable executions.
+Runs every minute, selecting one market per chain using the persistent round-robin cursor. Reads nearby ticks through multicall, requests `BEST_PRICE` quotes across V2/V3/V4, and simulates batches before submitting profitable executions.
 
 Candidate discovery uses `PRODUCT_MARKET.stepTicks` (100) and `PRODUCT_MARKET.duration` (7D), scanning the configured radius in one multicall of at most 100 reads.
 
@@ -37,7 +37,7 @@ npm run dev
 Run the scheduled job locally:
 
 ```sh
-curl 'http://localhost:8787/__scheduled?cron=*/5+*+*+*+*'
+curl 'http://localhost:8787/__scheduled?cron=*+*+*+*+*'
 ```
 
 Checks: `npm run check`. Bundle without deploying: `npm run build`.
