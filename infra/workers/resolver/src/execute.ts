@@ -115,8 +115,13 @@ export async function resolveChain(
   env: Env,
   slug: string,
   state: State,
-  dependencies: { client?: PublicClient } = {},
+  dependencies: {
+    client?: PublicClient;
+    onStage?: (stage: string) => void;
+  } = {},
 ): Promise<void> {
+  const stage = (value: string) => dependencies.onStage?.(value);
+  stage("configuration");
   const network = getNetwork(slug),
     chainId = network.chain.id as SwapChain;
   const config = manifest.chains[
@@ -165,7 +170,7 @@ export async function resolveChain(
         batch: { batchSize: 25, wait: 0 },
       }),
     ),
-    { retryCount: 0 },
+    { retryCount: 1, retryDelay: 300 },
   );
   const client = (dependencies.client ??
     createPublicClient({
@@ -173,9 +178,12 @@ export async function resolveChain(
       transport,
       batch: { multicall: true },
     })) as PublicClient;
+  stage("rpc_chain_check");
   if ((await client.getChainId()) !== chainId)
     throw new Error("RPC chain mismatch");
+  stage("pending_transaction");
   if (await observePending(client, state, chainId)) return;
+  stage("deployment_checks");
   const addresses = [
     config.resolver,
     config.morpho,
@@ -226,6 +234,7 @@ export async function resolveChain(
     LIMITS.slippage,
     LIMITS.quoteRequests,
   );
+  stage("market_discovery");
   const marketList = await markets(
     env.MARKETS_API ?? "https://yld.cx/api/markets",
     chainId,
@@ -239,6 +248,7 @@ export async function resolveChain(
     );
     return;
   }
+  stage("market_snapshot");
   const [blockNumber, sizingFees] = await Promise.all([
     client.getBlockNumber(),
     client.estimateFeesPerGas(),
@@ -321,6 +331,7 @@ export async function resolveChain(
       : BigInt(route.minimumAmountOut);
   };
   const sizingNative = 10n ** 16n;
+  stage("pricing");
   const sizingGasUsd = await valueInAccounting(
     wrappedNative,
     sizingNative,
@@ -355,6 +366,7 @@ export async function resolveChain(
     caps.set(token, cap);
     return cap;
   };
+  stage("candidate_discovery");
   const batch: Candidate[] = [];
   let visited = 0;
   try {
@@ -575,6 +587,7 @@ export async function resolveChain(
   }
   const orders = batch.slice(0, LIMITS.batch);
   if (!orders.length || !withinBudget()) return;
+  stage("final_simulation");
   const final = await simulate(
     client,
     config.resolver,
@@ -587,6 +600,7 @@ export async function resolveChain(
     functionName: "execute",
     args: final.args,
   });
+  stage("profitability");
   const fees = await client.estimateFeesPerGas();
   const gas = final.gas;
   const l1 =
@@ -628,6 +642,7 @@ export async function resolveChain(
   const finalTokens = [
     ...new Set(orders.map((candidate) => candidate.order.flashToken)),
   ];
+  stage("liquidity_check");
   const freshLiquidity = await client.multicall({
     allowFailure: false,
     contracts: finalTokens.map((token) => ({
@@ -648,8 +663,10 @@ export async function resolveChain(
     )
   )
     return;
+  stage("submission_simulation");
   await simulate(client, config.resolver, bot, beneficiary, orders);
   if (dryRun || !signer) return;
+  stage("nonce_check");
   const [gasBalance, confirmedNonce, nonce] = await Promise.all([
     client.getBalance({ address: bot }),
     client.getTransactionCount({ address: bot }),
@@ -668,6 +685,7 @@ export async function resolveChain(
     chain: network.chain,
     transport,
   });
+  stage("signing");
   const signed = await signer.signTransaction({
     chainId,
     type: "eip1559",
@@ -680,6 +698,7 @@ export async function resolveChain(
   });
   const hash = keccak256(signed);
   // Durable write before broadcast avoids duplicate submissions after a crash.
+  stage("pending_write");
   await state.put<Pending>("pending", {
     hash,
     nonce,
@@ -689,6 +708,7 @@ export async function resolveChain(
     expectedGross: gross.toString(),
     expectedGasCost: gasUsd.toString(),
   });
+  stage("broadcast");
   await wallet.sendRawTransaction({ serializedTransaction: signed });
   log({
     type: "resolver_submitted",
