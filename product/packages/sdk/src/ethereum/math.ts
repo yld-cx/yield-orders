@@ -2,7 +2,8 @@ import { encodeAbiParameters, keccak256, type Address } from "viem";
 import { canonicalPair } from "../registry/addresses.ts";
 import type { Direction, TickIdentity, TickState } from "../types/index.ts";
 import {
-  DURATIONS,
+  DEFAULT_DURATION,
+  type Duration,
   DISCOVERY_DEFAULTS,
   MAX_DISCOVERY_RADIUS,
   MIN_TICK,
@@ -245,19 +246,19 @@ export function tickCandidates(
   baseTick: number = DISCOVERY_DEFAULTS.baseTick,
   stepTicks: number = DISCOVERY_DEFAULTS.stepTicks,
   radius: number = DISCOVERY_DEFAULTS.radius,
+  durationDays: Duration = DEFAULT_DURATION,
 ): TickIdentity[] {
   const out: TickIdentity[] = [];
   for (const canonicalTick of candidateLevels(baseTick, stepTicks, radius))
-    for (const direction of [0, 1] as const)
-      for (const durationDays of DURATIONS) {
-        const priceTick = direction === 0 ? canonicalTick : -canonicalTick;
-        out.push({
-          id: tickIdFor(pairId, direction, priceTick, durationDays),
-          pairId,
-          direction,
-          priceTick,
-          durationDays,
-        });
-      }
+    for (const direction of [0, 1] as const) {
+      const priceTick = direction === 0 ? canonicalTick : -canonicalTick;
+      out.push({
+        id: tickIdFor(pairId, direction, priceTick, durationDays),
+        pairId,
+        direction,
+        priceTick,
+        durationDays,
+      });
+    }
   return out;
 }

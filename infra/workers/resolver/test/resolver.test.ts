@@ -1,12 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { Address, PublicClient } from "viem";
+import { isAddress, type Address, type PublicClient } from "viem";
+import { getNetwork } from "@yld-cx/sdk/ethereum";
+import manifest from "@yld-cx/ethereum-protocol/deployments/resolver.json" with { type: "json" };
+import { chainConfig } from "../src/config.ts";
 import { roundRobin } from "../src/markets.ts";
-import { quotePrincipal, sizes } from "../src/ticks.ts";
+import {
+  quotePrincipal,
+  sizes,
+  fundedSizes,
+  referenceAmount,
+} from "../src/ticks.ts";
 import { Quotes } from "../src/quotes.ts";
 import { expectedBitmap, simulate } from "../src/simulate.ts";
-import { netPositive, observePending, type State } from "../src/execute.ts";
-import type { Candidate } from "../src/shared.ts";
+import {
+  netPositive,
+  observePending,
+  resolveChain,
+  type State,
+} from "../src/execute.ts";
+import type { Candidate, Env } from "../src/shared.ts";
 import type { UniswapClient } from "@yld-cx/sdk/uniswap";
 const A = "0x1111111111111111111111111111111111111111",
   Q = "0x2222222222222222222222222222222222222222",
@@ -37,6 +50,69 @@ test("bitmap reflects every independent execution in the ordered batch", () => {
   assert.equal(expectedBitmap(3), 7n);
   assert.equal(netPositive(100n, 50n, 49n), true);
   assert.equal(netPositive(100n, 50n, 50n), false);
+});
+test("gas coverage is strict, with zero extra profit by default and optional additional profit", () => {
+  assert.equal(netPositive(101n, 100n), true);
+  assert.equal(netPositive(100n, 100n), false);
+  assert.equal(netPositive(99n, 100n), false);
+  assert.equal(netPositive(101n, 100n, 1n), false);
+  assert.equal(netPositive(102n, 100n, 1n), true);
+});
+test("reference sizes respect decimals and dynamic sizes respect book and flash liquidity", () => {
+  assert.equal(referenceAmount(18), 10n ** 15n);
+  assert.equal(referenceAmount(6), 1000n);
+  assert.equal(referenceAmount(2), 1n);
+  assert.throws(() => referenceAmount(255), /Unsupported token decimals/);
+  assert.throws(() => referenceAmount(NaN), /Unsupported token decimals/);
+  const tick = { availableSupply: 1000n, priceX128: 2n << 128n };
+  assert.deepEqual(fundedSizes(tick, 0n, 100n, 1000n), [50n, 25n, 12n, 5n]);
+  assert.deepEqual(fundedSizes(tick, 100n, 0n, 1000n), [100n, 50n, 25n, 10n]);
+  assert.deepEqual(fundedSizes(tick, 0n, 0n, 100n, 200n), [
+    100n,
+    50n,
+    25n,
+    10n,
+  ]);
+  assert.deepEqual(fundedSizes(tick, 0n, 0n, 100n, 10n), [5n, 2n, 1n]);
+  assert.deepEqual(fundedSizes(tick, 0n, 0n, 100n), []);
+  assert.equal(sizes(10n ** 40n, 10n ** 40n)[0], 10n ** 30n);
+});
+test("static assets and fallback RPCs cover every supported deployment", () => {
+  assert.deepEqual(
+    Object.keys(chainConfig).sort(),
+    Object.values({ ethereum: 1, base: 8453, robinhood: 4663 })
+      .map(String)
+      .sort(),
+  );
+  for (const slug of ["ethereum", "base", "robinhood"] as const) {
+    const config = chainConfig[getNetwork(slug).chain.id];
+    assert.ok(isAddress(config.wrappedNative));
+    assert.ok(isAddress(config.accountingToken));
+    assert.notEqual(config.wrappedNative, config.accountingToken);
+    assert.equal(config.accountingDecimals, 6);
+    assert.ok(config.rpcUrls.length >= 2 && config.rpcUrls.length <= 3);
+    assert.ok(
+      config.rpcUrls.every((url) => new URL(url).protocol === "https:"),
+    );
+  }
+});
+test("live execution requires a valid signing key before contacting RPC", async (t) => {
+  const config = manifest.chains["1"];
+  const saved = structuredClone(config);
+  t.after(() => Object.assign(config, saved));
+  Object.assign(config, {
+    resolver: A,
+    resolverCodeHash: `0x${"a".repeat(64)}`,
+  });
+  const state = {} as State;
+  const env = { DRY_RUN: "false" } as Env;
+  await assert.rejects(
+    resolveChain(env, "ethereum", state),
+    /Resolver signing key missing/,
+  );
+  await assert.rejects(
+    resolveChain({ ...env, RESOLVER_SIGNING_KEY: "0x00" }, "ethereum", state),
+  );
 });
 test("third-token quotes bind both legs and use the pre-leg minimum", async () => {
   const requests: { tokenIn: Address; tokenOut: Address; amount: string }[] =
@@ -83,6 +159,28 @@ test("third-token quotes bind both legs and use the pre-leg minimum", async () =
       [A, F],
     ],
   );
+});
+test("high-impact reference quotes retry smaller amounts without relaxing the impact limit", async () => {
+  const amounts: string[] = [];
+  const quotes = new Quotes(
+    {
+      price: async ({ amount }: { amount: string }) => {
+        amounts.push(amount);
+        return {
+          amountIn: amount,
+          priceImpact: amounts.length === 1 ? 0.11 : 0.1,
+        };
+      },
+    } as unknown as UniswapClient,
+    8453,
+    A,
+    0.5,
+    10,
+  );
+  const reference = await quotes.reference(A, Q, 10n ** 15n, 0.1);
+  assert.deepEqual(amounts, ["1000000000000000", "100000000000000"]);
+  assert.equal(reference.priceImpact, 0.1);
+  assert.equal(reference.amountIn, amounts[1]);
 });
 test("a pre-leg estimate that clears cost cannot compensate for an insufficient minimum", async () => {
   let calls = 0;

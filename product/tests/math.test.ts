@@ -16,6 +16,7 @@ import {
 } from "@yld-cx/sdk/ethereum";
 import { compactPriceText, priceText } from "@/lib/market-values";
 import { roundedAmountText } from "@/lib/utils";
+import { DURATIONS, Duration } from "@yld-cx/sdk";
 
 describe("rounded summary values", () => {
   it.each([
@@ -150,19 +151,23 @@ describe("protocol price and Tick identity", () => {
       ticks.map((t) => [t.direction, t.priceTick, t.durationDays]),
     ).toEqual([
       [0, -196000, 7],
-      [0, -196000, 30],
       [1, 196000, 7],
-      [1, 196000, 30],
       [0, -197000, 7],
-      [0, -197000, 30],
       [1, 197000, 7],
-      [1, 197000, 30],
       [0, -195000, 7],
-      [0, -195000, 30],
       [1, 195000, 7],
-      [1, 195000, 30],
     ]);
     expect(new Set(ticks.map((t) => t.id)).size).toBe(ticks.length);
+    expect(DURATIONS).toEqual([Duration.Weekly]);
+    const monthly = tickCandidates(42n, -196000, 1000, 1, Duration.Monthly);
+    expect(monthly).toHaveLength(ticks.length);
+    for (const tick of monthly) {
+      expect(tick.durationDays).toBe(Duration.Monthly);
+      expect(tick.id).toBe(
+        tickIdFor(42n, tick.direction, tick.priceTick, Duration.Monthly),
+      );
+      expect(ticks.some((weekly) => weekly.id === tick.id)).toBe(false);
+    }
   });
   it("supports configurable radii and enforces radius and TickMath bounds", () => {
     expect(candidateLevels(887000, 1000, 2)).toEqual([887000, 886000, 885000]);

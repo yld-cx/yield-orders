@@ -5,24 +5,11 @@ export interface Env {
   RESOLVER_ENABLED?: string;
   DRY_RUN?: string;
   NETWORKS?: string;
-  MARKETS_API_ORIGIN?: string;
+  MARKETS_API?: string;
   RPC_URLS?: string;
-  BENEFICIARY_ADDRESS?: string;
-  BOT_ADDRESS?: string;
   RESOLVER_SIGNING_KEY?: Hex;
   UNISWAP_API_KEY?: string;
-  // Explicit per-chain token compatibility/cap configuration, never a protocol allowlist.
-  TOKEN_LIMITS?: string;
-  BRIDGE_TOKENS?: string;
-  MAX_MARKETS_PER_RUN?: string;
-  MAX_CANDIDATES_PER_MARKET?: string;
-  MAX_BATCH?: string;
-  MAX_RUN_DURATION_MS?: string;
-  MAX_QUOTE_REQUESTS?: string;
-  MAX_DISCOVERY_RADIUS?: string;
-  MAX_REFERENCE_PRICE_IMPACT_PERCENT?: string;
   MIN_EXPECTED_NET_USD?: string;
-  MAX_SLIPPAGE_PERCENT?: string;
 }
 export interface Execution {
   tickId: bigint;

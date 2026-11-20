@@ -23,9 +23,16 @@ import {
   type SwapChain,
 } from "@yld-cx/sdk/uniswap";
 
-import manifest from "../../../../protocol/ethereum/deployments/resolver.json" with { type: "json" };
+import manifest from "@yld-cx/ethereum-protocol/deployments/resolver.json" with { type: "json" };
+import core from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
+import { chainConfig, LIMITS } from "./config.ts";
 import { markets, roundRobin } from "./markets.ts";
-import { ticks, sizes, quotePrincipal } from "./ticks.ts";
+import {
+  ticks,
+  fundedSizes,
+  referenceAmount,
+  quotePrincipal,
+} from "./ticks.ts";
 import { Quotes } from "./quotes.ts";
 import { abi, simulate } from "./simulate.ts";
 import { errorKind, log, setting, type Candidate, type Env } from "./shared.ts";
@@ -36,8 +43,6 @@ interface Deployment {
   router: Address;
   resolver: Address | null;
   resolverCodeHash: Hex | null;
-  resolverEnabled: boolean;
-  resolverForkProof: string | null;
 }
 export interface Pending {
   hash: Hex;
@@ -53,7 +58,7 @@ export interface State {
   put<T>(key: string, value: T): Promise<void>;
   delete(key: string): Promise<boolean>;
 }
-export function netPositive(gross: bigint, gas: bigint, threshold: bigint) {
+export function netPositive(gross: bigint, gas: bigint, threshold = 0n) {
   return gross - gas > threshold;
 }
 export async function observePending(
@@ -123,21 +128,29 @@ export async function resolveChain(
   )
     throw new Error("Uniswap configuration mismatch");
   const dryRun = env.DRY_RUN !== "false";
-  if (
-    !config.resolver ||
-    !config.resolverCodeHash ||
-    (!dryRun && (!config.resolverEnabled || !config.resolverForkProof))
-  ) {
+  if (!config.resolver) {
     log({ type: "resolver_gated", chainId });
     return;
   }
+  if (!config.resolverCodeHash) throw new Error("Resolver code hash missing");
+  const signer = env.RESOLVER_SIGNING_KEY
+    ? privateKeyToAccount(env.RESOLVER_SIGNING_KEY)
+    : undefined;
+  if (!dryRun && !signer) throw new Error("Resolver signing key missing");
+  const bot = signer?.address ?? "0x000000000000000000000000000000000000dEaD";
+  const beneficiary = address(core.feeTo);
+  const assets = chainConfig[chainId];
+  const {
+    accountingToken: accounting,
+    wrappedNative,
+    accountingDecimals: decimals,
+  } = assets;
+  const bridges = [...new Set([wrappedNative, accounting])];
   const started = Date.now(),
-    duration = setting(env.MAX_RUN_DURATION_MS, 120000, 10000, 300000);
+    duration = LIMITS.durationMs;
   const withinBudget = () => Date.now() - started < duration - 15000;
   const rpcValues = record(JSON.parse(env.RPC_URLS ?? "{}"))[slug];
-  const urls = Array.isArray(rpcValues)
-    ? rpcValues
-    : [network.chain.rpcUrls.default.http[0]];
+  const urls = Array.isArray(rpcValues) ? rpcValues : assets.rpcUrls;
   if (
     !urls.length ||
     urls.length > 3 ||
@@ -198,38 +211,8 @@ export async function resolveChain(
     )
   )
     throw new Error("Resolver immutable mismatch");
-  const signer = env.RESOLVER_SIGNING_KEY
-    ? privateKeyToAccount(env.RESOLVER_SIGNING_KEY)
-    : undefined;
-  const bot = signer?.address ?? address(env.BOT_ADDRESS);
-  const beneficiary = address(env.BENEFICIARY_ADDRESS);
-  if (!dryRun && !signer) throw new Error("Resolver signing key missing");
-  const limits = record(
-    record(JSON.parse(env.TOKEN_LIMITS ?? "{}"))[slug] ?? {},
-  );
-  const allowed = new Map(
-    Object.entries(limits).map(([token, amount]) => [
-      address(token),
-      BigInt(String(amount)),
-    ]),
-  );
-  if ([...allowed.values()].some((v) => v <= 0n || v > 10n ** 30n))
-    throw new Error("Invalid token cap");
-  // Deployment-specific bridges and accounting currency must be explicitly configured.
-  const assets = record(record(JSON.parse(env.BRIDGE_TOKENS ?? "{}"))[slug]);
-  const accounting = address(assets.accountingToken),
-    wrappedNative = address(assets.wrappedNative);
-  const decimals = Number(assets.accountingDecimals);
-  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18)
-    throw new Error("Invalid accounting decimals");
-  const bridges = Array.isArray(assets.bridges)
-    ? assets.bridges
-        .slice(0, 3)
-        .map(address)
-        .filter((a) => allowed.has(a))
-    : [];
   const minNet = parseUnits(
-    String(setting(env.MIN_EXPECTED_NET_USD, 1, 0.01, 10000)),
+    String(setting(env.MIN_EXPECTED_NET_USD, 0, 0, 10000)),
     decimals,
   );
   const quotes: Quotes = new Quotes(
@@ -240,20 +223,16 @@ export async function resolveChain(
     }),
     chainId,
     config.resolver,
-    setting(env.MAX_SLIPPAGE_PERCENT, 0.5, 0.01, 1),
-    setting(env.MAX_QUOTE_REQUESTS, 40, 5, 100),
+    LIMITS.slippage,
+    LIMITS.quoteRequests,
   );
   const marketList = await markets(
-    env.MARKETS_API_ORIGIN ?? "https://yld.cx",
+    env.MARKETS_API ?? "https://yld.cx/api/markets",
     chainId,
   );
   const cursor = (await state.get<number>("marketCursor")) ?? 0;
-  const maxMarkets = setting(env.MAX_MARKETS_PER_RUN, 25, 1, 100);
-  const selected = roundRobin(marketList, cursor, maxMarkets);
-  const eligible = selected.filter(
-    (m) => allowed.has(m.token0) && allowed.has(m.token1),
-  );
-  if (!eligible.length) {
+  const selected = roundRobin(marketList, cursor, LIMITS.markets);
+  if (!selected.length) {
     await state.put(
       "marketCursor",
       marketList.length ? (cursor + selected.length) % marketList.length : 0,
@@ -265,14 +244,14 @@ export async function resolveChain(
     client.estimateFeesPerGas(),
   ]);
   const fundingTokens = [
-    ...new Set([...eligible.flatMap((m) => [m.token0, m.token1]), ...bridges]),
+    ...new Set([...selected.flatMap((m) => [m.token0, m.token1]), ...bridges]),
   ];
   // Pair existence and all relevant flash liquidity share one block and one call.
   const snapshot = await client.multicall({
     blockNumber,
     allowFailure: true,
     contracts: [
-      ...eligible.map((m) => ({
+      ...selected.map((m) => ({
         address: deploymentFor(network.id).address,
         abi: protocolAbi,
         functionName: "getPair" as const,
@@ -287,7 +266,7 @@ export async function resolveChain(
     ],
   });
   const existing = new Set(
-    eligible
+    selected
       .filter((market, i) => {
         const read = snapshot[i];
         return (
@@ -301,7 +280,7 @@ export async function resolveChain(
   );
   const flashBalances = new Map(
     fundingTokens.map((token, i) => {
-      const read = snapshot[eligible.length + i];
+      const read = snapshot[selected.length + i];
       return [
         token,
         read.status === "success" && typeof read.result === "bigint"
@@ -310,7 +289,25 @@ export async function resolveChain(
       ] as const;
     }),
   );
-  const flashBalance = (token: Address) => flashBalances.get(token) ?? 0n;
+  const flashBalance = (token: Address) =>
+    flashBalances.get(address(token)) ?? 0n;
+  const metadata = await client.multicall({
+    blockNumber,
+    allowFailure: true,
+    contracts: fundingTokens.map((token) => ({
+      address: token,
+      abi: erc20Abi,
+      functionName: "decimals" as const,
+    })),
+  });
+  const tokenDecimals = new Map(
+    fundingTokens.flatMap((token, i) => {
+      const read = metadata[i];
+      return read.status === "success"
+        ? [[token, Number(read.result)] as const]
+        : [];
+    }),
+  );
   const valueInAccounting = async (
     token: Address,
     amount: bigint,
@@ -329,6 +326,35 @@ export async function resolveChain(
     sizingNative,
     true,
   );
+  const maxQuoteValue = parseUnits(String(LIMITS.quoteValueUsd), decimals);
+  const caps = new Map<Address, bigint>([[accounting, maxQuoteValue]]);
+  const prices = new Map<Address, { amount: bigint; value: bigint }>([
+    [accounting, { amount: 1n, value: 1n }],
+  ]);
+  const quoteCap = async (token: Address) => {
+    token = address(token);
+    const cached = caps.get(token);
+    if (cached !== undefined) return cached;
+    const price = await quotes.reference(
+      token,
+      accounting,
+      referenceAmount(tokenDecimals.get(token) ?? NaN),
+      LIMITS.referencePriceImpact,
+    );
+    const amount = BigInt(price.amountIn);
+    if (
+      price.priceImpact !== undefined &&
+      (price.priceImpact < 0 || price.priceImpact > LIMITS.referencePriceImpact)
+    )
+      throw new Error("Unreliable sizing price");
+    // Use a higher unit value to keep quotes conservatively below the ceiling.
+    const unitValue = (BigInt(price.estimatedAmountOut) * 105n + 99n) / 100n;
+    if (unitValue <= 0n) throw new Error("Invalid sizing price");
+    const cap = (maxQuoteValue * amount) / unitValue;
+    prices.set(token, { amount, value: BigInt(price.estimatedAmountOut) });
+    caps.set(token, cap);
+    return cap;
+  };
   const batch: Candidate[] = [];
   let visited = 0;
   try {
@@ -336,27 +362,24 @@ export async function resolveChain(
       if (
         !withinBudget() ||
         quotes.remaining < 10 ||
-        batch.length >= setting(env.MAX_BATCH, 8, 1, 8)
+        batch.length >= LIMITS.batch
       )
         break;
       visited++;
       let attempts = 0;
       try {
-        const inputCap = allowed.get(market.token0),
-          outputCap = allowed.get(market.token1);
-        if (!inputCap || !outputCap) continue;
         const yld = deploymentFor(network.id).address;
         if (!existing.has(market.pairId)) continue;
-        const reference = await quotes.price(
+        const reference = await quotes.reference(
           market.token0,
           market.token1,
-          inputCap / 1000n || 1n,
+          referenceAmount(tokenDecimals.get(market.token0) ?? NaN),
+          LIMITS.referencePriceImpact,
         );
         if (
           reference.priceImpact !== undefined &&
           (reference.priceImpact < 0 ||
-            reference.priceImpact >
-              setting(env.MAX_REFERENCE_PRICE_IMPACT_PERCENT, 0.1, 0, 1))
+            reference.priceImpact > LIMITS.referencePriceImpact)
         ) {
           log({
             type: "reference_price_impact_skip",
@@ -368,142 +391,172 @@ export async function resolveChain(
         const marketBlock = reference.blockNumber
           ? BigInt(reference.blockNumber)
           : await client.getBlockNumber({ cacheTime: 0 });
-        for await (const window of ticks(
-          client,
-          yld,
-          market,
-          reference,
-          marketBlock,
-          setting(env.MAX_DISCOVERY_RADIUS, 4, 2, 8),
-        )) {
-          const beforeWindow = batch.length;
-          log({
-            type: "ticks_discovered",
-            chainId,
-            pairId: market.pairId,
-            baseTick: window.baseTick,
-            radius: window.radius,
-            checked: window.checked,
-            promising: window.ticks.length,
-            referenceAgeMs: Date.now() - reference.quotedAt,
-          });
-          for (const tick of window.ticks) {
-            if (
-              !withinBudget() ||
-              quotes.remaining < 10 ||
-              batch.length >= setting(env.MAX_BATCH, 8, 1, 8)
-            )
-              break;
-            const assetCap = allowed.get(tick.asset.toLowerCase() as Address),
-              quoteCap = allowed.get(tick.quote.toLowerCase() as Address);
-            if (!assetCap || !quoteCap) continue;
-            let best: { candidate: Candidate; net: bigint } | undefined;
-            for (const amount of sizes(tick.availableSupply, assetCap)) {
-              if (
-                ++attempts > setting(env.MAX_CANDIDATES_PER_MARKET, 8, 1, 32) ||
-                !withinBudget() ||
-                quotes.remaining < 10
-              )
-                break;
-              const cost = quotePrincipal(amount, tick.priceX128);
-              if (cost <= 0n || cost > quoteCap) continue;
-              const direct =
-                flashBalance(tick.quote) >= cost
-                  ? ([tick.quote, cost] as const)
-                  : flashBalance(tick.asset) >= amount
-                    ? ([tick.asset, amount] as const)
-                    : undefined;
-              const funding: (readonly [Address, bigint])[] = direct
-                ? [direct]
-                : [];
-              if (!direct)
-                for (const bridge of bridges) {
-                  if (
-                    bridge === tick.asset.toLowerCase() ||
-                    bridge === tick.quote.toLowerCase()
-                  )
-                    continue;
-                  const balance = flashBalance(bridge),
-                    cap = allowed.get(bridge)!;
-                  // Bounded bridge sizing; pre-leg minimum must cover exact Quote principal.
-                  for (const size of sizes(balance, cap).slice(0, 2))
-                    funding.push([bridge, size]);
-                }
-              for (const [token, principal] of funding) {
-                if (!withinBudget() || quotes.remaining < 10) break;
-                try {
-                  const candidate = await quotes.candidate(
-                    tick,
-                    amount,
-                    token,
-                    principal,
-                  );
-                  if (!candidate) continue;
-                  const simulation = await simulate(
-                    client,
-                    config.resolver,
-                    bot,
-                    beneficiary,
-                    [candidate],
-                  );
-                  const candidateData = encodeFunctionData({
-                    abi,
-                    functionName: "execute",
-                    args: simulation.args,
-                  });
-                  const candidateL1 =
-                    chainId === 8453
-                      ? await estimateL1Fee(client, {
-                          chain: network.chain,
-                          account: bot,
-                          to: config.resolver,
-                          data: candidateData,
-                        })
-                      : 0n;
-                  const nativeCost =
-                    simulation.gas * sizingFees.maxFeePerGas + candidateL1 * 2n;
-                  const estimatedNet =
-                    (await valueInAccounting(
-                      candidate.surplusToken,
-                      candidate.surplus,
-                    )) -
-                    (nativeCost * sizingGasUsd + sizingNative - 1n) /
-                      sizingNative;
-                  log({
-                    type: "candidate_simulated",
-                    chainId,
-                    tickId: tick.id,
-                    mode: candidate.mode,
-                    flashToken: token,
-                    flashAmount: principal,
-                    quoteAgeMs: Date.now() - candidate.quotedAt,
-                    routeIds: candidate.routeIds,
-                    gas: simulation.gas,
-                    estimatedNet,
-                  });
-                  if (!best || estimatedNet > best.net)
-                    best = { candidate, net: estimatedNet };
-                } catch (e) {
-                  log({
-                    type: "candidate_skipped",
-                    chainId,
-                    tickId: tick.id,
-                    error: errorKind(e),
-                  });
-                }
-              }
-            }
-            if (best && best.net > 0n) batch.push(best.candidate);
-          }
-          // Expand only after the near window finds no executable, profitable
-          // candidates. Never re-read inner ticks or overrun request/time budgets.
+        const window = await ticks(client, yld, market, reference, marketBlock);
+        log({
+          type: "ticks_discovered",
+          chainId,
+          pairId: market.pairId,
+          baseTick: window.baseTick,
+          radius: window.radius,
+          checked: window.checked,
+          promising: window.ticks.length,
+          referenceAgeMs: Date.now() - reference.quotedAt,
+        });
+        for (const tick of window.ticks) {
           if (
-            batch.length > beforeWindow ||
             !withinBudget() ||
             quotes.remaining < 10 ||
-            attempts >= setting(env.MAX_CANDIDATES_PER_MARKET, 8, 1, 32)
+            batch.length >= LIMITS.batch
           )
             break;
+          const assetCap = await quoteCap(tick.asset),
+            costCap = await quoteCap(tick.quote);
+          const quotePrice = prices.get(address(tick.quote))!;
+          let bridgeQuoteLiquidity = 0n;
+          const availableBridges: Address[] = [];
+          for (const bridge of bridges) {
+            const balance = flashBalance(bridge);
+            if (
+              bridge === address(tick.asset) ||
+              bridge === address(tick.quote) ||
+              balance <= 0n
+            )
+              continue;
+            try {
+              const bridgeCap = await quoteCap(bridge);
+              const bridgePrice = prices.get(bridge)!;
+              const liquidity = balance < bridgeCap ? balance : bridgeCap;
+              // Estimate usable Quote principal after a conservative swap buffer.
+              const supported =
+                (liquidity * bridgePrice.value * quotePrice.amount * 100n) /
+                (bridgePrice.amount * quotePrice.value * 105n);
+              if (supported > bridgeQuoteLiquidity)
+                bridgeQuoteLiquidity = supported;
+              availableBridges.push(bridge);
+            } catch (e) {
+              log({
+                type: "bridge_skipped",
+                chainId,
+                token: bridge,
+                error: errorKind(e),
+              });
+            }
+          }
+          const costBound = (costCap << 128n) / tick.priceX128;
+          const cap = assetCap < costBound ? assetCap : costBound;
+          let best: { candidate: Candidate; net: bigint } | undefined;
+          for (const amount of fundedSizes(
+            tick,
+            flashBalance(tick.asset),
+            flashBalance(tick.quote),
+            cap,
+            bridgeQuoteLiquidity,
+          )) {
+            if (
+              ++attempts > LIMITS.candidates ||
+              !withinBudget() ||
+              quotes.remaining < 10
+            )
+              break;
+            const cost = quotePrincipal(amount, tick.priceX128);
+            if (cost <= 0n || cost > costCap) continue;
+            const direct =
+              flashBalance(tick.quote) >= cost
+                ? ([tick.quote, cost] as const)
+                : flashBalance(tick.asset) >= amount
+                  ? ([tick.asset, amount] as const)
+                  : undefined;
+            const funding: (readonly [Address, bigint])[] = direct
+              ? [direct]
+              : [];
+            if (!direct)
+              for (const bridge of availableBridges) {
+                const balance = flashBalance(bridge);
+                const bridgeCap = caps.get(bridge)!;
+                const bridgePrice = prices.get(bridge)!;
+                // Price only the required principal, with two small buffers.
+                // The actual pre-leg minimum must still cover exact Quote cost.
+                for (const buffer of [101n, 105n]) {
+                  const numerator =
+                    cost * quotePrice.value * bridgePrice.amount * buffer;
+                  const denominator =
+                    quotePrice.amount * bridgePrice.value * 100n;
+                  const principal =
+                    (numerator + denominator - 1n) / denominator;
+                  if (
+                    principal > 0n &&
+                    principal <= balance &&
+                    principal <= bridgeCap &&
+                    principal <= 10n ** 30n
+                  )
+                    funding.push([bridge, principal]);
+                }
+              }
+            for (const [token, principal] of funding) {
+              if (!withinBudget() || quotes.remaining < 10) break;
+              try {
+                const candidate = await quotes.candidate(
+                  tick,
+                  amount,
+                  token,
+                  principal,
+                );
+                if (!candidate) continue;
+                const simulation = await simulate(
+                  client,
+                  config.resolver,
+                  bot,
+                  beneficiary,
+                  [candidate],
+                );
+                const candidateData = encodeFunctionData({
+                  abi,
+                  functionName: "execute",
+                  args: simulation.args,
+                });
+                const candidateL1 =
+                  chainId === 8453
+                    ? await estimateL1Fee(client, {
+                        chain: network.chain,
+                        account: bot,
+                        to: config.resolver,
+                        data: candidateData,
+                      })
+                    : 0n;
+                const nativeCost =
+                  simulation.gas * sizingFees.maxFeePerGas + candidateL1 * 2n;
+                const estimatedNet =
+                  (await valueInAccounting(
+                    candidate.surplusToken,
+                    candidate.surplus,
+                  )) -
+                  (nativeCost * sizingGasUsd + sizingNative - 1n) /
+                    sizingNative;
+                log({
+                  type: "candidate_simulated",
+                  chainId,
+                  tickId: tick.id,
+                  mode: candidate.mode,
+                  flashToken: token,
+                  flashAmount: principal,
+                  quoteAgeMs: Date.now() - candidate.quotedAt,
+                  routeIds: candidate.routeIds,
+                  gas: simulation.gas,
+                  estimatedNet,
+                });
+                if (!best || estimatedNet > best.net)
+                  best = { candidate, net: estimatedNet };
+              } catch (e) {
+                log({
+                  type: "candidate_skipped",
+                  chainId,
+                  tickId: tick.id,
+                  error: errorKind(e),
+                });
+              }
+            }
+          }
+          if (best && best.net > 0n) batch.push(best.candidate);
         }
       } catch (e) {
         log({
@@ -520,7 +573,7 @@ export async function resolveChain(
       marketList.length ? (cursor + visited) % marketList.length : 0,
     );
   }
-  const orders = batch.slice(0, setting(env.MAX_BATCH, 8, 1, 8));
+  const orders = batch.slice(0, LIMITS.batch);
   if (!orders.length || !withinBudget()) return;
   const final = await simulate(
     client,

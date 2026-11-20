@@ -143,15 +143,7 @@ Canonical rule:
 
 # 5. Duration
 
-Official UI durations:
-
-```text
-7D | 30D
-```
-
-Default: `7D`.
-
-The official UI presents duration as a dropdown for Supply and Use.
+The official UI uses `7D` ticks for Supply, Use and Yield Book discovery.
 
 Protocol supports positive whole-number day durations.
 
@@ -253,7 +245,7 @@ Market not found  → [Create Market] → create the pair, then /market/:pair
 
 Creation is permissionless; `yieldlist.json` listing is not required. Reject identical tokens and invalid or unsupported token inputs. Show **⚠ Unlisted** for tokens outside the registry, without blocking permissionless creation.
 
-A newly created market may have an empty Yield Book. The first provider chooses Ask/Bid, price, amount, and 7D/30D on the market page; create the required Tick if absent before Supply. Market creation alone does not provide liquidity or create a Tick.
+A newly created market may have an empty Yield Book. The first provider chooses Ask/Bid, price, and amount on the market page; create the required 7D Tick if absent before Supply. Market creation alone does not provide liquidity or create a Tick.
 
 ---
 
@@ -296,13 +288,7 @@ price
 amount
 ```
 
-Official duration dropdown:
-
-```text
-7D | 30D
-```
-
-Default: `7D`.
+Duration: `7D`.
 
 Preview:
 

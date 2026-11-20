@@ -74,6 +74,26 @@ export class Quotes {
       throw error;
     }
   }
+  async reference(
+    input: Address,
+    output: Address,
+    amount: bigint,
+    maximumImpact: number,
+  ) {
+    let reference = await this.price(input, output, amount);
+    for (
+      let attempt = 0;
+      attempt < 2 &&
+      amount > 1n &&
+      reference.priceImpact !== undefined &&
+      reference.priceImpact > maximumImpact;
+      attempt++
+    ) {
+      amount = amount / 10n || 1n;
+      reference = await this.price(input, output, amount);
+    }
+    return reference;
+  }
   async candidate(
     tick: Tick,
     amount: bigint,

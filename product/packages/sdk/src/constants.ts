@@ -4,7 +4,7 @@ export const Duration = {
 } as const;
 
 export type Duration = (typeof Duration)[keyof typeof Duration];
-export const DURATIONS = [Duration.Weekly, Duration.Monthly] as const;
+export const DURATIONS = [Duration.Weekly] as const;
 export const DEFAULT_DURATION = Duration.Weekly;
 export const DISCOVERY_DEFAULTS = {
   baseTick: 0,

@@ -28,14 +28,24 @@ function harness(networks?: string, enabled = "true") {
   } as unknown as Env;
   return { env, calls };
 }
-test("shipped cron configuration starts disabled and its network JSON parses", async () => {
+test("shipped cron configuration enables live execution and its network JSON parses", async () => {
   const config = experimental_readRawConfig({
     config: fileURLToPath(new NodeURL("../wrangler.jsonc", import.meta.url)),
   }).rawConfig;
-  assert.equal(config.vars?.RESOLVER_ENABLED, "false");
-  assert.equal(config.vars?.DRY_RUN, "true");
+  assert.equal(config.vars?.RESOLVER_ENABLED, "true");
+  assert.deepEqual(Object.keys(config.vars ?? {}).sort(), [
+    "DRY_RUN",
+    "MARKETS_API",
+    "NETWORKS",
+    "RESOLVER_ENABLED",
+    "RPC_URLS",
+  ]);
+  assert.equal(config.vars?.DRY_RUN, "false");
   assert.deepEqual(config.triggers?.crons, ["*/5 * * * *"]);
-  const h = harness(String(config.vars?.NETWORKS));
+  const h = harness(
+    String(config.vars?.NETWORKS),
+    String(config.vars?.RESOLVER_ENABLED),
+  );
   await scheduled(controller, h.env);
   assert.deepEqual(h.calls, ["base"]);
 });

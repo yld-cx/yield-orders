@@ -15,25 +15,79 @@ import {
   priceAtTick,
   tickCandidates,
 } from "@yld-cx/sdk/ethereum";
-import manifest from "../../../../protocol/ethereum/deployments/resolver.json" with { type: "json" };
+import { privateKeyToAccount } from "viem/accounts";
+import core from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
+import { chainConfig, LIMITS } from "../src/config.ts";
+import manifest from "@yld-cx/ethereum-protocol/deployments/resolver.json" with { type: "json" };
 import { resolveChain, type State } from "../src/execute.ts";
 import type { Env } from "../src/shared.ts";
 
 const A = "0x1111111111111111111111111111111111111111",
   Q = "0x2222222222222222222222222222222222222222";
 const RESOLVER = "0x3333333333333333333333333333333333333333",
-  BOT = "0x4444444444444444444444444444444444444444";
+  BOT = "0x000000000000000000000000000000000000dEaD";
+const TEST_KEY = `0x${"01".repeat(32)}` as const;
+const assets = chainConfig[1];
 const pairId = pairIdFor(A, Q);
 const routerAbi = parseAbi([
   "function execute(bytes commands, bytes[] inputs, uint256 deadline)",
 ]);
 
-for (const [promising, priceImpact] of [
-  [true, 0.01],
-  [false, 0.01],
-  [true, -100],
+for (const dryRun of ["true", "false"])
+  test(`resolver address controls chain enablement with DRY_RUN=${dryRun}`, async (t) => {
+    const config = manifest.chains["1"];
+    const saved = structuredClone(config);
+    t.after(() => Object.assign(config, saved));
+    t.mock.method(console, "log", () => {});
+    const env = { DRY_RUN: dryRun, RESOLVER_SIGNING_KEY: TEST_KEY } as Env;
+    const state = {} as State;
+    let rpcCalls = 0;
+    const client = {
+      getChainId: async () => {
+        rpcCalls++;
+        return 8453;
+      },
+    } as unknown as PublicClient;
+
+    Object.assign(config, {
+      resolver: null,
+      resolverCodeHash: keccak256("0x6000"),
+    });
+    await resolveChain(env, "ethereum", state, { client });
+    assert.equal(
+      rpcCalls,
+      0,
+      "a null address skips execution before RPC access",
+    );
+
+    Object.assign(config, { resolver: RESOLVER, resolverCodeHash: null });
+    await assert.rejects(
+      resolveChain(env, "ethereum", state, { client }),
+      /Resolver code hash missing/,
+    );
+
+    Object.assign(config, { resolverCodeHash: keccak256("0x6000") });
+    await assert.rejects(
+      resolveChain(env, "ethereum", state, { client }),
+      /RPC chain mismatch/,
+    );
+    assert.equal(
+      rpcCalls,
+      1,
+      "a configured address reaches chain verification",
+    );
+  });
+
+for (const [promising, priceImpact, mode, threshold, withKey] of [
+  [true, 0.01, 0, undefined, false],
+  [false, 0.01, 0, undefined, false],
+  [true, -100, 0, undefined, false],
+  [true, 0.01, 1, undefined, false],
+  [true, 0.01, 2, undefined, false],
+  [true, 0.01, 0, "1", false],
+  [true, 0.01, 0, "0.001", true],
 ] as const)
-  test(`complete resolver dry-run ${priceImpact < 0 ? "skips unreliable signed reference impacts" : promising ? "selects and values a profitable batch" : "filters wrong-price liquidity before execution quotes"}`, async (t) => {
+  test(`complete resolver dry-run: promising=${promising}, impact=${priceImpact}, mode=${mode}, minimum=${threshold ?? 0}, signer=${withKey}`, async (t) => {
     const config = manifest.chains["1"];
     const saved = structuredClone(config);
     Object.assign(config, {
@@ -46,12 +100,19 @@ for (const [promising, priceImpact] of [
       metrics.push(JSON.parse(line)),
     );
     const requests: { endpoint: string; body: Record<string, unknown> }[] = [];
+    const marketsApi = new URL(
+      withKey
+        ? "https://preview.yld.cx/custom/yield-list"
+        : "https://yld.cx/api/markets",
+    );
     t.mock.method(
       globalThis,
       "fetch",
       async (url: string | URL, options?: RequestInit) => {
         const endpoint = new URL(String(url)).pathname.split("/").at(-1)!;
-        if (endpoint === "markets")
+        if (new URL(String(url)).pathname === marketsApi.pathname) {
+          assert.equal(new URL(String(url)).origin, marketsApi.origin);
+          assert.equal(new URL(String(url)).searchParams.get("tag"), "all");
           return Response.json({
             markets: [
               {
@@ -61,6 +122,7 @@ for (const [promising, priceImpact] of [
               },
             ],
           });
+        }
         assert.equal(
           new URL(String(url)).origin,
           "https://trade-api.gateway.uniswap.org",
@@ -76,9 +138,22 @@ for (const [promising, priceImpact] of [
           assert.equal(body.swapSource, undefined);
           assert.deepEqual(body.protocols, ["V2", "V3", "V4"]);
           assert.equal(body.routingPreference, "BEST_PRICE");
+          const tokenIn = String(body.tokenIn),
+            tokenOut = String(body.tokenOut);
+          const unit = (token: string) =>
+            token === assets.accountingToken ? 10n ** 6n : 10n ** 18n;
+          const price = (token: string) =>
+            token === A ? 2n : token === assets.wrappedNative ? 1000n : 1n;
           const amount = BigInt(String(body.amount)),
-            output = amount * 2n,
+            output =
+              (amount * price(tokenIn) * unit(tokenOut)) /
+              (unit(tokenIn) * price(tokenOut)),
             minimum = (output * 995n) / 1000n;
+          assert.ok(
+            (amount * price(tokenIn) * 10n ** 6n) / unit(tokenIn) <=
+              BigInt(LIMITS.quoteValueUsd) * 10n ** 6n,
+            "all quote inputs stay below the internal value ceiling",
+          );
           return Response.json({
             routing: "CLASSIC",
             permitData: null,
@@ -89,16 +164,16 @@ for (const [promising, priceImpact] of [
               swapper: RESOLVER,
               slippage: 0.5,
               quoteId: "pipeline",
-              priceImpact,
-              input: { token: A, amount: amount.toString() },
+              priceImpact: tokenIn === A && tokenOut === Q ? priceImpact : 0.01,
+              input: { token: tokenIn, amount: amount.toString() },
               output: {
-                token: Q,
+                token: tokenOut,
                 amount: output.toString(),
                 recipient: RESOLVER,
               },
               aggregatedOutputs: [
                 {
-                  token: Q,
+                  token: tokenOut,
                   amount: output.toString(),
                   minAmount: minimum.toString(),
                   recipient: RESOLVER,
@@ -109,8 +184,8 @@ for (const [promising, priceImpact] of [
                 [
                   {
                     type: "v3-pool",
-                    tokenIn: { address: A, chainId: 1 },
-                    tokenOut: { address: Q, chainId: 1 },
+                    tokenIn: { address: tokenIn, chainId: 1 },
+                    tokenOut: { address: tokenOut, chainId: 1 },
                   },
                 ],
               ],
@@ -124,7 +199,8 @@ for (const [promising, priceImpact] of [
           "safetyMode",
         ]);
         const quote = body.quote as {
-          input: { amount: string };
+          input: { token: string; amount: string };
+          output: { token: string };
           aggregatedOutputs: { minAmount: string }[];
         };
         const input = encodeAbiParameters(
@@ -133,7 +209,7 @@ for (const [promising, priceImpact] of [
             RESOLVER,
             BigInt(quote.input.amount),
             BigInt(quote.aggregatedOutputs[0].minAmount),
-            `0x${A.slice(2)}0001f4${Q.slice(2)}`,
+            `0x${quote.input.token.slice(2)}0001f4${quote.output.token.slice(2)}`,
             true,
             [],
           ],
@@ -156,10 +232,9 @@ for (const [promising, priceImpact] of [
         });
       },
     );
-    const priceTick = promising ? 6800 : 7000;
+    const priceTick = promising ? 6700 : 7000;
     const activeTick = tickCandidates(pairId, 6900, 100, 2).find(
-      (t) =>
-        t.direction === 0 && t.priceTick === priceTick && t.durationDays === 7,
+      (t) => t.direction === 0 && t.priceTick === priceTick,
     )!;
     const reads: number[] = [];
     const groups: string[][] = [];
@@ -173,7 +248,7 @@ for (const [promising, priceImpact] of [
         return 123n;
       },
       estimateFeesPerGas: async () => ({
-        maxFeePerGas: 1n,
+        maxFeePerGas: 1000000n,
         maxPriorityFeePerGas: 1n,
       }),
       readContract: async () => {
@@ -184,7 +259,11 @@ for (const [promising, priceImpact] of [
         allowFailure,
         blockNumber,
       }: {
-        contracts: { functionName: string; args?: readonly unknown[] }[];
+        contracts: {
+          address: string;
+          functionName: string;
+          args?: readonly unknown[];
+        }[];
         allowFailure: boolean;
         blockNumber?: bigint;
       }) => {
@@ -212,7 +291,16 @@ for (const [promising, priceImpact] of [
               result = [pairId, A, Q, true];
               break;
             case "balanceOf":
-              result = 10n ** 30n;
+              result =
+                c.address ===
+                (mode === 0 ? Q : mode === 1 ? A : assets.accountingToken)
+                  ? mode === 2
+                    ? 100n * 10n ** 6n
+                    : 10n ** 18n
+                  : 0n;
+              break;
+            case "decimals":
+              result = c.address === assets.accountingToken ? 6 : 18;
               break;
             case "getTick":
               result = {
@@ -237,10 +325,35 @@ for (const [promising, priceImpact] of [
             : { status: "success", result };
         });
       },
-      simulateContract: async ({ args }: { args: [unknown[], Address] }) => {
+      simulateContract: async ({
+        args,
+        account,
+      }: {
+        args: [
+          { flashToken: Address; flashAmount: bigint; amount: bigint }[],
+          Address,
+        ];
+        account: Address;
+      }) => {
         simulations++;
         assert.equal(args[0].length, 1);
-        assert.equal(args[1], BOT);
+        assert.equal(args[1].toLowerCase(), core.feeTo.toLowerCase());
+        assert.equal(
+          account,
+          withKey ? privateKeyToAccount(TEST_KEY).address : BOT,
+        );
+        const order = args[0][0];
+        assert.equal(
+          order.flashToken,
+          mode === 0 ? Q : mode === 1 ? A : assets.accountingToken,
+        );
+        assert.ok(
+          order.flashAmount <= (mode === 2 ? 100n * 10n ** 6n : 10n ** 18n),
+        );
+        assert.ok(
+          order.amount <= 10n ** 18n,
+          "size fits available book liquidity",
+        );
         return { result: 1n };
       },
       estimateContractGas: async () => 2500000n,
@@ -255,22 +368,10 @@ for (const [promising, priceImpact] of [
     } as State;
     const env = {
       DRY_RUN: "true",
-      BOT_ADDRESS: BOT,
-      BENEFICIARY_ADDRESS: BOT,
       UNISWAP_API_KEY: "test-key",
-      MAX_BATCH: "1",
-      MIN_EXPECTED_NET_USD: "0.01",
-      TOKEN_LIMITS: JSON.stringify({
-        ethereum: { [A]: "1000000000000000000", [Q]: "10000000000000000000" },
-      }),
-      BRIDGE_TOKENS: JSON.stringify({
-        ethereum: {
-          accountingToken: Q,
-          accountingDecimals: 18,
-          wrappedNative: A,
-          bridges: [],
-        },
-      }),
+      MIN_EXPECTED_NET_USD: threshold,
+      ...(withKey ? { MARKETS_API: marketsApi.href } : {}),
+      ...(withKey ? { RESOLVER_SIGNING_KEY: TEST_KEY } : {}),
     } as Env;
     await resolveChain(env, "ethereum", state, { client: rpc });
     assert.equal(
@@ -278,10 +379,11 @@ for (const [promising, priceImpact] of [
       false,
       "dry runs must not reserve a broadcast nonce",
     );
-    assert.equal(
-      requests.filter((r) => r.endpoint === "swap").length,
-      promising && priceImpact >= 0 ? 4 : 0,
-      "only executable candidates build transactions; price/valuation quotes do not",
+    const swapCount = requests.filter((r) => r.endpoint === "swap").length;
+    assert.equal(swapCount > 0, promising && priceImpact >= 0);
+    assert.ok(
+      requests.length <= LIMITS.quoteRequests,
+      "all API calls share one budget",
     );
     assert.deepEqual(groups[0], [
       "YLD",
@@ -289,7 +391,8 @@ for (const [promising, priceImpact] of [
       "UNIVERSAL_ROUTER",
       "PERMIT2",
     ]);
-    assert.deepEqual(groups[1], ["getPair", "balanceOf", "balanceOf"]);
+    assert.deepEqual(groups[1], ["getPair", ...Array(4).fill("balanceOf")]);
+    assert.deepEqual(groups[2], Array(4).fill("decimals"));
     assert.equal(
       blockReads,
       1,
@@ -300,12 +403,19 @@ for (const [promising, priceImpact] of [
       assert.equal(simulations, 0);
       assert.ok(metrics.some((m) => m.type === "reference_price_impact_skip"));
     } else if (promising) {
-      assert.deepEqual(reads, [10]);
-      assert.deepEqual(
-        groups.at(-1),
-        ["balanceOf"],
-        "final liquidity is rechecked in one multicall",
-      );
+      assert.deepEqual(reads, [82]);
+      if (threshold !== "1")
+        assert.deepEqual(
+          groups.at(-1),
+          ["balanceOf"],
+          "gas-covering batches recheck liquidity before final simulation",
+        );
+      else
+        assert.notDeepEqual(
+          groups.at(-1),
+          ["balanceOf"],
+          "extra profit threshold rejects the batch",
+        );
       assert.ok(
         simulations >= 3,
         "candidate and ordered batch simulations must run",
@@ -313,8 +423,17 @@ for (const [promising, priceImpact] of [
       const valued = metrics.find((m) => m.type === "batch_valued");
       assert.ok(valued);
       assert.ok(BigInt(String(valued.net)) > 0n);
+      assert.ok(
+        BigInt(String(valued.net)) < 1000000n,
+        "gas coverage does not require an extra dollar",
+      );
+      assert.ok(
+        metrics.some(
+          (m) => m.type === "candidate_simulated" && m.mode === mode,
+        ),
+      );
     } else {
-      assert.deepEqual(reads, [10, 8]);
+      assert.deepEqual(reads, [82]);
       assert.equal(simulations, 0);
       assert.deepEqual(
         requests
