@@ -4,7 +4,6 @@ import { isAddress, type Address, type PublicClient } from "viem";
 import { getNetwork } from "@yld-cx/sdk/ethereum";
 import manifest from "@yld-cx/ethereum-protocol/deployments/resolver.json" with { type: "json" };
 import { chainConfig } from "../src/config.ts";
-import { roundRobin } from "../src/markets.ts";
 import {
   quotePrincipal,
   sizes,
@@ -13,17 +12,19 @@ import {
 } from "../src/ticks.ts";
 import { Quotes } from "../src/quotes.ts";
 import { expectedBitmap, simulate } from "../src/simulate.ts";
+import { netPositive, resolveChain } from "../src/execute.ts";
 import {
-  netPositive,
+  availableNonce,
   observePending,
-  resolveChain,
-  type State,
-} from "../src/execute.ts";
+  reservePending,
+} from "../src/pending.ts";
+import { testDatabase } from "./database.ts";
+
 import type { Candidate, Env } from "../src/shared.ts";
 import type { UniswapClient } from "@yld-cx/sdk/uniswap";
-const A = "0x1111111111111111111111111111111111111111",
-  Q = "0x2222222222222222222222222222222222222222",
-  F = "0x3333333333333333333333333333333333333333";
+const A = "0x1111111111111111111111111111111111111111" as const,
+  Q = "0x2222222222222222222222222222222222222222" as const,
+  F = "0x3333333333333333333333333333333333333333" as const;
 const c: Candidate = {
   order: {
     tickId: 1n,
@@ -44,7 +45,6 @@ test("bounded sizes preserve raw units and exact YLD ceil convention", () => {
   assert.deepEqual(sizes(1000n, 100n), [100n, 50n, 25n, 10n]);
   assert.deepEqual(sizes(1n, 100n), [1n]);
   assert.equal(quotePrincipal(1n, (1n << 128n) + 1n), 2n);
-  assert.deepEqual(roundRobin([1, 2, 3, 4], 3, 2), [4, 1]);
 });
 test("bitmap reflects every independent execution in the ordered batch", () => {
   assert.equal(expectedBitmap(3), 7n);
@@ -77,7 +77,7 @@ test("reference sizes respect decimals and dynamic sizes respect book and flash 
   assert.deepEqual(fundedSizes(tick, 0n, 0n, 100n), []);
   assert.equal(sizes(10n ** 40n, 10n ** 40n)[0], 10n ** 30n);
 });
-test("static assets and fallback RPCs cover every supported deployment", () => {
+test("static assets cover every supported deployment", () => {
   assert.deepEqual(
     Object.keys(chainConfig).sort(),
     Object.values({ ethereum: 1, base: 8453, robinhood: 4663 })
@@ -90,10 +90,6 @@ test("static assets and fallback RPCs cover every supported deployment", () => {
     assert.ok(isAddress(config.accountingToken));
     assert.notEqual(config.wrappedNative, config.accountingToken);
     assert.equal(config.accountingDecimals, 6);
-    assert.ok(config.rpcUrls.length >= 2 && config.rpcUrls.length <= 3);
-    assert.ok(
-      config.rpcUrls.every((url) => new URL(url).protocol === "https:"),
-    );
   }
 });
 test("live execution requires a valid signing key before contacting RPC", async (t) => {
@@ -104,14 +100,13 @@ test("live execution requires a valid signing key before contacting RPC", async 
     resolver: A,
     resolverCodeHash: `0x${"a".repeat(64)}`,
   });
-  const state = {} as State;
   const env = { DRY_RUN: "false" } as Env;
   await assert.rejects(
-    resolveChain(env, "ethereum", state),
+    resolveChain(env, "ethereum"),
     /Resolver signing key missing/,
   );
   await assert.rejects(
-    resolveChain({ ...env, RESOLVER_SIGNING_KEY: "0x00" }, "ethereum", state),
+    resolveChain({ ...env, RESOLVER_SIGNING_KEY: "0x00" }, "ethereum"),
   );
 });
 test("third-token quotes bind both legs and use the pre-leg minimum", async () => {
@@ -274,46 +269,77 @@ test("gas estimation cannot silently skip later orders in a successful batch", a
     /InvalidGasEstimate/,
   );
 });
-test("unknown broadcast state keeps nonce reservation; confirmed receipts release it", async () => {
-  let deleted = false;
-  const state = {
-    get: async () => ({
-      hash: `0x${"a".repeat(64)}`,
-      nonce: 1,
-      createdAt: 0,
-      resolver: A,
-      expectedBitmap: "1",
-      expectedGross: "100",
-      expectedGasCost: "10",
-    }),
-    delete: async () => {
-      deleted = true;
-      return true;
-    },
-    put: async () => {},
-  } as State;
-  assert.equal(
-    await observePending(
-      {
-        getTransactionReceipt: async () => {
-          throw new Error("RPC with secret URL");
-        },
-      } as unknown as PublicClient,
-      state,
-      8453,
-    ),
-    true,
-  );
-  assert.equal(deleted, false);
+test("wallet nonce is available only when its confirmed and pending counts agree", async () => {
+  let pending = 7;
   const client = {
-    getTransactionReceipt: async () => ({
-      status: "success",
-      blockNumber: 10n,
-      gasUsed: 1n,
-      logs: [],
-    }),
-    getBlockNumber: async () => 13n,
+    getTransactionCount: async ({
+      address,
+      blockTag,
+    }: {
+      address: Address;
+      blockTag: string;
+    }) => {
+      assert.equal(address, A);
+      assert.ok(["latest", "pending"].includes(blockTag));
+      return blockTag === "pending" ? pending : 7;
+    },
   } as unknown as PublicClient;
-  assert.equal(await observePending(client, state, 8453), false);
-  assert.equal(deleted, true);
+  assert.equal(await availableNonce(client, A), 7);
+  pending = 8;
+  assert.equal(await availableNonce(client, A), undefined);
+  pending = 6;
+  assert.equal(await availableNonce(client, A), undefined);
+});
+
+test("ambiguous broadcasts keep their journal entry until the expected receipt is confirmed", async () => {
+  const { db } = testDatabase();
+  const hash = `0x${"a".repeat(64)}` as const;
+  const record = {
+    hash,
+    nonce: 1,
+    createdAt: 0,
+    resolver: A,
+    expectedBitmap: "1",
+    expectedGross: "100",
+    expectedGasCost: "10",
+  };
+  const reservations = await Promise.all([
+    reservePending(db, 8453, F, record),
+    reservePending(db, 8453, F, record),
+  ]);
+  assert.deepEqual(reservations, [true, false]);
+  const missing = {
+    getTransactionReceipt: async () => {
+      throw new Error("RPC with secret URL");
+    },
+  } as unknown as PublicClient;
+  assert.equal(
+    await observePending(missing, db, 8453, Q),
+    false,
+    "journals are wallet-specific",
+  );
+  assert.equal(await observePending(missing, db, 8453, F), true);
+  let head = 12n;
+  let from: Address = Q;
+  const client = {
+    getTransactionReceipt: async ({ hash: requested }: { hash: string }) => {
+      assert.equal(requested, hash);
+      return {
+        transactionHash: hash,
+        from,
+        to: A,
+        status: "success",
+        blockNumber: 10n,
+        gasUsed: 1n,
+        logs: [],
+      };
+    },
+    getBlockNumber: async () => head,
+  } as unknown as PublicClient;
+  assert.equal(await observePending(client, db, 8453, F), true);
+  from = F;
+  assert.equal(await observePending(client, db, 8453, F), true);
+  head = 13n;
+  assert.equal(await observePending(client, db, 8453, F), false);
+  assert.equal(await observePending(missing, db, 8453, F), false);
 });

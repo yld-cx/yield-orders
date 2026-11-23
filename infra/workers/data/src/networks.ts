@@ -1,54 +1,46 @@
 import manifest from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
 import { mainnet, base, robinhood } from "viem/chains";
 import type { Chain } from "viem";
+import { rpcUrls, type NetworkName } from "../../rpc.ts";
 import { address, integer, type Env, HttpError } from "./shared.ts";
 
 // Operational defaults only. Chain IDs and contract addresses come from the package.
 const defaults: Record<
-  string,
+  NetworkName,
   {
     chain: Chain;
-    rpcUrls: readonly string[];
     confirmations: number;
-    overlap: number;
     gecko?: string;
   }
 > = {
   ethereum: {
     chain: mainnet,
-    rpcUrls: [
-      "https://ethereum-rpc.publicnode.com",
-      "https://gateway.tenderly.co/public/mainnet",
-    ],
     confirmations: 12,
-    overlap: 16,
     gecko: "eth",
   },
   base: {
     chain: base,
-    rpcUrls: ["https://base-rpc.publicnode.com", "https://mainnet.base.org"],
     confirmations: 64,
-    overlap: 32,
     gecko: "base",
   },
   robinhood: {
     chain: robinhood,
-    rpcUrls: [
-      "https://robinhood-rpc.publicnode.com",
-      "https://rpc.mainnet.chain.robinhood.com",
-    ],
     confirmations: 64,
-    overlap: 32,
     gecko: "robinhood",
   },
 };
 
 export const supportedNetworks = Object.entries(manifest.networks).map(
   ([name, chainId]) => {
-    const d = defaults[name];
+    const d = defaults[name as NetworkName];
     if (!d || d.chain.id !== chainId)
       throw new Error(`Missing operational defaults for ${name}`);
-    return { name, chainId, address: address(manifest.address), ...d };
+    return {
+      name: name as NetworkName,
+      chainId,
+      address: address(manifest.address),
+      ...d,
+    };
   },
 );
 
@@ -56,7 +48,7 @@ export type SupportedNetwork = (typeof supportedNetworks)[number];
 export type Network = SupportedNetwork & {
   startBlock?: bigint;
   confirmations: number;
-  overlap: number;
+  rpcUrls: readonly string[];
   rangeLimit: number;
   chunkSize: number;
 };
@@ -82,29 +74,12 @@ export function indexingNetwork(env: Env, n: SupportedNetwork): Network {
     c.startBlock === undefined
       ? undefined
       : BigInt(integer(String(c.startBlock), "startBlock"));
-  const urls = JSON.parse(env.RPC_URLS ?? "{}") as Record<string, unknown>;
-  const configured = urls[String(n.chainId)] ?? urls[n.name] ?? n.rpcUrls;
-  if (!Array.isArray(configured) || configured.length === 0)
-    throw new Error("Invalid RPC URLs");
-  const rpcUrls = configured.map((value: unknown) => {
-    try {
-      if (
-        typeof value !== "string" ||
-        !["http:", "https:"].includes(new URL(value).protocol)
-      )
-        throw new Error();
-      return value;
-    } catch {
-      throw new Error("Invalid RPC URL");
-    }
-  });
   const rangeLimit = number("rangeLimit", 1000, 1, 2000);
   return {
     ...n,
-    rpcUrls,
+    rpcUrls: rpcUrls(env, n.name, n.chainId),
     startBlock,
     confirmations: number("confirmations", n.confirmations, 1),
-    overlap: number("overlap", n.overlap, 1),
     rangeLimit,
     chunkSize: Math.min(number("chunkSize", rangeLimit, 1, 2000), rangeLimit),
   };

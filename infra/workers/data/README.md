@@ -2,7 +2,9 @@
 
 Cloudflare Worker + D1 for token metadata, prices, and protocol events on [supported networks](../../../protocol/ethereum/README.md#deployments). Requires Node.js 24+; use Workers Paid for production.
 
-Hourly indexing starts from each chain's first observed head, waits for confirmations, then resumes from saved checkpoints. Events older than `EVENT_RETENTION_MONTHS` are automatically removed.
+Indexing runs every five minutes. On a fresh database it records each chain's first observed head as the starting block, then waits for confirmations. Subsequent runs scan from the saved checkpoint plus one through the latest confirmed block. Each chunk commits events, changed ticks, and its checkpoint in one revision-guarded D1 batch. RPC or database failures leave that chunk for the next run. Events older than `EVENT_RETENTION_MONTHS` are automatically removed.
+
+The `ticks` table stores complete `getTick()` snapshots keyed by `chainId:tickId`. The Worker deduplicates affected IDs across each chunk and reads them via multicall at the confirmed end block. The row timestamp comes from that block. Bigints are stored as decimal strings, and ticks with zero available supply are retained with `active: false`. Existing installations fill the index as relevant events are synchronized after their saved checkpoint, without resuming earlier ranges.
 
 ## Local
 
@@ -13,10 +15,10 @@ npm run migrate:local
 npm run dev
 ```
 
-Run the hourly job locally:
+Run the five-minute job locally.
 
 ```sh
-curl 'http://localhost:8787/__scheduled?cron=0+*+*+*+*'
+curl 'http://localhost:8787/__scheduled?cron=*/5+*+*+*+*'
 ```
 
 Format: `npm run format`. Checks: `npm run check`. Bundle without deploying: `npm run build`.
@@ -39,29 +41,31 @@ npx wrangler login
 npm run deploy
 ```
 
-Deployment provisions or reuses the `yld-data` database, applies migrations, then activates the hourly schedule. No separate setup command or enable flag is needed. Keep the Worker/database names unchanged to reuse existing resources.
+Deployment provisions or reuses the `yld-data` database, applies migrations, then activates the five-minute schedule. Keep the Worker/database names unchanged to reuse existing resources.
 
 Optional settings in `wrangler.jsonc`:
 
-- `RPC_URLS`: a nonempty ordered array of RPC URLs per network name (`ethereum`, `base`, `robinhood`) or chain ID. A chain-ID entry takes precedence if both keys are present. Public primary and fallback URLs are already provided.
-- `RPC_TIMEOUT_MS`: timeout budget per pass through the endpoint list (default `8000`), divided between endpoints. Requests try URLs in order, then retry the full list up to twice with backoff. If all attempts fail, the failed range remains uncommitted for a later scheduled run.
+- `RPC_URLS`: a nonempty ordered array of HTTPS RPC URLs per network name (`ethereum`, `base`, `robinhood`) or chain ID. A chain-ID entry takes precedence if both keys are present. Public primary and fallback URLs are already provided.
+- `RPC_TIMEOUT_MS`: timeout budget per pass through the endpoint list (default `8000`), divided between endpoints. Requests try URLs in order, with at most one fallback retry round. If all attempts fail, the failed range remains uncommitted for a later scheduled run.
 - `NETWORK_CONFIG`: optional per-chain `startBlock` for historical indexing, set before the first run.
 - `EVENT_RETENTION_MONTHS`: defaults to `2`; set `0` to retain all history.
 - `CORS_ORIGINS`: allowed frontend origins.
+
+The optional secrets `PRIVATE_RPC_ETHEREUM`, `PRIVATE_RPC_BASE`, and `PRIVATE_RPC_ROBINHOOD` take priority over the corresponding public URLs. Set them in Cloudflare for this Worker, or in `.dev.vars` for local development. RPC error logs omit provider messages.
 
 ## Integration
 
 Connect `yld-cx/yield-orders` through Cloudflare Workers & Pages → GitHub. Choose a Worker, name it `yld-data`, and configure:
 
-| Setting        | Value                  |
-| -------------- | ---------------------- |
-| Branch         | `main`                 |
-| Preview builds | Disabled               |
-| Root directory | `infra/workers/data`   |
-| Watch path     | `infra/workers/data/*` |
-| Build command  | `npm run check`        |
-| Deploy command | `npm run deploy`       |
-| Node version   | 24 (`.node-version`)   |
+| Setting        | Value                                          |
+| -------------- | ---------------------------------------------- |
+| Branch         | `main`                                         |
+| Preview builds | Disabled                                       |
+| Root directory | `infra/workers/data`                           |
+| Watch paths    | `infra/workers/data/*`, `infra/workers/rpc.ts` |
+| Build command  | `npm run check`                                |
+| Deploy command | `npm run deploy`                               |
+| Node version   | 24 (`.node-version`)                           |
 
 The deployment token needs Worker deployment and **D1 Write** permissions for this account. Cloudflare's default generated build token omits D1; add that permission or select a custom token before the first build. See [Cloudflare build token permissions](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#api-token). Later builds automatically reuse the database; optionally pin its ID as `database_id` or the build variable `YLD_D1_DATABASE_ID`.
 

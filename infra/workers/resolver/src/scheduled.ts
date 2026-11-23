@@ -1,6 +1,14 @@
-import { errorKind, log, type Env } from "./shared.ts";
+import type { NetworkName } from "../../rpc.ts";
+import { LIMITS } from "./config.ts";
+import { Subrequests } from "./subrequests.ts";
+import { resolveChain } from "./execute.ts";
+import { errorDetails, log, type Env } from "./shared.ts";
 
-export async function scheduled(_controller: ScheduledController, env: Env) {
+export async function scheduled(
+  _controller: ScheduledController,
+  env: Env,
+  run = resolveChain,
+) {
   if (env.RESOLVER_ENABLED !== "true") {
     log({ type: "resolver_disabled" });
     return;
@@ -11,15 +19,30 @@ export async function scheduled(_controller: ScheduledController, env: Env) {
     chains.some((n) => !["ethereum", "base", "robinhood"].includes(n))
   )
     throw new Error("Invalid networks");
-  for (const chain of new Set(chains)) {
+  const networks = [...new Set(chains as NetworkName[])];
+  const deadline = Date.now() + LIMITS.durationMs;
+  const subrequests = new Subrequests(LIMITS.externalRequests);
+  for (const [index, chain] of networks.entries()) {
+    const now = Date.now();
+    if (now >= deadline || !subrequests.remaining) break;
+    let stage = "configuration";
     try {
-      const coordinator = env.CHAINS.get(env.CHAINS.idFromName(chain));
-      const result = await coordinator.fetch(
-        `https://resolver.internal/${chain}`,
-      );
-      log({ type: "resolver_run", chain, status: result.status });
-    } catch (e) {
-      log({ type: "resolver_run_failed", chain, error: errorKind(e) });
+      await run(env, chain, {
+        subrequests,
+        deadline:
+          now + Math.floor((deadline - now) / (networks.length - index)),
+        onStage: (value) => {
+          stage = value;
+        },
+      });
+    } catch (error) {
+      log({
+        type: "resolver_chain_failed",
+        chain,
+        stage,
+        ...errorDetails(error),
+      });
     }
   }
+  if (!subrequests.remaining) log({ type: "resolver_external_request_limit" });
 }

@@ -14,12 +14,13 @@ export class TestDatabase {
   failBatchAt: number | undefined;
   queries = 0;
   constructor() {
-    this.sqlite.exec(
-      readFileSync(
-        new NodeURL("../migrations/0001_init.sql", import.meta.url),
-        "utf8",
-      ),
-    );
+    for (const file of ["0001_init.sql", "0002_ticks.sql"])
+      this.sqlite.exec(
+        readFileSync(
+          new NodeURL(`../migrations/${file}`, import.meta.url),
+          "utf8",
+        ),
+      );
   }
   prepare(sql: string) {
     return new Statement(this, sql, []);
@@ -91,13 +92,14 @@ export function supplied(
   index = 0,
   amount = 10n,
   chainId = 8453,
+  tickId = 123n,
 ): RpcLog {
   return {
     address: supportedNetworks.find((n) => n.chainId === chainId)!.address,
     topics: encodeEventTopics({
       abi,
       eventName: "Supplied",
-      args: { tickId: 123n, supplier: A },
+      args: { tickId, supplier: A },
     }) as Hex[],
     data: encodeAbiParameters(
       [{ type: "uint256" }, { type: "address" }],
@@ -145,19 +147,42 @@ export function environment(db = new TestDatabase()): Env {
   return {
     DB: db.db,
     EVENT_RETENTION_MONTHS: "0",
+    RPC_URLS: JSON.stringify(
+      Object.fromEntries(
+        supportedNetworks.map(({ name }) => [
+          name,
+          ["https://primary.rpc.test", "https://secondary.rpc.test"],
+        ]),
+      ),
+    ),
     NETWORK_CONFIG: JSON.stringify(
       Object.fromEntries(
         supportedNetworks.map((n) => [
           n.chainId,
-          { startBlock: 10, confirmations: 2, overlap: 2, chunkSize: 10 },
+          { startBlock: 10, confirmations: 2, chunkSize: 10 },
         ]),
       ),
     ),
   };
 }
+export function tickState(availableSupply = 10n ** 18n) {
+  return {
+    asset: A,
+    quote: B,
+    durationDays: 7n,
+    priceX128: 2n << 128n,
+    availableSupply,
+    workingSupply: 30n,
+    exitWorking: 10n,
+    activeWorking: 20n,
+    activePrincipal: availableSupply + 20n,
+    settleCursor: 40n,
+  };
+}
 export function fakeRpc(head = 31n, entries: RpcLog[] = []): Rpc {
   return {
     head: async () => head,
+    ticks: async (ids) => ids.map(() => tickState()),
     logs: async (from, to) =>
       entries.filter((e) => e.blockNumber! >= from && e.blockNumber! <= to),
     block: async (block) => ({

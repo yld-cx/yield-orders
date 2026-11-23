@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeLog, eventNames, eventQuery, getEvents } from "../src/events.ts";
+import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  type AbiParameter,
+  type Hex,
+} from "viem";
+import {
+  affectedTick,
+  decodeLog,
+  eventAbi,
+  eventNames,
+  eventQuery,
+  getEvents,
+} from "../src/events.ts";
 import { indexingNetwork, supportedNetworks } from "../src/networks.ts";
 import { checkpoint, lastBlock, persistChunk } from "../src/sync.ts";
 import worker from "../src/index.ts";
@@ -136,94 +149,93 @@ test("query validation rejects SQL injection, unknown filters, malformed cursors
     assert.throws(() => eventQuery(new URLSearchParams(query)), query);
 });
 
-test("idempotent ingestion, canonical reorg replacement and empty ranges advance checkpoints", async () => {
-  const db = new TestDatabase(),
-    env = environment(db);
-  const n = indexingNetwork(
-    env,
-    supportedNetworks.find((n) => n.chainId === 8453)!,
-  );
-  let expected = await checkpoint(db.db, n, 100);
-  const event = decodeLog(8453, supplied(), 120n)!;
-  expected = (await persistChunk(
-    db.db,
-    8453,
-    expected,
-    10n,
-    20n,
-    [event],
-    100,
-  ))!;
-  expected = (await persistChunk(
-    db.db,
-    8453,
-    expected,
-    10n,
-    20n,
-    [event],
-    101,
-  ))!;
-  assert.equal(db.rows("SELECT * FROM events").length, 1);
-  const replacement = decodeLog(8453, supplied(10, 1, 999n), 120n)!;
-  expected = (await persistChunk(
-    db.db,
-    8453,
-    expected,
-    10n,
-    20n,
-    [replacement],
-    102,
-  ))!;
-  assert.equal(db.rows("SELECT id FROM events")[0]!.id, replacement.id);
-  expected = (await persistChunk(db.db, 8453, expected, 10n, 21n, [], 103))!;
-  assert.equal(lastBlock(expected), 21n);
-  assert.equal(db.rows("SELECT * FROM events").length, 0);
+test("each required protocol log resolves the named tickId, regardless of indexed argument order", () => {
+  const id = (1n << 256n) - 1n;
+  const changes = new Set([
+    "TickCreated",
+    "Supplied",
+    "Withdrawn",
+    "UseOpened",
+    "TermRepaid",
+    "TermClosed",
+    "ImmediateSwap",
+  ]);
+  const value = ({ name, type }: AbiParameter) =>
+    name === "tickId"
+      ? id
+      : type === "address"
+        ? A
+        : ["uint8", "int32"].includes(type)
+          ? 0
+          : 7n;
+  for (const event of eventAbi.filter(
+    ({ name }) => changes.has(name) || name === "Collected",
+  )) {
+    const indexed = event.inputs.filter((input) => input.indexed);
+    const data = event.inputs.filter((input) => !input.indexed);
+    const entry = {
+      ...supplied(),
+      topics: encodeEventTopics({
+        abi: [event],
+        eventName: event.name,
+        args: Object.fromEntries(
+          indexed.map((input) => [input.name, value(input)]),
+        ),
+      }) as Hex[],
+      data: encodeAbiParameters(data, data.map(value)),
+    };
+    const decoded = decodeLog(8453, entry, 120n)!;
+    assert.equal(
+      affectedTick(decoded),
+      changes.has(event.name) ? id : undefined,
+      event.name,
+    );
+  }
 });
 
-test("failure midway through D1 batch rolls back removal, inserts and checkpoint, then recovers", async () => {
-  const db = new TestDatabase(),
-    env = environment(db);
+test("empty ranges advance the checkpoint without discarding prior events", async () => {
+  const db = new TestDatabase();
   const n = indexingNetwork(
-    env,
+    environment(db),
     supportedNetworks.find((n) => n.chainId === 8453)!,
   );
-  const event = decodeLog(8453, supplied(), 120n)!;
   const initial = await checkpoint(db.db, n, 100);
-  const saved = (await persistChunk(
-    db.db,
-    8453,
-    initial,
-    10n,
-    20n,
-    [event],
-    100,
-  ))!;
-  db.failBatchAt = 2;
-  await assert.rejects(persistChunk(db.db, 8453, saved, 10n, 21n, [], 101));
-  assert.equal(db.rows("SELECT * FROM events").length, 1);
-  assert.equal(
-    db.rows("SELECT meta FROM state WHERE key='events:8453'")[0]!.meta,
-    saved,
-  );
-  db.failBatchAt = undefined;
-  assert.equal(
-    lastBlock((await persistChunk(db.db, 8453, saved, 10n, 21n, [], 102))!),
-    21n,
-  );
+  const event = decodeLog(8453, supplied(), 120n)!;
+  const saved = (await persistChunk(db.db, 8453, initial, 20n, [event], 100))!;
+  const next = (await persistChunk(db.db, 8453, saved, 21n, [], 101))!;
+  assert.equal(lastBlock(next), 21n);
+  assert.equal(db.rows("SELECT id FROM events")[0]!.id, event.id);
 });
 
-test("stale overlapping invocations cannot remove canonical data or regress checkpoint", async () => {
-  const db = new TestDatabase(),
-    env = environment(db);
+test("superseded revisions cannot write events or tick rows", async () => {
+  const db = new TestDatabase();
   const n = indexingNetwork(
-    env,
+    environment(db),
     supportedNetworks.find((n) => n.chainId === 8453)!,
   );
   const old = await checkpoint(db.db, n, 100);
   const canonical = decodeLog(8453, supplied(), 120n)!;
-  const next = await persistChunk(db.db, 8453, old, 10n, 30n, [canonical], 100);
-  assert.equal(await persistChunk(db.db, 8453, old, 10n, 15n, [], 101), null);
-  assert.equal(db.rows("SELECT * FROM events").length, 1);
+  const competing = decodeLog(8453, supplied(10, 1), 120n)!;
+  const tick = {
+    id: "8453:123",
+    chain_id: 8453,
+    timestamp: 120,
+    meta: '{"active":true}',
+  };
+  const next = await persistChunk(db.db, 8453, old, 30n, [canonical], 100, 0, [
+    tick,
+  ]);
+  assert.equal(
+    await persistChunk(db.db, 8453, old, 15n, [competing], 101, 0, [
+      { ...tick, meta: '{"active":false}' },
+    ]),
+    null,
+  );
+  assert.deepEqual(
+    db.rows("SELECT id FROM events").map((row) => row.id),
+    [canonical.id],
+  );
+  assert.equal(db.rows("SELECT meta FROM ticks")[0]!.meta, tick.meta);
   assert.equal(
     db.rows("SELECT meta FROM state WHERE key='events:8453'")[0]!.meta,
     next,

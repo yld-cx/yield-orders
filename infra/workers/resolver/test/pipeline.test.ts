@@ -6,29 +6,28 @@ import {
   keccak256,
   parseAbi,
   parseAbiParameters,
+  parseTransaction,
+  type Hex,
   type Address,
   type PublicClient,
 } from "viem";
-import {
-  deploymentFor,
-  pairIdFor,
-  priceAtTick,
-  tickCandidates,
-} from "@yld-cx/sdk/ethereum";
+import { deploymentFor, priceAtTick } from "@yld-cx/sdk/ethereum";
 import { privateKeyToAccount } from "viem/accounts";
 import core from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
 import { chainConfig, LIMITS } from "../src/config.ts";
 import manifest from "@yld-cx/ethereum-protocol/deployments/resolver.json" with { type: "json" };
-import { resolveChain, type State } from "../src/execute.ts";
+import { resolveChain } from "../src/execute.ts";
+import { Subrequests } from "../src/subrequests.ts";
+import { testDatabase } from "./database.ts";
 import type { Env } from "../src/shared.ts";
 
-const A = "0x1111111111111111111111111111111111111111",
-  Q = "0x2222222222222222222222222222222222222222";
+const A = "0x1111111111111111111111111111111111111111" as const,
+  Q = "0x2222222222222222222222222222222222222222" as const;
 const RESOLVER = "0x3333333333333333333333333333333333333333",
   BOT = "0x000000000000000000000000000000000000dEaD";
 const TEST_KEY = `0x${"01".repeat(32)}` as const;
 const assets = chainConfig[1];
-const pairId = pairIdFor(A, Q);
+const RPC_URLS = '{"ethereum":["https://rpc.test/" ]}';
 const routerAbi = parseAbi([
   "function execute(bytes commands, bytes[] inputs, uint256 deadline)",
 ]);
@@ -39,8 +38,11 @@ for (const dryRun of ["true", "false"])
     const saved = structuredClone(config);
     t.after(() => Object.assign(config, saved));
     t.mock.method(console, "log", () => {});
-    const env = { DRY_RUN: dryRun, RESOLVER_SIGNING_KEY: TEST_KEY } as Env;
-    const state = {} as State;
+    const env = {
+      DRY_RUN: dryRun,
+      RESOLVER_SIGNING_KEY: TEST_KEY,
+      RPC_URLS,
+    } as Env;
     let rpcCalls = 0;
     const client = {
       getChainId: async () => {
@@ -53,7 +55,7 @@ for (const dryRun of ["true", "false"])
       resolver: null,
       resolverCodeHash: keccak256("0x6000"),
     });
-    await resolveChain(env, "ethereum", state, { client });
+    await resolveChain(env, "ethereum", { client });
     assert.equal(
       rpcCalls,
       0,
@@ -62,13 +64,13 @@ for (const dryRun of ["true", "false"])
 
     Object.assign(config, { resolver: RESOLVER, resolverCodeHash: null });
     await assert.rejects(
-      resolveChain(env, "ethereum", state, { client }),
+      resolveChain(env, "ethereum", { client }),
       /Resolver code hash missing/,
     );
 
     Object.assign(config, { resolverCodeHash: keccak256("0x6000") });
     await assert.rejects(
-      resolveChain(env, "ethereum", state, { client }),
+      resolveChain(env, "ethereum", { client }),
       /RPC chain mismatch/,
     );
     assert.equal(
@@ -78,24 +80,57 @@ for (const dryRun of ["true", "false"])
     );
   });
 
-for (const [
-  promising,
-  priceImpact,
-  mode,
-  threshold,
-  withKey,
-  initialCursor = 0,
-] of [
-  [true, 0.01, 0, undefined, false],
-  [false, 0.01, 0, undefined, false],
-  [true, -100, 0, undefined, false],
-  [true, 0.01, 1, undefined, false],
-  [true, 0.01, 2, undefined, false],
-  [true, 0.01, 0, "1", false],
-  [true, 0.01, 0, "0.001", true],
-  [true, 0.01, 0, undefined, false, 2],
-] as const)
-  test(`complete resolver dry-run: promising=${promising}, impact=${priceImpact}, mode=${mode}, minimum=${threshold ?? 0}, signer=${withKey}, cursor=${initialCursor}`, async (t) => {
+for (const [name, options] of Object.entries({
+  profitable: {},
+  underwater: { promising: false },
+  unreliable: { priceImpact: -100 },
+  assetFlash: { mode: 1 },
+  bridgeFlash: { mode: 2 },
+  threshold: { threshold: "1" },
+  failedImmutableRead: { failedImmutable: true },
+  drainedTick: { freshSupply: 0n },
+  drainedFlash: { freshFlash: false },
+  empty: { empty: true },
+  live: { live: true, withKey: true },
+  existingPending: { live: true, withKey: true, initialPending: 8 },
+  changedNonce: { live: true, withKey: true, finalNonce: 8 },
+  ambiguousBroadcast: { live: true, withKey: true, ambiguousBroadcast: true },
+  ranked: { competing: true },
+}))
+  test(`D1 resolver pipeline: ${name}`, async (t) => {
+    const now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    const {
+      promising = true,
+      priceImpact = 0.01,
+      mode = 0,
+      threshold,
+      failedImmutable = false,
+      freshSupply = 10n ** 18n,
+      freshFlash = true,
+      empty = false,
+      withKey = false,
+      live = false,
+      initialPending = 7,
+      finalNonce = 7,
+      ambiguousBroadcast = false,
+      competing = false,
+    } = options as {
+      promising?: boolean;
+      priceImpact?: number;
+      mode?: number;
+      threshold?: string;
+      failedImmutable?: boolean;
+      freshSupply?: bigint;
+      freshFlash?: boolean;
+      empty?: boolean;
+      withKey?: boolean;
+      live?: boolean;
+      initialPending?: number;
+      finalNonce?: number;
+      ambiguousBroadcast?: boolean;
+      competing?: boolean;
+    };
     const config = manifest.chains["1"];
     const saved = structuredClone(config);
     Object.assign(config, {
@@ -108,46 +143,35 @@ for (const [
       metrics.push(JSON.parse(line)),
     );
     const requests: { endpoint: string; body: Record<string, unknown> }[] = [];
-    const marketsApi = new URL(
-      withKey
-        ? "https://preview.yld.cx/custom/yield-list"
-        : "https://yld.cx/api/markets",
-    );
+    const { db, putTick, sqlite } = testDatabase();
+    const sent: Hex[] = [];
     t.mock.method(
       globalThis,
       "fetch",
       async (url: string | URL, options?: RequestInit) => {
-        const endpoint = new URL(String(url)).pathname.split("/").at(-1)!;
-        if (new URL(String(url)).pathname === marketsApi.pathname) {
-          assert.equal(new URL(String(url)).origin, marketsApi.origin);
-          assert.equal(new URL(String(url)).searchParams.get("tag"), "all");
-          const markets = [assets.accountingToken, assets.wrappedNative].map(
-            (token) => ({
-              network: "eip155:1",
-              token0: { address: A },
-              token1: { address: token },
-              assetTVL: "1",
-            }),
+        const requestUrl = new URL(String(url));
+        if (["rpc.test", "fallback.rpc.test"].includes(requestUrl.host)) {
+          const [request] = JSON.parse(String(options?.body));
+          assert.equal(request.method, "eth_sendRawTransaction");
+          const signed = request.params[0] as Hex;
+          assert.equal(parseTransaction(signed).nonce, 7);
+          assert.equal(
+            parseTransaction(signed).to?.toLowerCase(),
+            RESOLVER.toLowerCase(),
           );
-          markets.splice(initialCursor, 0, {
-            network: "eip155:1",
-            token0: { address: A },
-            token1: { address: Q },
-            assetTVL: "1",
-          });
-          return Response.json({
-            markets: [
-              {
-                network: "eip155:1",
-                token0: { address: A },
-                token1: {
-                  address: "0x4444444444444444444444444444444444444444",
-                },
-              },
-              ...markets,
-            ],
-          });
+          const record = sqlite.prepare("SELECT meta FROM state").get();
+          assert.equal(
+            JSON.parse(String(record?.meta)).hash,
+            keccak256(signed),
+          );
+          sent.push(signed);
+          if (ambiguousBroadcast)
+            return new Response("Ambiguous", { status: 503 });
+          return Response.json([
+            { jsonrpc: "2.0", id: request.id, result: keccak256(signed) },
+          ]);
         }
+        const endpoint = requestUrl.pathname.split("/").at(-1)!;
         assert.equal(
           new URL(String(url)).origin,
           "https://trade-api.gateway.uniswap.org",
@@ -257,20 +281,44 @@ for (const [
         });
       },
     );
-    const priceTick = promising ? 6700 : 7000;
-    const activeTick = tickCandidates(pairId, 6900, 100, 2).find(
-      (t) => t.direction === 0 && t.priceTick === priceTick,
-    )!;
-    const reads: number[] = [];
+    const tick = {
+      id: 99n,
+      asset: A,
+      quote: Q,
+      priceX128: priceAtTick(promising ? 6700 : 7000),
+      availableSupply: 10n ** 20n,
+    };
+    if (!empty) putTick(1, tick);
+    if (competing) {
+      // These fresher rows all use the same reference and have less estimated profit.
+      for (let i = 1; i <= LIMITS.candidates * 2; i++)
+        putTick(
+          1,
+          { ...tick, id: BigInt(i), availableSupply: 10n ** 18n },
+          true,
+          i,
+        );
+    }
+    putTick(8453, { ...tick, id: 100n });
+    putTick(1, { ...tick, id: 101n, availableSupply: 0n });
+    const reads: bigint[][] = [];
     const groups: string[][] = [];
-    let blockReads = 0;
     let simulations = 0;
+    let nonceReads = 0;
     const rpc = {
       getChainId: async () => 1,
       getCode: async () => "0x6000",
-      getBlockNumber: async () => {
-        blockReads++;
-        return 123n;
+      getBalance: async () => 10n ** 18n,
+      getTransactionCount: async ({ blockTag }: { blockTag: string }) => {
+        const phase = Math.floor(nonceReads++ / 2);
+        return phase === 0
+          ? blockTag === "pending"
+            ? initialPending
+            : 7
+          : finalNonce;
+      },
+      getTransactionReceipt: async () => {
+        throw new Error("No known receipt");
       },
       estimateFeesPerGas: async () => ({
         maxFeePerGas: 1000000n,
@@ -294,13 +342,26 @@ for (const [
       }) => {
         groups.push(contracts.map((c) => c.functionName));
         if (contracts[0].functionName === "getTick") {
-          reads.push(contracts.length);
-          assert.equal(blockNumber, 123n, "tick reads use the AMM quote block");
+          const tickReads = contracts.filter(
+            (c) => c.functionName === "getTick",
+          );
+          reads.push(tickReads.map((c) => c.args?.[0] as bigint));
+          assert.equal(allowFailure, true);
+          assert.deepEqual(
+            contracts.slice(tickReads.length).map((c) => c.functionName),
+            Array(4).fill("balanceOf"),
+          );
+          assert.equal(
+            blockNumber,
+            undefined,
+            "onchain revalidation uses current state",
+          );
         }
         return contracts.map((c) => {
           let result: unknown;
           switch (c.functionName) {
             case "YLD":
+              if (failedImmutable) return { status: "failure" };
               result = deploymentFor("eip155:1").address;
               break;
             case "PERMIT2":
@@ -312,13 +373,11 @@ for (const [
             case "UNIVERSAL_ROUTER":
               result = config.router;
               break;
-            case "getPair":
-              result = [pairId, A, Q, true];
-              break;
             case "balanceOf":
               result =
+                (allowFailure || freshFlash) &&
                 c.address ===
-                (mode === 0 ? Q : mode === 1 ? A : assets.accountingToken)
+                  (mode === 0 ? Q : mode === 1 ? A : assets.accountingToken)
                   ? mode === 2
                     ? 100n * 10n ** 6n
                     : 10n ** 18n
@@ -332,9 +391,8 @@ for (const [
                 asset: A,
                 quote: Q,
                 durationDays: 7n,
-                priceX128: priceAtTick(priceTick),
-                availableSupply:
-                  c.args?.[0] === activeTick.id ? 10n ** 18n : 0n,
+                priceX128: tick.priceX128,
+                availableSupply: c.args?.[0] === tick.id ? freshSupply : 0n,
                 workingSupply: 0n,
                 exitWorking: 0n,
                 activeWorking: 0n,
@@ -383,89 +441,110 @@ for (const [
       },
       estimateContractGas: async () => 2500000n,
     } as unknown as PublicClient;
-    const stored = new Map<string, unknown>([["marketCursor", initialCursor]]);
-    const state = {
-      get: async (key: string) => stored.get(key),
-      put: async (key: string, value: unknown) => {
-        stored.set(key, value);
-      },
-      delete: async (key: string) => stored.delete(key),
-    } as State;
-    const env = {
-      DRY_RUN: "true",
+    const env: Env = {
+      DB: db,
+      RPC_URLS: ambiguousBroadcast
+        ? JSON.stringify({
+            ethereum: ["https://rpc.test/", "https://fallback.rpc.test/"],
+          })
+        : RPC_URLS,
+      DRY_RUN: live ? "false" : "true",
       UNISWAP_API_KEY: "test-key",
       MIN_EXPECTED_NET_USD: threshold,
-      ...(withKey ? { MARKETS_API: marketsApi.href } : {}),
       ...(withKey ? { RESOLVER_SIGNING_KEY: TEST_KEY } : {}),
-    } as Env;
-    await resolveChain(env, "ethereum", state, { client: rpc });
-    assert.equal(stored.get("marketCursor"), (initialCursor + 1) % 3);
+    };
+    const subrequests = new Subrequests(LIMITS.externalRequests);
+    const run = () =>
+      resolveChain(env, "ethereum", { client: rpc, subrequests });
+    if (failedImmutable) {
+      await assert.rejects(run, /Resolver immutable mismatch/);
+      assert.equal(requests.length, 0);
+      assert.equal(sent.length, 0);
+      return;
+    }
+    if (ambiguousBroadcast) {
+      await assert.rejects(run, { status: 503 });
+      assert.equal(sent.length, 2);
+      assert.equal(sent[0], sent[1]);
+      const count = nonceReads;
+      await run();
+      assert.equal(sent.length, 2);
+      assert.equal(
+        nonceReads,
+        count,
+        "ambiguous journal blocks even before a new nonce read",
+      );
+    } else {
+      await run();
+      assert.equal(
+        sent.length,
+        live && initialPending === 7 && finalNonce === 7 ? 1 : 0,
+      );
+    }
     assert.equal(
-      stored.has("pending"),
-      false,
-      "dry runs must not reserve a broadcast nonce",
+      sqlite.prepare("SELECT count(*) AS n FROM state").get()?.n,
+      sent.length ? 1 : 0,
     );
     const swapCount = requests.filter((r) => r.endpoint === "swap").length;
-    assert.equal(swapCount > 0, promising && priceImpact >= 0);
-    assert.ok(
-      requests.length <= LIMITS.quoteRequests,
-      "all API calls share one budget",
-    );
-    assert.deepEqual(groups[0], [
-      "YLD",
-      "MORPHO",
-      "UNIVERSAL_ROUTER",
-      "PERMIT2",
-    ]);
-    assert.deepEqual(groups[1], ["getPair", ...Array(4).fill("balanceOf")]);
-    assert.deepEqual(groups[2], Array(4).fill("decimals"));
+    const eligible =
+      promising &&
+      priceImpact >= 0 &&
+      freshSupply > 0n &&
+      !empty &&
+      initialPending === 7;
+    assert.equal(swapCount > 0, eligible);
+    assert.ok(requests.length <= LIMITS.quoteRequests);
     assert.equal(
-      blockReads,
-      1,
-      "the price quote supplies the discovery block without another RPC",
+      subrequests.remaining,
+      LIMITS.externalRequests - requests.length - sent.length,
     );
-    if (priceImpact < 0) {
-      assert.deepEqual(reads, []);
-      assert.equal(simulations, 0);
-      assert.ok(metrics.some((m) => m.type === "reference_price_impact_skip"));
-    } else if (promising) {
-      assert.deepEqual(reads, [82]);
-      if (threshold !== "1")
-        assert.deepEqual(
-          groups.at(-1),
-          ["balanceOf"],
-          "gas-covering batches recheck liquidity before final simulation",
-        );
-      else
-        assert.notDeepEqual(
-          groups.at(-1),
-          ["balanceOf"],
-          "extra profit threshold rejects the batch",
-        );
-      assert.ok(
-        simulations >= 3,
-        "candidate and ordered batch simulations must run",
-      );
+    if (empty || initialPending !== 7) {
+      assert.deepEqual(groups, []);
+      assert.equal(requests.length, 0);
+    } else {
+      assert.deepEqual(groups[0], [
+        "YLD",
+        "MORPHO",
+        "UNIVERSAL_ROUTER",
+        "PERMIT2",
+        ...Array(4).fill("decimals"),
+      ]);
+    }
+    if (eligible) {
+      assert.ok(simulations >= 2);
       const valued = metrics.find((m) => m.type === "batch_valued");
-      assert.ok(valued);
-      assert.ok(BigInt(String(valued.net)) > 0n);
       assert.ok(
-        BigInt(String(valued.net)) < 1000000n,
-        "gas coverage does not require an extra dollar",
+        valued &&
+          BigInt(String(valued.net)) > 0n &&
+          BigInt(String(valued.net)) < 1000000n,
       );
       assert.ok(
         metrics.some(
           (m) => m.type === "candidate_simulated" && m.mode === mode,
         ),
       );
-    } else {
-      assert.deepEqual(reads, [82]);
-      assert.equal(simulations, 0);
-      assert.deepEqual(
-        requests
-          .filter((r) => r.endpoint === "quote")
-          .map((r) => r.body.amount),
-        ["10000000000000000", "1000000000000000"],
+      if (!threshold && freshFlash) assert.equal(simulations >= 3, true);
+      if (!freshFlash) assert.deepEqual(groups.at(-1), ["balanceOf"]);
+    } else assert.equal(simulations, 0);
+    if (competing) {
+      assert.equal(reads.length, 1);
+      assert.equal(reads[0].length, LIMITS.candidates);
+      assert.equal(
+        reads[0][0],
+        tick.id,
+        "estimated profit and available liquidity outrank recency",
       );
-    }
+      assert.equal(
+        requests.filter(
+          ({ endpoint, body }) =>
+            endpoint === "quote" &&
+            body.tokenIn === A &&
+            body.tokenOut === Q &&
+            body.amount === "1000000000000000",
+        ).length,
+        1,
+      );
+    } else if (eligible || name === "drainedTick")
+      assert.deepEqual(reads, [[tick.id]]);
+    else assert.deepEqual(reads, []);
   });
