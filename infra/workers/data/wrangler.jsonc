@@ -5,6 +5,7 @@
   "preview_urls": false,
   "main": "src/index.ts",
   "compatibility_date": "2026-10-20",
+  "cache": { "enabled": true },
   "d1_databases": [
     {
       "binding": "DB",

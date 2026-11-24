@@ -251,6 +251,7 @@ test("HTTP routing handles CORS, invalid inputs, methods and database failures",
     env,
   );
   assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(
     response.headers.get("access-control-allow-origin"),
     "https://yld.cx",
@@ -269,10 +270,9 @@ test("HTTP routing handles CORS, invalid inputs, methods and database failures",
     (await worker.fetch(request("/events", { method: "POST" }), env)).status,
     405,
   );
-  assert.equal(
-    (await worker.fetch(request("/events", { method: "OPTIONS" }), env)).status,
-    204,
-  );
+  response = await worker.fetch(request("/events", { method: "OPTIONS" }), env);
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal((await worker.fetch(request("/sql"), env)).status, 404);
   const broken = {
     ...env,

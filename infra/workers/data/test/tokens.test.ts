@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import worker from "../src/index.ts";
 import {
   getTokens,
   normalizeUpstream,
@@ -18,6 +19,8 @@ import {
 
 const params = (addresses = A) =>
   new URLSearchParams({ chainId: "8453", addresses });
+const requestTokens = (addresses = A, init?: RequestInit) =>
+  new Request(`https://data.test/tokens?${params(addresses)}`, init);
 const fail: typeof fetch = async () => {
   throw new Error("Upstream unavailable");
 };
@@ -29,7 +32,103 @@ const providerFailures: Record<string, typeof fetch> = {
   "HTTP error": async () => new Response("rate limit", { status: 429 }),
   "invalid JSON": async () => new Response("not JSON"),
   "invalid response": fetchJson({ bad: true }),
+  "HTTP 200 with an error": fetchJson({ ...gecko(), error: "unavailable" }),
+  "HTTP 200 with errors": fetchJson({
+    ...gecko(),
+    errors: [{ detail: "unavailable" }],
+  }),
 };
+
+test("fresh token responses from D1 and both providers are cacheable with CORS", async (t) => {
+  const env = { ...environment(), COINGECKO_API_KEY: "test-demo-key" };
+  t.mock.method(console, "log", () => {});
+  const fetcher = t.mock.method(globalThis, "fetch", async (input: string) => {
+    if (input.endsWith(`/${A}`)) return Response.json(gecko());
+    if (new URL(input).hostname === "api.geckoterminal.com")
+      return new Response(null, { status: 429 });
+    return Response.json(gecko([B]));
+  });
+  const origin = "https://yld.cx";
+  for (const [address, upstream] of [
+    [A, "ok"],
+    [A, "cache"],
+    [B, "ok"],
+  ]) {
+    const response = await worker.fetch(
+      requestTokens(address, { headers: { origin } }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(
+      response.headers.get("cache-control"),
+      "public, max-age=3600, s-maxage=3600, stale-while-revalidate=601200",
+    );
+    assert.equal(response.headers.get("vary"), "Origin");
+    assert.equal(response.headers.get("access-control-allow-origin"), origin);
+    const body = await response.json<Awaited<ReturnType<typeof getTokens>>>();
+    assert.equal(body.upstream, upstream);
+    assert.deepEqual(
+      body.tokens.map((token) => token.address),
+      [address],
+    );
+  }
+  assert.equal(fetcher.mock.callCount(), 3);
+});
+
+test("partial, unknown, and unavailable HTTP 200 results use no-store", async (t) => {
+  const env = environment();
+  t.mock.method(console, "log", () => {});
+  const fetcher = t.mock.method(globalThis, "fetch", fetchJson(gecko()));
+  const partial = await worker.fetch(requestTokens(`${A},${B}`), env);
+  assert.equal(partial.status, 200);
+  assert.equal(partial.headers.get("cache-control"), "no-store");
+
+  const unknown = await worker.fetch(requestTokens(B), env);
+  assert.equal(unknown.status, 200);
+  assert.equal(unknown.headers.get("cache-control"), "no-store");
+  fetcher.mock.mockImplementation(fail);
+  const unavailable = await worker.fetch(requestTokens(C), env);
+  assert.equal(unavailable.status, 200);
+  assert.equal(unavailable.headers.get("cache-control"), "no-store");
+});
+
+test("failed refreshes use no-store during the refresh and D1 retry backoff", async (t) => {
+  const env = environment();
+  await getTokens(params(), env, fetchJson(gecko()), 100);
+  t.mock.method(Date, "now", () => (100 + TOKEN_TTL) * 1000);
+  t.mock.method(console, "log", () => {});
+  const fetcher = t.mock.method(
+    globalThis,
+    "fetch",
+    providerFailures["HTTP 200 with errors"]!,
+  );
+
+  for (const upstream of ["unavailable", "cache"]) {
+    const response = await worker.fetch(requestTokens(), env);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    const body = await response.json<Awaited<ReturnType<typeof getTokens>>>();
+    assert.equal(body.upstream, upstream);
+    assert.equal(body.tokens[0]?.stale, true);
+  }
+  assert.equal(fetcher.mock.callCount(), 1);
+});
+
+test("rate-limited token responses use no-store with or without available tokens", async (t) => {
+  const env = { ...environment(), TOKEN_UPSTREAM_PER_MINUTE: "1" };
+  t.mock.method(Date, "now", () => 120_000);
+  await getTokens(params(), env, fetchJson(gecko()));
+
+  for (const [addresses, status] of [
+    [B, 429],
+    [`${A},${B}`, 200],
+  ] as const) {
+    const response = await worker.fetch(requestTokens(addresses), env);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("retry-after"), "60");
+  }
+});
 
 test("successful GeckoTerminal responses never call CoinGecko, including partial and empty results", async (t) => {
   for (const addresses of [[A, B], [A], []]) {

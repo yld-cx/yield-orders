@@ -70,14 +70,21 @@ export function normalizeUpstream(
   chainId: number,
   now: number,
 ): Map<string, TokenMeta> {
+  if (!payload || typeof payload !== "object")
+    throw new Error("Invalid GeckoTerminal response");
+  const { data, error, errors } = payload as {
+    data?: unknown;
+    error?: unknown;
+    errors?: unknown;
+  };
   if (
-    !payload ||
-    typeof payload !== "object" ||
-    !Array.isArray((payload as { data?: unknown }).data)
+    !Array.isArray(data) ||
+    error != null ||
+    (Array.isArray(errors) ? errors.length > 0 : errors != null)
   )
     throw new Error("Invalid GeckoTerminal response");
   const result = new Map<string, TokenMeta>();
-  for (const item of (payload as { data: unknown[] }).data) {
+  for (const item of data as unknown[]) {
     if (!item || typeof item !== "object") continue;
     const a = (item as { attributes?: Record<string, unknown> }).attributes;
     if (!a || typeof a.address !== "string") continue;
