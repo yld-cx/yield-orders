@@ -32,7 +32,6 @@ import {
   type NetworkName,
 } from "../../rpc.ts";
 import {
-  activeTicks,
   estimatedSurplus,
   fundedSizes,
   referenceAmount,
@@ -59,6 +58,7 @@ export function netPositive(gross: bigint, gas: bigint, threshold = 0n) {
 export async function resolveChain(
   env: Env,
   slug: NetworkName,
+  ticks: readonly Tick[],
   dependencies: {
     client?: PublicClient;
     deadline?: number;
@@ -103,10 +103,6 @@ export async function resolveChain(
     dependencies.subrequests ?? new Subrequests(LIMITS.externalRequests);
   const withinBudget = () =>
     subrequests.remaining > 0 && Date.now() < deadline - 5000;
-  const canTryCandidate = () =>
-    withinBudget() &&
-    subrequests.remaining >=
-      LIMITS.finalizationRequests + LIMITS.candidateRequests;
   const urls = rpcUrls(env, slug, chainId);
   const rpcTransport = (fetchRpc: typeof fetch) =>
     fallback(
@@ -135,9 +131,7 @@ export async function resolveChain(
       }
     }
   }
-  stage("tick_index");
-  const indexed = await activeTicks(env.DB, chainId);
-  if (!indexed.length || !withinBudget()) return;
+  if (!ticks.length || !withinBudget()) return;
   const minNet = parseUnits(
     String(setting(env.MIN_EXPECTED_NET_USD, 0, 0, 10000)),
     decimals,
@@ -154,25 +148,30 @@ export async function resolveChain(
     LIMITS.slippage,
     LIMITS.quoteRequests,
   );
-  const pairs = new Map<string, Tick[]>();
-  for (const tick of indexed) {
-    if (
-      tick.asset === tick.quote ||
-      tick.priceX128 <= 0n ||
-      tick.availableSupply <= 0n
-    )
-      continue;
-    const key = `${tick.asset}:${tick.quote}`;
-    const pair = pairs.get(key);
-    if (pair) pair.push(tick);
-    else if (pairs.size < LIMITS.pairs) pairs.set(key, [tick]);
-  }
-  if (!pairs.size || !withinBudget()) return;
+  const l1FeeRequests = Number(chainId === 8453);
+  // The final balance, nonce and block reads share an RPC batch.
+  const submissionRequests = dryRun ? 0 : 1 + urls.length;
+  const canTryCandidate = (orders: number, legs: number, setupRequests = 0) => {
+    // Each leg needs a quote and swap. Allow for candidate, gas and batch valuation.
+    const quoteRequests = 2 * legs + 2 + orders;
+    // Budget for the normal RPC path. Retries and extra gas checks use the same cap.
+    const simulationRequests = 2;
+    const candidateRpcRequests = simulationRequests + l1FeeRequests;
+    const finalRpcRequests =
+      2 * (simulationRequests + Number(orders > 1)) + // Simulations and batch bitmap checks.
+      (2 + l1FeeRequests) + // Fee estimation.
+      1 + // Flash liquidity refresh.
+      submissionRequests;
+    return (
+      withinBudget() &&
+      quotes.remaining >= quoteRequests &&
+      subrequests.remaining >=
+        setupRequests + quoteRequests + candidateRpcRequests + finalRpcRequests
+    );
+  };
   const tokens = [
     ...new Set(
-      [...pairs.values()]
-        .flatMap(([tick]) => [tick.asset, tick.quote])
-        .concat(bridges),
+      ticks.flatMap((tick) => [tick.asset, tick.quote]).concat(bridges),
     ),
   ];
   stage("deployment_checks");
@@ -296,40 +295,42 @@ export async function resolveChain(
     cap: bigint;
     costCap: bigint;
   }[] = [];
-  for (const pair of pairs.values()) {
-    // Reserve quote requests for executable routes, gas and final valuation.
-    if (!canTryCandidate() || quotes.remaining <= LIMITS.quoteRequests / 2)
+  for (const tick of ticks) {
+    // Leave requests for revalidation, sizing fees and the sizing gas quote.
+    if (
+      !canTryCandidate(1, 1, 4) ||
+      quotes.remaining <= LIMITS.quoteRequests / 2
+    )
       break;
-    const { asset, quote } = pair[0];
+    const { asset, quote } = tick;
     try {
       const price = await reference(asset, quote);
-      const promising = pair.filter(
-        (tick) => estimatedSurplus(tick, price, tick.availableSupply) > 0n,
-      );
-      if (!promising.length) continue;
+      if (estimatedSurplus(tick, price, tick.availableSupply) <= 0n) continue;
       const assetCap = await quoteCap(asset);
       const costCap = await quoteCap(quote);
       const quotePrice = prices.get(quote)!;
-      for (const tick of promising) {
-        const costBound = (costCap << 128n) / tick.priceX128;
-        const cap = assetCap < costBound ? assetCap : costBound;
-        const [amount] = sizes(tick.availableSupply, cap);
-        if (!amount) continue;
-        const gain = estimatedSurplus(tick, price, amount);
-        const score = (gain * quotePrice.value) / quotePrice.amount;
-        if (score > 0n) ranked.push({ tick, price, score, cap, costCap });
-      }
+      const costBound = (costCap << 128n) / tick.priceX128;
+      const cap = assetCap < costBound ? assetCap : costBound;
+      const [amount] = sizes(tick.availableSupply, cap);
+      if (!amount) continue;
+      const gain = estimatedSurplus(tick, price, amount);
+      const score = (gain * quotePrice.value) / quotePrice.amount;
+      if (score > 0n) ranked.push({ tick, price, score, cap, costCap });
     } catch (e) {
-      log({ type: "pair_skipped", chainId, asset, quote, error: errorKind(e) });
+      log({
+        type: "tick_skipped",
+        chainId,
+        tickId: tick.id,
+        error: errorKind(e),
+      });
     }
   }
   ranked.sort((a, b) => (a.score > b.score ? -1 : a.score < b.score ? 1 : 0));
-  const selected = ranked.slice(0, LIMITS.candidates);
-  if (!selected.length || !withinBudget()) return;
+  if (!ranked.length || !withinBudget()) return;
 
   const fundingTokens = [
     ...new Set(
-      selected.flatMap(({ tick }) => [tick.asset, tick.quote]).concat(bridges),
+      ranked.flatMap(({ tick }) => [tick.asset, tick.quote]).concat(bridges),
     ),
   ];
   stage("tick_revalidation");
@@ -337,7 +338,7 @@ export async function resolveChain(
     allowFailure: true,
     batchSize: 0,
     contracts: [
-      ...selected.map(({ tick }) => ({
+      ...ranked.map(({ tick }) => ({
         address: yld,
         abi: protocolAbi,
         functionName: "getTick" as const,
@@ -351,7 +352,7 @@ export async function resolveChain(
       })),
     ],
   });
-  const verified = selected.flatMap(
+  const verified = ranked.flatMap(
     ({ tick: cached, price, cap, costCap }, i) => {
       const read = fresh[i];
       if (read?.status !== "success" || typeof read.result === "bigint")
@@ -376,7 +377,7 @@ export async function resolveChain(
   log({
     type: "ticks_discovered",
     chainId,
-    indexed: indexed.length,
+    selected: ticks.length,
     ranked: ranked.length,
     verified: verified.length,
   });
@@ -384,7 +385,7 @@ export async function resolveChain(
 
   const flashBalances = new Map(
     fundingTokens.map((token, i) => {
-      const read = fresh[selected.length + i];
+      const read = fresh[ranked.length + i];
       return [
         token,
         read?.status === "success" && typeof read.result === "bigint"
@@ -403,15 +404,9 @@ export async function resolveChain(
   );
   stage("candidate_quotes");
   const batch: Candidate[] = [];
-  let attempts = 0;
   for (const { tick, cap, costCap } of verified) {
-    if (
-      !canTryCandidate() ||
-      quotes.remaining < 10 ||
-      attempts >= LIMITS.candidates ||
-      batch.length >= LIMITS.batch
-    )
-      break;
+    const orders = batch.length + 1;
+    if (orders > LIMITS.batch || !canTryCandidate(orders, 1)) break;
     try {
       const quotePrice = prices.get(address(tick.quote))!;
       let bridgeQuoteLiquidity = 0n;
@@ -421,7 +416,8 @@ export async function resolveChain(
         if (
           bridge === address(tick.asset) ||
           bridge === address(tick.quote) ||
-          balance <= 0n
+          balance <= 0n ||
+          !canTryCandidate(orders, 2)
         )
           continue;
         try {
@@ -452,12 +448,7 @@ export async function resolveChain(
         cap,
         bridgeQuoteLiquidity,
       )) {
-        if (
-          attempts >= LIMITS.candidates ||
-          !canTryCandidate() ||
-          quotes.remaining < 10
-        )
-          break;
+        if (!canTryCandidate(orders, 1)) break;
         const cost = quotePrincipal(amount, tick.priceX128);
         if (cost <= 0n || cost > costCap) continue;
         const direct =
@@ -489,13 +480,7 @@ export async function resolveChain(
             }
           }
         for (const [token, principal] of funding) {
-          if (
-            !canTryCandidate() ||
-            quotes.remaining < 10 ||
-            attempts >= LIMITS.candidates
-          )
-            break;
-          attempts++;
+          if (!canTryCandidate(orders, direct ? 1 : 2)) break;
           try {
             const candidate = await quotes.candidate(
               tick,
@@ -655,9 +640,10 @@ export async function resolveChain(
   );
   if (submission.gas > gas || dryRun || !signer || !withinBudget()) return;
   stage("nonce_check");
-  const [gasBalance, nonce] = await Promise.all([
+  const [gasBalance, nonce, submittedBlock] = await Promise.all([
     client.getBalance({ address: bot }),
     availableNonce(client, bot),
+    client.getBlockNumber({ cacheTime: 0 }),
   ]);
   if (gasBalance < gas * fees.maxFeePerGas + l1 * 2n) {
     log({ type: "insufficient_gas_balance", chainId });
@@ -694,6 +680,7 @@ export async function resolveChain(
       !(await reservePending(env.DB, chainId, bot, {
         hash,
         nonce,
+        submittedBlock: submittedBlock.toString(),
         createdAt: Date.now(),
         resolver: config.resolver,
         expectedBitmap: final.bitmap.toString(),

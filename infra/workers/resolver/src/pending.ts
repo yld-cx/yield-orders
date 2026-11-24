@@ -10,6 +10,7 @@ import { log } from "./shared.ts";
 export interface Pending {
   hash: Hex;
   nonce: number;
+  submittedBlock: string;
   createdAt: number;
   resolver: Address;
   expectedBitmap: string;
@@ -52,16 +53,45 @@ export async function observePending(
     .bind(key)
     .first<{ meta: string }>();
   if (!row) return false;
-  const pending = JSON.parse(row.meta) as Pending;
+  const pending = JSON.parse(row.meta) as Omit<Pending, "submittedBlock"> & {
+    submittedBlock?: string;
+  };
+  let block: bigint;
   try {
-    const receipt = await client.getTransactionReceipt({ hash: pending.hash });
-    if (
-      receipt.transactionHash.toLowerCase() !== pending.hash.toLowerCase() ||
-      receipt.from.toLowerCase() !== bot.toLowerCase() ||
-      receipt.to?.toLowerCase() !== pending.resolver.toLowerCase() ||
-      (await client.getBlockNumber({ cacheTime: 0 })) < receipt.blockNumber + 3n
-    )
-      return true;
+    block = await client.getBlockNumber({ cacheTime: 0 });
+  } catch {
+    log({
+      type: "resolver_pending",
+      chainId,
+      hash: pending.hash,
+      nonce: pending.nonce,
+      ageMs: Date.now() - pending.createdAt,
+    });
+    return true;
+  }
+  if (pending.submittedBlock === undefined) {
+    // Both a successful initialization and a concurrent change block this run.
+    await db
+      .prepare("UPDATE state SET meta = ? WHERE key = ? AND meta = ?")
+      .bind(
+        JSON.stringify({ ...pending, submittedBlock: block.toString() }),
+        key,
+        row.meta,
+      )
+      .run();
+    return true;
+  }
+  if (block < BigInt(pending.submittedBlock) + 3n) return true;
+
+  const receipt = await client
+    .getTransactionReceipt({ hash: pending.hash })
+    .catch(() => undefined);
+  if (
+    receipt &&
+    receipt.transactionHash.toLowerCase() === pending.hash.toLowerCase() &&
+    receipt.from.toLowerCase() === bot.toLowerCase() &&
+    receipt.to?.toLowerCase() === pending.resolver.toLowerCase()
+  ) {
     const events = parseEventLogs({
       abi,
       logs: receipt.logs.filter(
@@ -86,22 +116,20 @@ export async function observePending(
       expectedGasCost: pending.expectedGasCost,
       events: events.map((e) => ({ event: e.eventName, args: e.args })),
     });
-    const result = await db
-      .prepare("DELETE FROM state WHERE key = ? AND meta = ?")
-      .bind(key, row.meta)
-      .run();
-    return result.meta.changes !== 1;
-  } catch {
-    // A dropped transaction or ambiguous broadcast requires reconciliation by hash and nonce.
+  } else {
     log({
-      type: "resolver_pending",
+      type: "resolver_receipt",
       chainId,
       hash: pending.hash,
       nonce: pending.nonce,
-      ageMs: Date.now() - pending.createdAt,
+      status: "unresolved",
     });
-    return true;
   }
+  const result = await db
+    .prepare("DELETE FROM state WHERE key = ? AND meta = ?")
+    .bind(key, row.meta)
+    .run();
+  return result.meta.changes !== 1;
 }
 
 export async function availableNonce(client: PublicClient, bot: Address) {

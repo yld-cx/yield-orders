@@ -2,15 +2,10 @@ import type { Address } from "viem";
 import type { SwapChain } from "@yld-cx/sdk/uniswap";
 
 export const LIMITS = {
-  indexedTicks: 256,
-  pairs: 12,
-  candidates: 8,
   batch: 8,
   durationMs: 50000,
   externalRequests: 50,
   quoteRequests: 40,
-  finalizationRequests: 16,
-  candidateRequests: 8,
   referencePriceImpact: 0.1,
   slippage: 0.5,
   quoteValueUsd: 10000,

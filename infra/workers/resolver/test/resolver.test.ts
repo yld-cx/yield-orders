@@ -102,11 +102,11 @@ test("live execution requires a valid signing key before contacting RPC", async 
   });
   const env = { DRY_RUN: "false" } as Env;
   await assert.rejects(
-    resolveChain(env, "ethereum"),
+    resolveChain(env, "ethereum", []),
     /Resolver signing key missing/,
   );
   await assert.rejects(
-    resolveChain({ ...env, RESOLVER_SIGNING_KEY: "0x00" }, "ethereum"),
+    resolveChain({ ...env, RESOLVER_SIGNING_KEY: "0x00" }, "ethereum", []),
   );
 });
 test("third-token quotes bind both legs and use the pre-leg minimum", async () => {
@@ -291,55 +291,148 @@ test("wallet nonce is available only when its confirmed and pending counts agree
   assert.equal(await availableNonce(client, A), undefined);
 });
 
-test("ambiguous broadcasts keep their journal entry until the expected receipt is confirmed", async () => {
-  const { db } = testDatabase();
-  const hash = `0x${"a".repeat(64)}` as const;
-  const record = {
-    hash,
-    nonce: 1,
-    createdAt: 0,
-    resolver: A,
-    expectedBitmap: "1",
-    expectedGross: "100",
-    expectedGasCost: "10",
-  };
-  const reservations = await Promise.all([
-    reservePending(db, 8453, F, record),
-    reservePending(db, 8453, F, record),
-  ]);
-  assert.deepEqual(reservations, [true, false]);
-  const missing = {
-    getTransactionReceipt: async () => {
-      throw new Error("RPC with secret URL");
-    },
-  } as unknown as PublicClient;
-  assert.equal(
-    await observePending(missing, db, 8453, Q),
-    false,
-    "journals are wallet-specific",
-  );
-  assert.equal(await observePending(missing, db, 8453, F), true);
-  let head = 12n;
-  let from: Address = Q;
+const pendingRecord = {
+  hash: `0x${"a".repeat(64)}` as const,
+  nonce: 1,
+  createdAt: 0,
+  resolver: A,
+  expectedBitmap: "1",
+  expectedGross: "100",
+  expectedGasCost: "10",
+};
+const submissionBlock = 2n ** 54n;
+
+for (const status of ["success", "reverted", "unresolved", "mismatch"]) {
+  test(`pending reservation expires after three blocks when receipt status is ${status}`, async (t) => {
+    const { db, sqlite } = testDatabase();
+    const record = {
+      ...pendingRecord,
+      submittedBlock: submissionBlock.toString(),
+    };
+    const reservations = await Promise.all([
+      reservePending(db, 8453, F, record),
+      reservePending(db, 8453, F, record),
+    ]);
+    assert.deepEqual(reservations, [true, false]);
+    const logs: Record<string, unknown>[] = [];
+    t.mock.method(console, "log", (line: string) =>
+      logs.push(JSON.parse(line)),
+    );
+    let block = submissionBlock + 2n;
+    let receiptReads = 0;
+    const client = {
+      getBlockNumber: async ({ cacheTime }: { cacheTime: number }) => {
+        assert.equal(cacheTime, 0);
+        return block;
+      },
+      getTransactionReceipt: async ({ hash }: { hash: string }) => {
+        receiptReads++;
+        assert.equal(hash, record.hash);
+        if (status === "unresolved") throw new Error("RPC with secret URL");
+        return {
+          transactionHash: hash,
+          from: status === "mismatch" ? Q : F,
+          to: A,
+          status,
+          blockNumber: block,
+          gasUsed: 1n,
+          logs: [],
+        };
+      },
+    } as unknown as PublicClient;
+    assert.equal(await observePending(client, db, 8453, Q), false);
+    assert.equal(await observePending(client, db, 8453, F), true);
+    assert.equal(receiptReads, 0);
+    block++;
+    assert.equal(await observePending(client, db, 8453, F), false);
+    assert.equal(receiptReads, 1);
+    assert.equal(sqlite.prepare("SELECT * FROM state").get(), undefined);
+    assert.equal(logs[0].type, "resolver_receipt");
+    assert.equal(logs[0].status, status === "mismatch" ? "unresolved" : status);
+    assert.ok(!JSON.stringify(logs).includes("secret URL"));
+    if (status === "success" || status === "reverted")
+      assert.equal(logs[0].expectedGross, record.expectedGross);
+  });
+}
+
+test("a legacy pending record begins aging at the first reliable observed block", async () => {
+  const { db, sqlite } = testDatabase();
+  const key = `resolver:pending:8453:${F.toLowerCase()}`;
+  sqlite
+    .prepare("INSERT INTO state VALUES (?, ?, 0)")
+    .run(key, JSON.stringify(pendingRecord));
+  const current = () =>
+    JSON.parse(String(sqlite.prepare("SELECT meta FROM state").get()?.meta));
+  let block: bigint | undefined;
+  let receiptReads = 0;
   const client = {
-    getTransactionReceipt: async ({ hash: requested }: { hash: string }) => {
-      assert.equal(requested, hash);
-      return {
-        transactionHash: hash,
-        from,
-        to: A,
-        status: "success",
-        blockNumber: 10n,
-        gasUsed: 1n,
-        logs: [],
-      };
+    getBlockNumber: async () => {
+      if (block === undefined) throw new Error("Unavailable");
+      return block;
     },
-    getBlockNumber: async () => head,
+    getTransactionReceipt: async () => {
+      receiptReads++;
+      throw new Error("Unknown receipt");
+    },
   } as unknown as PublicClient;
   assert.equal(await observePending(client, db, 8453, F), true);
-  from = F;
+  assert.deepEqual(current(), pendingRecord);
+  block = submissionBlock;
   assert.equal(await observePending(client, db, 8453, F), true);
-  head = 13n;
+  assert.deepEqual(current(), {
+    ...pendingRecord,
+    submittedBlock: block.toString(),
+  });
+  block += 2n;
+  assert.equal(await observePending(client, db, 8453, F), true);
+  assert.equal(receiptReads, 0);
+  block++;
   assert.equal(await observePending(client, db, 8453, F), false);
-  assert.equal(await observePending(missing, db, 8453, F), false);
+  assert.equal(receiptReads, 1);
+});
+
+test("concurrent observers can resume execution only after their own conditional deletion", async () => {
+  const { db } = testDatabase();
+  const record = { ...pendingRecord, submittedBlock: "1" };
+  assert.ok(await reservePending(db, 8453, F, record));
+  let release = () => {};
+  const bothReading = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reads = 0;
+  const client = {
+    getBlockNumber: async () => 4n,
+    getTransactionReceipt: async () => {
+      if (++reads === 2) release();
+      await bothReading;
+      throw new Error("Unknown receipt");
+    },
+  } as unknown as PublicClient;
+  const blocked = await Promise.all([
+    observePending(client, db, 8453, F),
+    observePending(client, db, 8453, F),
+  ]);
+  assert.deepEqual(blocked.sort(), [false, true]);
+});
+
+test("legacy block initialization preserves an overlapping invocation's updated record", async () => {
+  const { db, sqlite } = testDatabase();
+  const key = `resolver:pending:8453:${F.toLowerCase()}`;
+  sqlite
+    .prepare("INSERT INTO state VALUES (?, ?, 0)")
+    .run(key, JSON.stringify(pendingRecord));
+  const updated = { ...pendingRecord, submittedBlock: "12" };
+  const client = {
+    getBlockNumber: async () => {
+      sqlite
+        .prepare("UPDATE state SET meta = ? WHERE key = ?")
+        .run(JSON.stringify(updated), key);
+      return 13n;
+    },
+  } as unknown as PublicClient;
+  assert.equal(await observePending(client, db, 8453, F), true);
+  assert.equal(
+    sqlite.prepare("SELECT meta FROM state").get()?.meta,
+    JSON.stringify(updated),
+  );
 });

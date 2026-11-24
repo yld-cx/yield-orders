@@ -25,6 +25,23 @@ function runtime(vars = {}, options = {}) {
   );
 }
 
+async function migrate(mf) {
+  const db = await mf.getD1Database("DB");
+  for (const file of ["0001_init.sql", "0002_ticks.sql"]) {
+    const sql = readFileSync(
+      new URL(`../../data/migrations/${file}`, import.meta.url),
+      "utf8",
+    );
+    await db.batch(
+      sql
+        .split(";")
+        .map((statement) => statement.trim())
+        .filter(Boolean)
+        .map((statement) => db.prepare(statement)),
+    );
+  }
+}
+
 test("packaged cron resolves an empty shared D1 index and exposes no HTTP execution endpoint", async () => {
   const methods = [];
   const mf = runtime(
@@ -40,20 +57,7 @@ test("packaged cron resolves an empty shared D1 index and exposes no HTTP execut
     },
   );
   try {
-    const db = await mf.getD1Database("DB");
-    for (const file of ["0001_init.sql", "0002_ticks.sql"]) {
-      const sql = readFileSync(
-        new URL(`../../data/migrations/${file}`, import.meta.url),
-        "utf8",
-      );
-      await db.batch(
-        sql
-          .split(";")
-          .map((statement) => statement.trim())
-          .filter(Boolean)
-          .map((statement) => db.prepare(statement)),
-      );
-    }
+    await migrate(mf);
     const worker = await mf.getWorker();
     assert.equal(
       (await worker.scheduled({ cron: config.triggers.crons[0] })).outcome,
@@ -96,6 +100,7 @@ test("packaged cron logs provider failures without emitting private credentials"
     },
   );
   try {
+    await migrate(mf);
     const worker = await mf.getWorker();
     assert.equal(
       (await worker.scheduled({ cron: config.triggers.crons[0] })).outcome,

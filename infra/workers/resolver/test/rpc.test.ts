@@ -6,7 +6,6 @@ import { resolveChain } from "../src/execute.ts";
 import { Subrequests } from "../src/subrequests.ts";
 import { LIMITS } from "../src/config.ts";
 import type { Env } from "../src/shared.ts";
-import { testDatabase } from "./database.ts";
 
 const urls = ["https://primary.rpc.test/", "https://secondary.rpc.test/"];
 const env = {
@@ -65,17 +64,16 @@ test("deployment code reads and the immutable and decimals multicall share one H
       ),
     );
   });
-  const { db, putTick } = testDatabase();
-  putTick(8453, {
+  const tick = {
     id: 1n,
     asset: "0x1111111111111111111111111111111111111111",
     quote: "0x2222222222222222222222222222222222222222",
     priceX128: 1n,
     availableSupply: 1n,
-  });
+  } as const;
   const subrequests = new Subrequests(LIMITS.externalRequests);
   await assert.rejects(
-    resolveChain({ ...env, DB: db }, "base", { subrequests }),
+    resolveChain(env, "base", [tick], { subrequests }),
     /Resolver identity mismatch/,
   );
   assert.deepEqual(
@@ -99,22 +97,8 @@ test("RPC fallback retries a transient outage across the providers once", async 
       }),
     );
   });
-  // Stop after successful chain verification, before deployment/discovery work.
-  const verified = new Error("Chain verified; storage reached");
-  const DB = {
-    prepare: () => {
-      throw verified;
-    },
-  } as unknown as D1Database;
-  const stages: string[] = [];
-  await assert.rejects(
-    resolveChain({ ...env, DB }, "base", {
-      onStage: (stage) => stages.push(stage),
-    }),
-    (error) => error === verified,
-  );
+  await resolveChain(env, "base", []);
   assert.deepEqual(calls, [urls[0], urls[1], urls[0]]);
-  assert.equal(stages.at(-1), "tick_index");
 });
 
 for (const status of [503, 401]) {
@@ -126,7 +110,7 @@ for (const status of [503, 401]) {
     });
     const stages: string[] = [];
     await assert.rejects(
-      resolveChain(env, "base", {
+      resolveChain(env, "base", [], {
         onStage: (stage) => stages.push(stage),
       }),
       { name: "HttpRequestError", status },
@@ -138,7 +122,6 @@ for (const status of [503, 401]) {
 
 test("resolver tries the optional private endpoint first and signs off cleanly on public fallback", async (t) => {
   const privateUrl = "https://private.rpc.test/credential";
-  const { db } = testDatabase();
   const calls: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     calls.push(String(url));
@@ -150,7 +133,7 @@ test("resolver tries the optional private endpoint first and signs off cleanly o
       { jsonrpc: "2.0", id: request.id, result: "0x2105" },
     ]);
   });
-  await resolveChain({ ...env, DB: db, PRIVATE_RPC_BASE: privateUrl }, "base");
+  await resolveChain({ ...env, PRIVATE_RPC_BASE: privateUrl }, "base", []);
   assert.deepEqual(calls, [privateUrl, urls[0]]);
 });
 
@@ -161,7 +144,7 @@ test("provider fallback and retries consume the invocation's remaining HTTP slot
     calls.push(String(url));
     return new Response("Unavailable", { status: 503 });
   });
-  await assert.rejects(resolveChain(env, "base", { subrequests }));
+  await assert.rejects(resolveChain(env, "base", [], { subrequests }));
   assert.deepEqual(calls, [urls[0], urls[1], urls[0]]);
   assert.equal(subrequests.remaining, 0);
 });

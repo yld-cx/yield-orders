@@ -2,7 +2,7 @@
 
 Cloudflare Worker + D1 for token metadata, prices, and protocol events on [supported networks](../../../protocol/ethereum/README.md#deployments). Requires Node.js 24+; use Workers Paid for production.
 
-Indexing runs every five minutes. On a fresh database it records each chain's first observed head as the starting block, then waits for confirmations. Subsequent runs scan from the saved checkpoint plus one through the latest confirmed block. Each chunk commits events, changed ticks, and its checkpoint in one revision-guarded D1 batch. RPC or database failures leave that chunk for the next run. Events older than `EVENT_RETENTION_MONTHS` are automatically removed.
+Indexing runs on the `triggers.crons` schedule in `wrangler.jsonc`. On a fresh database it records each chain's first observed head as the starting block, then waits for confirmations. Subsequent runs scan from the saved checkpoint plus one through the latest confirmed block. Each chunk commits events, changed ticks, and its checkpoint in one revision-guarded D1 batch. RPC or database failures leave that chunk for the next run. Events older than `EVENT_RETENTION_MONTHS` are automatically removed.
 
 The `ticks` table stores complete `getTick()` snapshots keyed by `chainId:tickId`. The Worker deduplicates affected IDs across each chunk and reads them via multicall at the confirmed end block. The row timestamp comes from that block. Bigints are stored as decimal strings, and ticks with zero available supply are retained with `active: false`. Existing installations fill the index as relevant events are synchronized after their saved checkpoint, without resuming earlier ranges.
 
@@ -15,10 +15,10 @@ npm run migrate:local
 npm run dev
 ```
 
-Run the five-minute job locally.
+Run the scheduled job locally.
 
 ```sh
-curl 'http://localhost:8787/__scheduled?cron=*/5+*+*+*+*'
+curl 'http://localhost:8787/__scheduled'
 ```
 
 Format: `npm run format`. Checks: `npm run check`. Bundle without deploying: `npm run build`.
@@ -41,7 +41,7 @@ npx wrangler login
 npm run deploy
 ```
 
-Deployment provisions or reuses the `yld-data` database, applies migrations, then activates the five-minute schedule. Keep the Worker/database names unchanged to reuse existing resources.
+Deployment provisions or reuses the `yld-data` database, applies migrations, then activates the configured schedule. Keep the Worker/database names unchanged to reuse existing resources.
 
 Optional settings in `wrangler.jsonc`:
 

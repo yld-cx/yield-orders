@@ -17,12 +17,15 @@ import core from "@yld-cx/ethereum-protocol/deployments/config.json" with { type
 import { chainConfig, LIMITS } from "../src/config.ts";
 import manifest from "@yld-cx/ethereum-protocol/deployments/resolver.json" with { type: "json" };
 import { resolveChain } from "../src/execute.ts";
+import { reservePending } from "../src/pending.ts";
 import { Subrequests } from "../src/subrequests.ts";
+import { discoverTicks } from "../src/ticks.ts";
 import { testDatabase } from "./database.ts";
 import type { Env } from "../src/shared.ts";
 
 const A = "0x1111111111111111111111111111111111111111" as const,
   Q = "0x2222222222222222222222222222222222222222" as const;
+const B = "0x0101010101010101010101010101010101010101" as const;
 const RESOLVER = "0x3333333333333333333333333333333333333333",
   BOT = "0x000000000000000000000000000000000000dEaD";
 const TEST_KEY = `0x${"01".repeat(32)}` as const;
@@ -55,7 +58,7 @@ for (const dryRun of ["true", "false"])
       resolver: null,
       resolverCodeHash: keccak256("0x6000"),
     });
-    await resolveChain(env, "ethereum", { client });
+    await resolveChain(env, "ethereum", [], { client });
     assert.equal(
       rpcCalls,
       0,
@@ -64,13 +67,13 @@ for (const dryRun of ["true", "false"])
 
     Object.assign(config, { resolver: RESOLVER, resolverCodeHash: null });
     await assert.rejects(
-      resolveChain(env, "ethereum", { client }),
+      resolveChain(env, "ethereum", [], { client }),
       /Resolver code hash missing/,
     );
 
     Object.assign(config, { resolverCodeHash: keccak256("0x6000") });
     await assert.rejects(
-      resolveChain(env, "ethereum", { client }),
+      resolveChain(env, "ethereum", [], { client }),
       /RPC chain mismatch/,
     );
     assert.equal(
@@ -92,10 +95,18 @@ for (const [name, options] of Object.entries({
   drainedFlash: { freshFlash: false },
   empty: { empty: true },
   live: { live: true, withKey: true },
-  existingPending: { live: true, withKey: true, initialPending: 8 },
+  limitedBudget: { live: true, withKey: true, requestBudget: 22 },
+  expiredPending: { live: true, withKey: true, expired: true },
+  existingPending: {
+    live: true,
+    withKey: true,
+    expired: true,
+    initialPending: 8,
+  },
   changedNonce: { live: true, withKey: true, finalNonce: 8 },
   ambiguousBroadcast: { live: true, withKey: true, ambiguousBroadcast: true },
   ranked: { competing: true },
+  freshReference: { freshReference: true },
 }))
   test(`D1 resolver pipeline: ${name}`, async (t) => {
     const now = Date.now();
@@ -111,10 +122,13 @@ for (const [name, options] of Object.entries({
       empty = false,
       withKey = false,
       live = false,
+      requestBudget = LIMITS.externalRequests,
+      expired = false,
       initialPending = 7,
       finalNonce = 7,
       ambiguousBroadcast = false,
       competing = false,
+      freshReference = false,
     } = options as {
       promising?: boolean;
       priceImpact?: number;
@@ -126,10 +140,13 @@ for (const [name, options] of Object.entries({
       empty?: boolean;
       withKey?: boolean;
       live?: boolean;
+      requestBudget?: number;
+      expired?: boolean;
       initialPending?: number;
       finalNonce?: number;
       ambiguousBroadcast?: boolean;
       competing?: boolean;
+      freshReference?: boolean;
     };
     const config = manifest.chains["1"];
     const saved = structuredClone(config);
@@ -145,6 +162,8 @@ for (const [name, options] of Object.entries({
     const requests: { endpoint: string; body: Record<string, unknown> }[] = [];
     const { db, putTick, sqlite } = testDatabase();
     const sent: Hex[] = [];
+    let assetPrice = 2n;
+    const block = 100n;
     t.mock.method(
       globalThis,
       "fetch",
@@ -160,10 +179,10 @@ for (const [name, options] of Object.entries({
             RESOLVER.toLowerCase(),
           );
           const record = sqlite.prepare("SELECT meta FROM state").get();
-          assert.equal(
-            JSON.parse(String(record?.meta)).hash,
-            keccak256(signed),
-          );
+          const pending = JSON.parse(String(record?.meta));
+          assert.equal(pending.hash, keccak256(signed));
+          assert.equal(pending.nonce, 7);
+          assert.equal(pending.submittedBlock, block.toString());
           sent.push(signed);
           if (ambiguousBroadcast)
             return new Response("Ambiguous", { status: 503 });
@@ -192,7 +211,11 @@ for (const [name, options] of Object.entries({
           const unit = (token: string) =>
             token === assets.accountingToken ? 10n ** 6n : 10n ** 18n;
           const price = (token: string) =>
-            token === A ? 2n : token === assets.wrappedNative ? 1000n : 1n;
+            token === A
+              ? assetPrice
+              : token === assets.wrappedNative
+                ? 1000n
+                : 1n;
           const amount = BigInt(String(body.amount)),
             output =
               (amount * price(tokenIn) * unit(tokenOut)) /
@@ -289,16 +312,14 @@ for (const [name, options] of Object.entries({
       availableSupply: 10n ** 20n,
     };
     if (!empty) putTick(1, tick);
-    if (competing) {
-      // These fresher rows all use the same reference and have less estimated profit.
-      for (let i = 1; i <= LIMITS.candidates * 2; i++)
-        putTick(
-          1,
-          { ...tick, id: BigInt(i), availableSupply: 10n ** 18n },
-          true,
-          i,
-        );
-    }
+    const other = {
+      ...tick,
+      id: 98n,
+      asset: B,
+      priceX128: priceAtTick(-1000),
+      availableSupply: 10n ** 18n,
+    };
+    if (competing) putTick(1, other, true, 1);
     putTick(8453, { ...tick, id: 100n });
     putTick(1, { ...tick, id: 101n, availableSupply: 0n });
     const reads: bigint[][] = [];
@@ -309,6 +330,7 @@ for (const [name, options] of Object.entries({
       getChainId: async () => 1,
       getCode: async () => "0x6000",
       getBalance: async () => 10n ** 18n,
+      getBlockNumber: async () => block,
       getTransactionCount: async ({ blockTag }: { blockTag: string }) => {
         const phase = Math.floor(nonceReads++ / 2);
         return phase === 0
@@ -349,7 +371,7 @@ for (const [name, options] of Object.entries({
           assert.equal(allowFailure, true);
           assert.deepEqual(
             contracts.slice(tickReads.length).map((c) => c.functionName),
-            Array(4).fill("balanceOf"),
+            Array(competing ? 5 : 4).fill("balanceOf"),
           );
           assert.equal(
             blockNumber,
@@ -387,11 +409,12 @@ for (const [name, options] of Object.entries({
               result = c.address === assets.accountingToken ? 6 : 18;
               break;
             case "getTick":
+              const indexed = c.args?.[0] === tick.id ? tick : other;
               result = {
-                asset: A,
+                asset: indexed.asset,
                 quote: Q,
                 durationDays: 7n,
-                priceX128: tick.priceX128,
+                priceX128: indexed.priceX128,
                 availableSupply: c.args?.[0] === tick.id ? freshSupply : 0n,
                 workingSupply: 0n,
                 exitWorking: 0n,
@@ -453,9 +476,30 @@ for (const [name, options] of Object.entries({
       MIN_EXPECTED_NET_USD: threshold,
       ...(withKey ? { RESOLVER_SIGNING_KEY: TEST_KEY } : {}),
     };
-    const subrequests = new Subrequests(LIMITS.externalRequests);
-    const run = () =>
-      resolveChain(env, "ethereum", { client: rpc, subrequests });
+    if (expired) {
+      assert.ok(
+        await reservePending(db, 1, privateKeyToAccount(TEST_KEY).address, {
+          hash: `0x${"a".repeat(64)}`,
+          nonce: 7,
+          submittedBlock: (block - 3n).toString(),
+          createdAt: now,
+          resolver: RESOLVER,
+          expectedBitmap: "1",
+          expectedGross: "100",
+          expectedGasCost: "10",
+        }),
+      );
+    }
+    const subrequests = new Subrequests(requestBudget);
+    const run = async (budget = subrequests) => {
+      const selected = await discoverTicks(db, [1], 0);
+      await resolveChain(
+        env,
+        "ethereum",
+        selected.map(({ tick }) => tick),
+        { client: rpc, subrequests: budget },
+      );
+    };
     if (failedImmutable) {
       await assert.rejects(run, /Resolver immutable mismatch/);
       assert.equal(requests.length, 0);
@@ -485,6 +529,12 @@ for (const [name, options] of Object.entries({
       sqlite.prepare("SELECT count(*) AS n FROM state").get()?.n,
       sent.length ? 1 : 0,
     );
+    if (expired)
+      assert.ok(
+        metrics.some(
+          (m) => m.type === "resolver_receipt" && m.status === "unresolved",
+        ),
+      );
     const swapCount = requests.filter((r) => r.endpoint === "swap").length;
     const eligible =
       promising &&
@@ -493,10 +543,11 @@ for (const [name, options] of Object.entries({
       !empty &&
       initialPending === 7;
     assert.equal(swapCount > 0, eligible);
+    if (name === "limitedBudget") assert.equal(swapCount, 1);
     assert.ok(requests.length <= LIMITS.quoteRequests);
     assert.equal(
       subrequests.remaining,
-      LIMITS.externalRequests - requests.length - sent.length,
+      requestBudget - requests.length - sent.length,
     );
     if (empty || initialPending !== 7) {
       assert.deepEqual(groups, []);
@@ -507,7 +558,7 @@ for (const [name, options] of Object.entries({
         "MORPHO",
         "UNIVERSAL_ROUTER",
         "PERMIT2",
-        ...Array(4).fill("decimals"),
+        ...Array(competing ? 5 : 4).fill("decimals"),
       ]);
     }
     if (eligible) {
@@ -527,12 +578,10 @@ for (const [name, options] of Object.entries({
       if (!freshFlash) assert.deepEqual(groups.at(-1), ["balanceOf"]);
     } else assert.equal(simulations, 0);
     if (competing) {
-      assert.equal(reads.length, 1);
-      assert.equal(reads[0].length, LIMITS.candidates);
-      assert.equal(
-        reads[0][0],
-        tick.id,
-        "estimated profit and available liquidity outrank recency",
+      assert.deepEqual(
+        reads,
+        [[tick.id, other.id]],
+        "estimated profit outranks discovery order",
       );
       assert.equal(
         requests.filter(
@@ -547,4 +596,19 @@ for (const [name, options] of Object.entries({
     } else if (eligible || name === "drainedTick")
       assert.deepEqual(reads, [[tick.id]]);
     else assert.deepEqual(reads, []);
+    if (freshReference) {
+      const previous = requests.length;
+      assetPrice = 1n;
+      await run(new Subrequests(LIMITS.externalRequests));
+      const fresh = requests.slice(previous);
+      assert.equal(fresh.length, 1);
+      assert.equal(fresh[0].endpoint, "quote");
+      assert.equal(fresh[0].body.tokenIn, A);
+      assert.equal(fresh[0].body.tokenOut, Q);
+      assert.deepEqual(
+        reads,
+        [[tick.id]],
+        "a lower fresh price prevents revalidation and execution",
+      );
+    }
   });
