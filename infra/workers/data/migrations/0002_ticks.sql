@@ -1,0 +1,6 @@
+CREATE TABLE ticks (
+  id TEXT PRIMARY KEY,
+  chain_id INTEGER NOT NULL,
+  meta TEXT NOT NULL,
+  timestamp INTEGER NOT NULL
+);

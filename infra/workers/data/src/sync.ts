@@ -1,5 +1,19 @@
-import { createPublicClient, fallback, http } from "viem";
-import { decodeLog, type EventRow, type RpcLog } from "./events.ts";
+import {
+  createPublicClient,
+  fallback,
+  http,
+  HttpRequestError,
+  ResponseBodyTooLargeError,
+} from "viem";
+import { rpcFallbackOptions, rpcHttpOptions } from "../../rpc.ts";
+import {
+  abi,
+  affectedTick,
+  decodeLog,
+  isTickLog,
+  type EventRow,
+  type RpcLog,
+} from "./events.ts";
 import {
   indexingNetwork,
   supportedNetworks,
@@ -11,6 +25,7 @@ import { cleanupEvents, retentionCutoff } from "./retention.ts";
 const RESERVE_MS = 35_000;
 const MAX_EVENTS = 256;
 const MAX_EVENT_BLOCKS = 24;
+const TICK_BATCH_SIZE = 32;
 class CapacityError extends Error {
   constructor() {
     super("Chunk capacity exceeded");
@@ -27,40 +42,19 @@ class BudgetError extends Error {
 export interface Rpc {
   head(): Promise<bigint>;
   logs(from: bigint, to: bigint): Promise<RpcLog[]>;
+  ticks(ids: bigint[], blockNumber: bigint): Promise<TickState[]>;
   block(number: bigint): Promise<{ timestamp: bigint; hash: string | null }>;
 }
 
-// Limit response bytes before Viem parses JSON, including oversized eth_getLogs results.
-async function boundedFetch(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-): Promise<Response> {
-  const response = await fetch(input, init);
-  if (!response.body) return response;
-  const reader = response.body.getReader();
-  const parts: Uint8Array[] = [];
-  let bytes = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    bytes += value.byteLength;
-    if (bytes > 4 * 1024 * 1024) {
-      await reader.cancel();
-      throw new CapacityError();
-    }
-    parts.push(value);
-  }
-  const body = new Uint8Array(bytes);
-  let offset = 0;
-  for (const part of parts) {
-    body.set(part, offset);
-    offset += part.byteLength;
-  }
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
+interface TickState {
+  availableSupply: bigint;
+}
+
+interface TickRow {
+  id: string;
+  chain_id: number;
+  meta: string;
+  timestamp: number;
 }
 
 export function rpcFor(n: Network, timeout: number): Rpc {
@@ -68,23 +62,28 @@ export function rpcFor(n: Network, timeout: number): Rpc {
     chain: n.chain,
     transport: fallback(
       n.rpcUrls.map((url) =>
-        http(url, {
-          // A full pass through the endpoints shares one timeout budget.
-          timeout: Math.max(1, Math.floor(timeout / n.rpcUrls.length)),
-          retryCount: 0,
-          batch: { batchSize: 100, wait: 10 },
-          fetchFn: boundedFetch,
-        }),
+        http(url, rpcHttpOptions(timeout, n.rpcUrls.length)),
       ),
-      { rank: false, retryCount: 2, retryDelay: 500 },
+      rpcFallbackOptions,
     ),
-    batch: { multicall: { wait: 10 } },
   });
   return {
     head: () => client.getBlockNumber({ cacheTime: 0 }),
     logs: (fromBlock, toBlock) =>
       client.getLogs({ address: n.address, fromBlock, toBlock }),
     block: (number) => client.getBlock({ blockNumber: number }),
+    ticks: async (ids, blockNumber) =>
+      (await client.multicall({
+        blockNumber,
+        allowFailure: false,
+        batchSize: 0,
+        contracts: ids.map((id) => ({
+          address: n.address,
+          abi,
+          functionName: "getTick" as const,
+          args: [id] as const,
+        })),
+      })) as TickState[],
   };
 }
 
@@ -134,31 +133,28 @@ export function lastBlock(meta: string): bigint {
   return BigInt((JSON.parse(meta) as { lastBlock: number }).lastBlock);
 }
 
-// All three statements execute in one D1 transaction. Each mutation is conditional
+// All statements execute in one D1 transaction. Each mutation is conditional
 // on the same revision. A superseded invocation becomes an entirely harmless no-op.
 export async function persistChunk(
   db: D1Database,
   chainId: number,
   expected: string,
-  from: bigint,
   to: bigint,
   events: EventRow[],
   now: number,
   cutoff = 0,
+  ticks: TickRow[] = [],
 ): Promise<string | null> {
+  if (to <= lastBlock(expected))
+    throw new Error("Invalid checkpoint advancement");
   const next = json({
     ...JSON.parse(expected),
-    lastBlock: Number(to > lastBlock(expected) ? to : lastBlock(expected)),
+    lastBlock: Number(to),
     revision: crypto.randomUUID(),
   });
   const key = `events:${chainId}`;
   const guard = "EXISTS (SELECT 1 FROM state WHERE key = ? AND meta = ?)";
   const results = await db.batch([
-    db
-      .prepare(
-        `DELETE FROM events WHERE chain_id = ? AND block_number BETWEEN ? AND ? AND ${guard}`,
-      )
-      .bind(chainId, Number(from), Number(to), key, expected),
     db
       .prepare(
         `INSERT INTO events(id, chain_id, block_number, event_name, meta, timestamp)
@@ -169,10 +165,21 @@ export async function persistChunk(
       .bind(JSON.stringify(events), cutoff, key, expected),
     db
       .prepare(
+        `INSERT INTO ticks(id, chain_id, meta, timestamp)
+      SELECT json_extract(value, '$.id'), json_extract(value, '$.chain_id'),
+        json_extract(value, '$.meta'), json_extract(value, '$.timestamp')
+      FROM json_each(?) WHERE ${guard}
+      ON CONFLICT(id) DO UPDATE SET meta = excluded.meta, timestamp = excluded.timestamp`,
+      )
+      .bind(JSON.stringify(ticks), key, expected),
+    db
+      .prepare(
         "UPDATE state SET meta = ?, timestamp = ? WHERE key = ? AND meta = ?",
       )
       .bind(next, now, key, expected),
   ]);
+  if (results.length !== 3 || results.some((result) => !result.success))
+    throw new Error("Chunk write failed");
   return results[2]?.meta.changes === 1 ? next : null;
 }
 
@@ -182,7 +189,7 @@ function rangeError(error: unknown): boolean {
     error instanceof Error
       ? `${error.name} ${error.message} ${String(error.cause ?? "")}`
       : String(error);
-  return /CapacityError|range|too many|too large|limit exceeded|response size|query returned|\b413\b|-32005/i.test(
+  return /CapacityError|ResponseBodyTooLargeError|range|too many|too large|limit exceeded|response size|query returned|\b413\b|-32005/i.test(
     message,
   );
 }
@@ -193,8 +200,6 @@ interface ChainRun {
   meta: string;
   initial: bigint;
   target: bigint;
-  startBlock: bigint;
-  cursor: bigint;
   size: number;
   chunks: number;
   blocks: number;
@@ -202,7 +207,6 @@ interface ChainRun {
   retries: number;
   status: string;
   active: boolean;
-  first: boolean;
 }
 
 export interface SyncDependencies {
@@ -241,7 +245,7 @@ export async function synchronize(
   let deletedEvents = 0,
     cleanupBatches = 0;
   const runs: ChainRun[] = [];
-  const offset = Math.floor(scheduledTime / 3600000) % supportedNetworks.length;
+  const offset = Math.floor(scheduledTime / 300_000) % supportedNetworks.length;
   const ordered = [
     ...supportedNetworks.slice(offset),
     ...supportedNetworks.slice(0, offset),
@@ -293,10 +297,29 @@ export async function synchronize(
       }
     }
   }
+  function reserveRpc(count: number) {
+    if (!withinBudget() || rpcRequests + count > maxRpc)
+      throw new BudgetError();
+    rpcRequests += count;
+  }
   async function rpcCall<T>(call: () => Promise<T>): Promise<T> {
-    if (!withinBudget() || rpcRequests >= maxRpc) throw new BudgetError();
-    rpcRequests++;
+    reserveRpc(1);
     return call();
+  }
+  async function rpcBatch<T, R>(
+    items: T[],
+    read: (item: T) => Promise<R>,
+  ): Promise<R[]> {
+    if (!items.length) return [];
+    reserveRpc(items.length);
+    // Concurrent reads share the HTTP batch. Drain any fallback attempts before proceeding.
+    const results = await Promise.allSettled(
+      items.map(async (item) => read(item)),
+    );
+    return results.map((result) => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
   }
   // Initialize all chains before processing chunks; one broken chain never aborts the others.
   for (const base of ordered) {
@@ -325,8 +348,6 @@ export async function synchronize(
         meta,
         initial,
         target,
-        startBlock,
-        cursor: initial + 1n,
         size: n.chunkSize,
         chunks: 0,
         blocks: 0,
@@ -338,7 +359,6 @@ export async function synchronize(
             ? "waiting_for_safe_head"
             : "partial",
         active: !waitingForConfirmations && !waitingForSafeHead,
-        first: true,
       };
       runs.push(run);
       log({
@@ -376,14 +396,7 @@ export async function synchronize(
     let phase = "logs";
     try {
       if (d1Queries + 3 > maxD1) throw new BudgetError();
-      // Leave room for forward progress even after a provider forces very small ranges.
-      const overlap = BigInt(Math.min(n.overlap, Math.floor(run.size / 2)));
-      const resume = lastBlock(run.meta) - overlap + 1n;
-      const from = run.first
-        ? resume > run.startBlock
-          ? resume
-          : run.startBlock
-        : run.cursor;
+      const from = lastBlock(run.meta) + 1n;
       if (from > run.target) {
         run.active = false;
         run.status = "complete";
@@ -393,20 +406,23 @@ export async function synchronize(
       const to = end < run.target ? end : run.target;
       const entries = await rpcCall(() => rpc.logs(from, to));
       if (entries.length > MAX_EVENTS) throw new CapacityError();
-      const blockNumbers = [...new Set(entries.map((e) => e.blockNumber))];
-      if (blockNumbers.length > MAX_EVENT_BLOCKS) throw new CapacityError();
-      const blocks = new Map<
-        bigint,
-        { timestamp: bigint; hash: string | null }
-      >();
-      phase = "block_timestamps";
-      // Sequential RPC calls cap outgoing concurrency at one and bound timestamp fanout.
-      for (const number of blockNumbers) {
-        if (number === null || number < from || number > to)
-          throw new Error("RPC log outside range");
-        blocks.set(number, await rpcCall(() => rpc.block(number)));
+      const blockNumbers = new Set<bigint>();
+      for (const { blockNumber } of entries) {
+        if (blockNumber === null || blockNumber < from || blockNumber > to)
+          throw new Error("Unexpected RPC log block");
+        blockNumbers.add(blockNumber);
       }
+      if (blockNumbers.size > MAX_EVENT_BLOCKS) throw new CapacityError();
+      if (entries.some(isTickLog)) blockNumbers.add(to);
+      phase = "block_timestamps";
+      const blocks = new Map(
+        await rpcBatch(
+          [...blockNumbers],
+          async (number) => [number, await rpc.block(number)] as const,
+        ),
+      );
       const events: EventRow[] = [];
+      const affected = new Set<bigint>();
       phase = "decode";
       for (const entry of entries) {
         const block = blocks.get(entry.blockNumber!)!;
@@ -416,8 +432,44 @@ export async function synchronize(
         )
           throw new Error("Inconsistent RPC log/block");
         const event = decodeLog(n.chainId, entry, block.timestamp);
-        if (event && (cutoff === undefined || event.timestamp >= cutoff))
+        if (!event) continue;
+        const tickId = affectedTick(event);
+        if (tickId !== undefined) affected.add(tickId);
+        if (cutoff === undefined || event.timestamp >= cutoff)
           events.push(event);
+      }
+      const tickRows: TickRow[] = [];
+      if (affected.size) {
+        phase = "ticks";
+        const timestamp = integer(
+          blocks.get(to)!.timestamp.toString(),
+          "block timestamp",
+        );
+        const ids = [...affected];
+        const batches: bigint[][] = [];
+        for (let i = 0; i < ids.length; i += TICK_BATCH_SIZE)
+          batches.push(ids.slice(i, i + TICK_BATCH_SIZE));
+        const states = await rpcBatch(batches, async (batch) => {
+          const result = await rpc.ticks(batch, to);
+          if (result.length !== batch.length)
+            throw new Error("Incomplete tick reads");
+          return result;
+        });
+        for (const [index, state] of states.flat().entries()) {
+          if (typeof state.availableSupply !== "bigint")
+            throw new Error("Invalid tick state");
+          const tickId = ids[index]!;
+          tickRows.push({
+            id: `${n.chainId}:${tickId}`,
+            chain_id: n.chainId,
+            meta: json({
+              ...state,
+              tickId,
+              active: state.availableSupply > 0n,
+            }),
+            timestamp,
+          });
+        }
       }
       if (!withinBudget()) throw new BudgetError();
       phase = "database";
@@ -426,11 +478,11 @@ export async function synchronize(
         env.DB,
         n.chainId,
         run.meta,
-        from,
         to,
         events,
         Math.floor(now() / 1000),
         cutoff,
+        tickRows,
       );
       if (!next) {
         run.active = false;
@@ -438,8 +490,6 @@ export async function synchronize(
         continue;
       }
       run.meta = next;
-      run.cursor = to + 1n;
-      run.first = false;
       run.chunks++;
       chunks++;
       run.blocks += Number(to - from + 1n);
@@ -452,7 +502,14 @@ export async function synchronize(
       if (error instanceof BudgetError) {
         run.active = false;
         run.status = "budget";
-      } else if (rangeError(error) && run.size > 1 && run.retries < 11) {
+      } else if (
+        run.size > 1 &&
+        run.retries < 11 &&
+        ((phase === "logs" && rangeError(error)) ||
+          (phase === "block_timestamps" &&
+            (error instanceof ResponseBodyTooLargeError ||
+              (error instanceof HttpRequestError && error.status === 413))))
+      ) {
         run.size = Math.max(1, Math.floor(run.size / 2));
         run.retries++;
         log({

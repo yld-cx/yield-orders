@@ -13,7 +13,7 @@
       "migrations_dir": "migrations",
     },
   ],
-  "triggers": { "crons": ["0 * * * *"] },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "observability": { "enabled": true },
   "vars": {
     "CORS_ORIGINS": "https://yld.cx",

@@ -21,7 +21,31 @@ export const eventAbi = abi.filter(
   (item): item is AbiEvent => item.type === "event",
 );
 export const eventNames = eventAbi.map((item) => item.name);
-const selectors = new Set(eventAbi.map((item) => toEventSelector(item)));
+const tickEvents = new Set([
+  "TickCreated",
+  "Supplied",
+  "Withdrawn",
+  "UseOpened",
+  "TermRepaid",
+  "TermClosed",
+  "ImmediateSwap",
+]);
+
+export function affectedTick(event: EventRow): bigint | undefined {
+  if (tickEvents.has(event.event_name))
+    return BigInt(JSON.parse(event.meta).tickId);
+}
+
+const selectors = new Map(
+  eventAbi.map((item) => [toEventSelector(item), item.name]),
+);
+
+export function isTickLog(entry: RpcLog): boolean {
+  const selector = entry.topics[0];
+  return (
+    selector !== undefined && tickEvents.has(selectors.get(selector) ?? "")
+  );
+}
 
 export interface RpcLog {
   address: string;

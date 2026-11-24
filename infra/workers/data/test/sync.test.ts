@@ -4,7 +4,13 @@ import manifest from "@yld-cx/ethereum-protocol/deployments/config.json" with { 
 import { indexingNetwork, supportedNetworks } from "../src/networks.ts";
 import { synchronize } from "../src/sync.ts";
 import type { RpcLog } from "../src/events.ts";
-import { TestDatabase, environment, fakeRpc, supplied } from "./helpers.ts";
+import {
+  TestDatabase,
+  environment,
+  fakeRpc,
+  supplied,
+  tickState,
+} from "./helpers.ts";
 
 function progress(db: TestDatabase) {
   return Object.fromEntries(
@@ -51,7 +57,7 @@ test("every manifest network is configured, uses manifest address and permits an
   }
 });
 
-test("hourly invocation processes all chains with independent checkpoints and events", async () => {
+test("five-minute invocation processes all chains with independent checkpoints and events", async () => {
   const db = new TestDatabase(),
     env = environment(db);
   const visited: number[] = [];
@@ -110,7 +116,7 @@ test("backfill resumes and eventually catches up across multiple scheduled invoc
     env = { ...environment(db), MAX_CHUNKS: "3" };
   const saved: number[] = [];
   for (let i = 0; i < 4; i++) {
-    await synchronize(env, i * 3600000, { rpc: () => fakeRpc(31n) });
+    await synchronize(env, i * 300_000, { rpc: () => fakeRpc(31n) });
     saved.push(Number(progress(db)["events:8453"]));
   }
   assert.ok(saved[0]! < 29);
@@ -201,11 +207,11 @@ test("maximum chunks, RPC requests and D1 queries bound invocation work", async 
   });
 });
 
-test("rotation prevents starvation even when only one chunk is allowed per hour", async () => {
+test("rotation prevents starvation even when only one chunk is allowed per run", async () => {
   const db = new TestDatabase(),
     env = { ...environment(db), MAX_CHUNKS: "1" };
   for (let i = 0; i < 3; i++)
-    await synchronize(env, i * 3600000, { rpc: () => fakeRpc() });
+    await synchronize(env, i * 300_000, { rpc: () => fakeRpc() });
   assert.ok(Object.values(progress(db)).every((last) => Number(last) > 9));
 });
 
@@ -297,7 +303,7 @@ test("first run snapshots each current head once and waits for confirmations", a
     assert.equal(JSON.parse(String(saved.meta)).startBlock, 100);
   }
   const ranges: bigint[] = [];
-  await synchronize(env, 3600000, {
+  await synchronize(env, 300_000, {
     rpc: () => ({
       ...fakeRpc(200n),
       logs: async (from) => {
@@ -341,4 +347,101 @@ test("failed initial head retrieval does not persist a guessed start block", asy
     }),
   });
   assert.deepEqual(progress(db), {});
+});
+
+test("changed ticks are deduplicated at the confirmed end block and upserted without rescanning", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  const id = (1n << 256n) - 1n;
+  const supply = 1n << 250n;
+  const reads: [bigint[], bigint][] = [];
+  const ranges: [bigint, bigint][] = [];
+  const run = (head: bigint, availableSupply: bigint, entries: RpcLog[]) =>
+    synchronize(env, 0, {
+      rpc: (n) => {
+        if (n.chainId !== 8453) return fakeRpc(head);
+        const rpc = fakeRpc(head, entries);
+        return {
+          ...rpc,
+          logs: async (from, to) => {
+            ranges.push([from, to]);
+            return rpc.logs(from, to);
+          },
+          ticks: async (ids, block) => {
+            reads.push([ids, block]);
+            return ids.map(() => tickState(availableSupply));
+          },
+        };
+      },
+    });
+  await run(21n, supply, [
+    supplied(10, 0, 1n, 8453, id),
+    supplied(11, 1, 1n, 8453, id),
+  ]);
+  assert.deepEqual(reads, [[[id], 19n]]);
+  assert.equal(db.rows("SELECT count(*) AS n FROM events")[0]!.n, 2);
+  const [row] = db.rows("SELECT * FROM ticks");
+  assert.equal(row!.id, `8453:${id}`);
+  assert.equal(row!.chain_id, 8453);
+  assert.equal(row!.timestamp, 19 * 12);
+  assert.deepEqual(
+    JSON.parse(String(row!.meta)),
+    JSON.parse(
+      JSON.stringify(
+        { ...tickState(supply), tickId: id, active: true },
+        (_, value) => (typeof value === "bigint" ? value.toString() : value),
+      ),
+    ),
+  );
+  await run(24n, 0n, [
+    supplied(18, 2, 1n, 8453, id),
+    supplied(20, 3, 1n, 8453, id),
+  ]);
+  assert.deepEqual(ranges, [
+    [10n, 19n],
+    [20n, 22n],
+  ]);
+  assert.deepEqual(reads, [
+    [[id], 19n],
+    [[id], 22n],
+  ]);
+  const [updated] = db.rows("SELECT * FROM ticks");
+  assert.equal(updated!.timestamp, 22 * 12);
+  assert.equal(JSON.parse(String(updated!.meta)).availableSupply, "0");
+  assert.equal(JSON.parse(String(updated!.meta)).active, false);
+});
+
+test("failed tick batches and failed D1 commits both preserve all data and retry the same blocks", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  const ids = Array.from({ length: 65 }, (_, i) => BigInt(i + 1));
+  const entries = ids.map((id, i) => supplied(10, i, 1n, 8453, id));
+  let failRead = true;
+  const reads: number[] = [];
+  const run = () =>
+    synchronize(env, 0, {
+      rpc: (n) => ({
+        ...fakeRpc(21n, n.chainId === 8453 ? entries : []),
+        ticks: async (ids, block) => {
+          assert.equal(block, 19n);
+          reads.push(ids.length);
+          if (failRead && ids[0] === 33n) throw new Error("multicall reverted");
+          return ids.map(() => tickState());
+        },
+      }),
+    });
+  for (const failure of ["read", "write"]) {
+    failRead = failure === "read";
+    db.failBatchAt = failRead ? undefined : 2;
+    await run();
+    assert.equal(progress(db)["events:8453"], 9);
+    assert.equal(db.rows("SELECT * FROM events").length, 0);
+    assert.equal(db.rows("SELECT * FROM ticks").length, 0);
+  }
+  db.failBatchAt = undefined;
+  await run();
+  assert.deepEqual(reads, [32, 32, 1, 32, 32, 1, 32, 32, 1]);
+  assert.equal(progress(db)["events:8453"], 19);
+  assert.equal(db.rows("SELECT * FROM events").length, 65);
+  assert.equal(db.rows("SELECT * FROM ticks").length, 65);
 });

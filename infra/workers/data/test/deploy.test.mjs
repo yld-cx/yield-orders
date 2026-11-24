@@ -5,14 +5,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deploy, readConfig } from "../scripts/deploy.mjs";
-import { supportedNetworks } from "../src/networks.ts";
+import { indexingNetwork, supportedNetworks } from "../src/networks.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const configuration = () => ({
   name: "yld-data",
   d1_databases: [{ binding: "DB", database_name: "yld-data" }],
-  vars: { NETWORK_CONFIG: "{}" },
-  triggers: { crons: ["0 * * * *"] },
+  vars: {
+    NETWORK_CONFIG: "{}",
+    RPC_URLS: readConfig(
+      fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)),
+    ).vars.RPC_URLS,
+  },
+  triggers: { crons: ["*/5 * * * *"] },
 });
 function harness(existing = [], failMigration = false, writeBack = true) {
   const commands = [],
@@ -43,7 +48,7 @@ function harness(existing = [], failMigration = false, writeBack = true) {
   };
 }
 
-test("first GitHub deployment provisions without cron, migrates, then activates hourly indexing", () => {
+test("first GitHub deployment provisions without cron, migrates, then activates five-minute indexing", () => {
   const io = harness();
   assert.equal(deploy(configuration(), io), id);
   assert.deepEqual(
@@ -56,7 +61,7 @@ test("first GitHub deployment provisions without cron, migrates, then activates 
     ],
   );
   assert.deepEqual(io.deployed[0].triggers.crons, []);
-  assert.deepEqual(io.deployed[1].triggers.crons, ["0 * * * *"]);
+  assert.deepEqual(io.deployed[1].triggers.crons, ["*/5 * * * *"]);
   assert.ok(io.commands.at(-1).includes("--no-x-provision"));
 });
 
@@ -121,10 +126,17 @@ test("public RPCs are configured for every supported production network with no 
   });
   for (const network of supportedNetworks)
     assert.deepEqual(
-      network.rpcUrls,
+      indexingNetwork(config.vars, network).rpcUrls,
       JSON.parse(config.vars.RPC_URLS)[network.name],
     );
   assert.equal("SYNC_ENABLED" in config.vars, false);
+  assert.deepEqual(config.triggers.crons, ["*/5 * * * *"]);
+  assert.ok(
+    !Object.keys(config.vars).some((key) => key.startsWith("PRIVATE_RPC_")),
+  );
+  assert.ok(
+    !config.secrets.required.some((key) => key.startsWith("PRIVATE_RPC_")),
+  );
 });
 
 test("deployment config accepts JSONC comments and trailing commas without damaging URLs", () => {

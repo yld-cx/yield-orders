@@ -1,336 +1,169 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { PublicClient } from "viem";
-import {
-  pairIdFor,
-  priceAtTick,
-  tickIdFor,
-  Q128,
-  snappedPrice,
-  tickCandidates,
-} from "@yld-cx/sdk/ethereum";
-import type { SwapPriceResult } from "@yld-cx/sdk/uniswap";
-import { markets, type MarketIdentity } from "../src/markets.ts";
+import { Q128 } from "@yld-cx/sdk/ethereum";
 import { LIMITS } from "../src/config.ts";
-import { baseTickFromPrice, promising, ticks } from "../src/ticks.ts";
+import { discoverTicks, estimatedSurplus } from "../src/ticks.ts";
+import { testDatabase } from "./database.ts";
 
-const A = "0x1111111111111111111111111111111111111111",
-  Q = "0x2222222222222222222222222222222222222222";
-const market: MarketIdentity = {
-  pairId: pairIdFor(A, Q),
-  token0: A,
-  token1: Q,
+const A = "0x1111111111111111111111111111111111111111" as const;
+const Q = "0x2222222222222222222222222222222222222222" as const;
+const B = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd" as const;
+const tick = {
+  id: 1n,
+  asset: A,
+  quote: Q,
+  priceX128: 2n * Q128,
+  availableSupply: 10n ** 40n,
 };
-const reference = (): SwapPriceResult => ({
-  tokenIn: A,
-  tokenOut: Q,
-  amountIn: "1000000000000000",
-  estimatedAmountOut: "3000000",
-  minimumAmountOut: "2985000",
-  quotedAt: Date.now(),
-  priceImpact: 0.01,
-});
 
-test("fresh raw AMM quote centers mixed-decimal discovery with SDK snapping", () => {
-  assert.equal(
-    baseTickFromPrice(market, reference()),
-    snappedPrice("3000", 18, 6, 100).priceTick,
-  );
-  const inverse = {
-    ...reference(),
-    amountIn: "3000000",
-    estimatedAmountOut: "1000000000000000",
-  };
-  assert.equal(
-    baseTickFromPrice(market, inverse),
-    snappedPrice("0.0003333333333333333333333333333333333333", 6, 18, 100)
-      .priceTick,
-  );
-  assert.throws(
-    () => baseTickFromPrice(market, { ...reference(), tokenIn: Q }),
-    /Invalid AMM reference/,
-  );
-});
-
-test("price filtering handles cheap Asks and expensive Bids through actual Asset/Quote", () => {
-  const tick = (
-    asset: typeof A | typeof Q,
-    quote: typeof A | typeof Q,
-    priceX128: bigint,
-  ) => ({ asset, quote, priceX128 });
-  assert.equal(
-    promising(tick(A, Q, (Q128 * 2990n) / 10n ** 12n), market, reference()),
-    true,
-  );
-  assert.equal(
-    promising(tick(A, Q, (Q128 * 3010n) / 10n ** 12n), market, reference()),
-    false,
-  );
-  assert.equal(
-    promising(tick(Q, A, (Q128 * 10n ** 12n) / 3100n), market, reference()),
-    true,
-  );
-  assert.equal(
-    promising(tick(Q, A, (Q128 * 10n ** 12n) / 2900n), market, reference()),
-    false,
-  );
-  assert.equal(promising(tick(A, A, Q128), market, reference()), false);
-});
-
-function mockClient(available = 0n) {
-  const reads: {
-    blockNumber: bigint;
-    batchSize: number;
-    contracts: { args: readonly [bigint] }[];
-  }[] = [];
-  const client = {
-    multicall: async (request: (typeof reads)[number]) => {
-      reads.push(request);
-      return request.contracts.map(() => ({
-        status: "success",
-        result: {
-          asset: A,
-          quote: Q,
-          durationDays: 7n,
-          priceX128: (Q128 * 2990n) / 10n ** 12n,
-          availableSupply: available,
-          workingSupply: 0n,
-          exitWorking: 0n,
-          activeWorking: 0n,
-          activePrincipal: 0n,
-          settleCursor: 0n,
-        },
-      }));
-    },
-  } as unknown as PublicClient;
-  return { client, reads };
-}
-
-test("discovery reads the entire weekly window in one multicall at the quote block", async () => {
-  const { client, reads } = mockClient(100n);
-  const window = await ticks(client, A, market, reference(), 123n);
-  assert.equal(window.radius, LIMITS.discoveryRadius);
-  assert.equal(window.checked, 82);
-  assert.equal(window.ticks.length, window.checked);
-  assert.equal(reads.length, 1);
-  assert.equal(reads[0].blockNumber, 123n);
-  assert.equal(
-    reads[0].batchSize,
-    0,
-    "disable automatic viem multicall splitting",
-  );
-  assert.ok(reads[0].contracts.length <= 100);
-  const ids = reads[0].contracts.map((contract) => contract.args[0]);
-  assert.equal(new Set(ids).size, ids.length);
-  const expected = tickCandidates(
-    market.pairId,
-    baseTickFromPrice(market, reference()),
-    100,
-    LIMITS.discoveryRadius,
-  );
-  assert.deepEqual(new Set(ids), new Set(expected.map((tick) => tick.id)));
-});
-
-test("discovery rejects a radius above the configured limit before making any RPC request", async () => {
-  const { client, reads } = mockClient();
-  await assert.rejects(
-    ticks(client, A, market, reference(), 123n, LIMITS.discoveryRadius + 1),
-    /Discovery radius/,
-  );
-  assert.equal(reads.length, 0);
-});
-
-test("coarser-grid weekly ticks remain discoverable within a 100-tick window", async () => {
-  const { client, reads } = mockClient();
-  const quote = {
-    ...reference(),
-    amountIn: "1000000000000000000",
-    estimatedAmountOut: ((10n ** 18n * priceAtTick(1500)) / Q128).toString(),
-  };
-  const window = await ticks(client, A, market, quote, 123n, 8);
-  assert.deepEqual(window.ticks, []);
-  assert.equal(reads.length, 1);
-  const ids = new Set(
-    reads.flatMap((read) => read.contracts.map((contract) => contract.args[0])),
-  );
-  for (const canonicalTick of [1000, 2000])
-    for (const direction of [0, 1] as const)
-      assert.ok(
-        ids.has(
-          tickIdFor(
-            market.pairId,
-            direction,
-            direction === 0 ? canonicalTick : -canonicalTick,
-            7,
-          ),
-        ),
-      );
-});
-
-test("stale AMM references never issue discovery multicalls", async () => {
-  const { client, reads } = mockClient();
-  const window = await ticks(
-    client,
-    A,
-    market,
-    { ...reference(), quotedAt: 0 },
-    123n,
-  );
-  assert.deepEqual(window.ticks, []);
-  assert.equal(window.checked, 0);
-  assert.equal(reads.length, 0);
-});
-
-test("single-call discovery finds an executable bid fourteen grid steps above the AMM price", async () => {
-  const referenceTick = -201700;
-  const quote = {
-    ...reference(),
-    amountIn: "1000000000000000",
-    estimatedAmountOut: (
-      (10n ** 15n * priceAtTick(referenceTick)) /
-      Q128
-    ).toString(),
-  };
-  const identity = tickCandidates(market.pairId, referenceTick, 100, 16).find(
-    (tick) => tick.direction === 1 && tick.priceTick === 200300,
-  )!;
-  const checked: bigint[] = [];
-  const client = {
-    multicall: async ({
-      contracts,
-    }: {
-      contracts: { args: readonly [bigint] }[];
-    }) =>
-      contracts.map(({ args: [id] }) => {
-        checked.push(id);
-        return {
-          status: "success",
-          result: {
-            asset: Q,
-            quote: A,
-            durationDays: 7n,
-            priceX128: priceAtTick(200300),
-            availableSupply: id === identity.id ? 1000000n : 0n,
-          },
-        };
-      }),
-  } as unknown as PublicClient;
-  const window = await ticks(client, A, market, quote, 123n, 16);
-  assert.equal(window.checked, 66);
-  assert.equal(window.ticks.length, 1);
-  assert.equal(window.ticks[0].id, identity.id);
-  assert.equal(new Set(checked).size, checked.length);
-});
-
-test("market identities need no configured baseTick and ignore cached centers", async (t) => {
-  t.mock.method(globalThis, "fetch", async (url: URL) => {
-    assert.equal(url.origin, "https://yld.cx");
-    assert.equal(url.pathname, "/api/markets");
-    assert.equal(url.searchParams.get("tag"), "all");
-    assert.equal(url.searchParams.get("chainId"), "8453");
-    return Response.json({
-      markets: [
-        {
-          network: "eip155:8453",
-          token0: { address: Q },
-          token1: { address: A },
-          assetTVL: "1",
-        },
-        {
-          network: "eip155:8453",
-          token0: { address: A },
-          token1: { address: Q },
-          baseTick: "stale or invalid",
-          assetTVL: "1",
-        },
-        {
-          network: "eip155:1",
-          token0: { address: A },
-          token1: { address: Q },
-          assetTVL: "1",
-        },
-        {
-          network: "eip155:8453",
-          token0: { address: A },
-          token1: { address: A },
-          assetTVL: "1",
-        },
-        {
-          network: "eip155:8453",
-          token0: { address: "invalid" },
-          token1: { address: Q },
-          assetTVL: "1",
-        },
-      ],
-    });
-  });
-  assert.deepEqual(await markets("https://yld.cx/api/markets", 8453), [market]);
-});
-
-test("markets without positive assetTVL are excluded before deduplication", async (t) => {
-  const entry = {
-    network: "eip155:8453",
-    token0: { address: A },
-    token1: { address: Q },
-  };
-  const empty = [undefined, null, "", "0", "-1", "invalid", {}, 1].map(
-    (assetTVL) => ({ ...entry, assetTVL }),
-  );
-  let entries = empty;
-  t.mock.method(globalThis, "fetch", async () =>
-    Response.json({ markets: entries }),
-  );
-  assert.deepEqual(await markets("https://yld.cx/api/markets", 8453), []);
-  entries = [...empty, { ...entry, assetTVL: (1n << 200n).toString() }];
-  assert.deepEqual(await markets("https://yld.cx/api/markets", 8453), [market]);
-});
-
-test("markets API overrides preserve paths and query parameters while enforcing YieldList filters", async (t) => {
-  let requests = 0;
-  t.mock.method(globalThis, "fetch", async (url: URL) => {
-    requests++;
-    assert.equal(url.origin, "https://preview.yld.cx");
-    assert.equal(url.pathname, "/custom/v2/yield-list");
-    assert.equal(url.searchParams.get("source"), "resolver");
-    assert.deepEqual(url.searchParams.getAll("chainId"), ["1"]);
-    assert.deepEqual(url.searchParams.getAll("tag"), ["all"]);
-    return Response.json({ markets: [] });
-  });
+test("D1 ranks active, funded ticks independently in both directions and one-sided markets", async () => {
+  const { db, putTick } = testDatabase();
+  const ask = { ...tick, priceX128: 9n };
+  const bid = { ...tick, id: 2n, asset: Q, quote: A, priceX128: 10n };
+  const oneSided = { ...tick, id: 3n, asset: B, priceX128: 5n };
+  for (const best of [ask, bid, oneSided]) putTick(8453, best);
+  putTick(8453, { ...ask, id: 4n, priceX128: 1n }, false);
+  putTick(8453, { ...ask, id: 5n, priceX128: 1n, availableSupply: 0n }, true);
+  const deeperBid = { ...bid, id: 6n, priceX128: 11n };
+  const deeperOneSided = { ...oneSided, id: 7n, priceX128: 6n };
+  putTick(8453, deeperBid);
+  putTick(8453, { ...deeperOneSided, asset: `0x${B.slice(2).toUpperCase()}` });
+  const deeperAsks = Array.from({ length: 260 }, (_, i) => ({
+    ...ask,
+    id: BigInt(100 + i),
+    priceX128: 10n,
+  }));
+  for (const [i, deeperAsk] of deeperAsks.entries())
+    putTick(8453, deeperAsk, true, i + 1);
   assert.deepEqual(
-    await markets(
-      "https://preview.yld.cx/custom/v2/yield-list?source=resolver&chainId=8453&chainId=4663&tag=trending&tag=all",
-      1,
-    ),
-    [],
+    await discoverTicks(db, [8453], 0),
+    [
+      ask,
+      bid,
+      oneSided,
+      deeperAsks[0],
+      deeperBid,
+      deeperOneSided,
+      ...deeperAsks.slice(1),
+    ]
+      .slice(0, LIMITS.batch)
+      .map((tick) => ({ chainId: 8453, tick })),
   );
-  await assert.rejects(
-    markets("http://preview.yld.cx/api/markets", 1),
-    /HTTPS markets API URL required/,
-  );
-  await assert.rejects(
-    markets("https://user:password@preview.yld.cx/api/markets", 1),
-    /HTTPS markets API URL required/,
-  );
-  assert.equal(requests, 1);
 });
 
-test("market requests reject redirects without following them", async (t) => {
-  let requests = 0;
-  t.mock.method(
-    globalThis,
-    "fetch",
-    async (_url: URL, options: RequestInit) => {
-      requests++;
-      assert.equal(options.redirect, "manual");
-      return new Response(null, {
-        status: 302,
-        headers: { location: "https://elsewhere.test" },
-      });
+test("D1 compares uint256 decimal strings exactly and breaks ties by row ID", async () => {
+  const { db, putTick } = testDatabase();
+  const max = (1n << 256n) - 1n;
+  const best = { ...tick, id: 10n, priceX128: max - 1n };
+  const tied = { ...best, id: 2n };
+  const worst = { ...tick, priceX128: max };
+  putTick(8453, worst);
+  putTick(8453, tied, true, 1000);
+  putTick(8453, best);
+  assert.deepEqual(
+    await discoverTicks(db, [8453], 0),
+    [best, tied, worst].map((tick) => ({ chainId: 8453, tick })),
+  );
+});
+
+test("a selected tick with an unsupported token leaves other directions eligible", async (t) => {
+  const { db, putTick } = testDatabase();
+  t.mock.method(console, "log", () => {});
+  putTick(1, { ...tick, quote: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" });
+  putTick(8453, tick);
+  assert.deepEqual(await discoverTicks(db, [1, 8453], 0), [
+    { chainId: 8453, tick },
+  ]);
+});
+
+test("D1 rotates global pages across price ranks and chains even when rank one is dust", async () => {
+  const { db, putTick } = testDatabase();
+  assert.deepEqual(await discoverTicks(db, [1, 8453], 20), []);
+  const directions = Array.from({ length: 23 }, (_, i) => ({
+    chainId: i < 6 ? 1 : 8453,
+    tick: {
+      ...tick,
+      id: BigInt(23 - i),
+      asset: `0x${(i + 1).toString(16).padStart(40, "0")}` as const,
+      priceX128: i === 0 ? Q128 / 2n : tick.priceX128,
+      availableSupply: i === 0 ? 1n : tick.availableSupply,
     },
+  }));
+  for (const { chainId, tick } of directions.toReversed())
+    putTick(chainId, tick);
+  const dust = directions[0].tick;
+  const deeper = { ...dust, id: 101n, priceX128: Q128, availableSupply: 1000n };
+  const deepest = { ...deeper, id: 103n, priceX128: Q128 + 1n };
+  const deeperOnBase = {
+    ...directions[22].tick,
+    id: 102n,
+    priceX128: 3n * Q128,
+  };
+  putTick(1, deepest);
+  putTick(1, deeper);
+  putTick(8453, deeperOnBase);
+  putTick(4663, tick);
+  const page = (slot: number) => discoverTicks(db, [8453, 1], slot);
+  const pageSize = LIMITS.batch;
+  assert.deepEqual(await page(0), directions.slice(0, pageSize));
+  assert.deepEqual(await page(1), directions.slice(pageSize, 2 * pageSize));
+  assert.deepEqual(await page(2), [
+    ...directions.slice(2 * pageSize),
+    { chainId: 1, tick: deeper },
+  ]);
+  assert.deepEqual(await page(3), [
+    { chainId: 8453, tick: deeperOnBase },
+    { chainId: 1, tick: deepest },
+  ]);
+  assert.deepEqual(await page(4), await page(0));
+  assert.deepEqual(await discoverTicks(db, [1], 0), [
+    ...directions.slice(0, 6),
+    { chainId: 1, tick: deeper },
+    { chainId: 1, tick: deepest },
+  ]);
+  assert.deepEqual(await discoverTicks(db, [], 0), []);
+
+  const previous = directions[pageSize];
+  const next = {
+    ...previous.tick,
+    id: 999n,
+    priceX128: previous.tick.priceX128 - 1n,
+  };
+  putTick(previous.chainId, next, true, 2000);
+  assert.deepEqual(await page(5), [
+    { chainId: previous.chainId, tick: next },
+    ...directions.slice(pageSize + 1, 2 * pageSize),
+  ]);
+  assert.deepEqual(await page(7), [
+    previous,
+    { chainId: 8453, tick: deeperOnBase },
+    { chainId: 1, tick: deepest },
+  ]);
+});
+
+test("each tick compares its book cost with actual AMM proceeds in its own selling direction", () => {
+  const forward = {
+    tokenIn: A,
+    tokenOut: Q,
+    amountIn: "10",
+    estimatedAmountOut: "30",
+    minimumAmountOut: "29",
+    quotedAt: Date.now(),
+  };
+  const reverse = {
+    ...forward,
+    tokenIn: Q,
+    tokenOut: A,
+    amountIn: "100",
+    estimatedAmountOut: "31",
+  };
+  const reversed = { ...tick, asset: Q, quote: A, priceX128: Q128 / 4n };
+  assert.equal(estimatedSurplus(tick, forward, 10n), 10n);
+  assert.equal(estimatedSurplus(reversed, reverse, 100n), 6n);
+  assert.equal(estimatedSurplus(reversed, forward, 100n), 0n);
+  assert.equal(
+    estimatedSurplus(tick, { ...forward, estimatedAmountOut: "19" }, 10n),
+    -1n,
   );
-  await assert.rejects(
-    markets("https://yld.cx/api/markets", 8453),
-    /Markets unavailable/,
-  );
-  assert.equal(requests, 1);
+  assert.equal(estimatedSurplus(tick, { ...forward, quotedAt: 0 }, 10n), 0n);
 });

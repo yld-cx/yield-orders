@@ -3,16 +3,9 @@ import {
   type UniswapClient,
   type SwapChain,
 } from "@yld-cx/sdk/uniswap";
-import { type Address } from "viem";
+import type { Address } from "viem";
 import type { Candidate } from "./shared.ts";
-import { quotePrincipal } from "./ticks.ts";
-export interface Tick {
-  id: bigint;
-  asset: Address;
-  quote: Address;
-  priceX128: bigint;
-  availableSupply: bigint;
-}
+import { quotePrincipal, type Tick } from "./ticks.ts";
 export class Quotes {
   remaining: number;
   readonly api: UniswapClient;

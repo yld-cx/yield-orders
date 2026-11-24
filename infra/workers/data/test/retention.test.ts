@@ -111,7 +111,6 @@ test("atomic ingestion never restores expired events but still advances historic
       db.db,
       8453,
       expected,
-      10n,
       20n,
       [expired, boundary],
       nowSeconds,
@@ -130,7 +129,7 @@ test("atomic ingestion never restores expired events but still advances historic
   );
 });
 
-test("hourly job cleans all chains and filters expired RPC events while keeping the boundary", async () => {
+test("scheduled job cleans all chains and filters expired RPC events while keeping the boundary", async () => {
   const db = new TestDatabase(),
     env = retainedEnvironment(db);
   for (const n of supportedNetworks) seed(db, n.chainId, 1, cutoff - 1);

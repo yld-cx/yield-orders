@@ -1,10 +1,11 @@
 import { isAddress, type Address } from "viem";
 
-export interface Env {
+import type { RpcEnv } from "../../rpc.ts";
+
+export interface Env extends RpcEnv {
   DB: D1Database;
   CORS_ORIGINS?: string;
   NETWORK_CONFIG?: string;
-  RPC_URLS?: string;
   MAX_SYNC_DURATION_MS?: string;
   MAX_CHUNKS?: string;
   MAX_RPC_REQUESTS?: string;
