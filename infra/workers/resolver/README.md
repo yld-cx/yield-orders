@@ -1,6 +1,6 @@
 # YLD resolver Worker
 
-Cloudflare Worker that runs on the `triggers.crons` schedule in `wrangler.jsonc`. It rotates through up to `LIMITS.batch` trading directions per run, using the lowest-priced active tick with supply in each direction from `yld-data` D1. It fetches fresh Uniswap prices, checks current liquidity onchain, and submits profitable trades after simulation. Requires Node.js 24+.
+Cloudflare Worker that runs on the `triggers.crons` schedule in `wrangler.jsonc`. It rotates through active `yld-data` D1 ticks with supply, starting with the best price in each trading direction on each chain, then deeper prices. Each run selects up to `LIMITS.batch` ticks, fetches fresh Uniswap prices, checks current liquidity onchain, and submits profitable trades after simulation. Requires Node.js 24+.
 
 Each run shares the `LIMITS.externalRequests` budget for HTTP requests across all chains. On Workers Free, check CPU usage in Worker Logs during a dry run that reaches simulation. The scheduled CPU limit is 10 ms. [Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 

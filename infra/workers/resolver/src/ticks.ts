@@ -39,10 +39,9 @@ export async function discoverTicks(
           AND json_extract(meta, '$.availableSupply') <> '0'
       ), candidates AS (
         SELECT id, chain_id, meta,
-          ROW_NUMBER() OVER (ORDER BY chain_id, asset, quote) - 1 AS position,
+          ROW_NUMBER() OVER (ORDER BY rank, chain_id, asset, quote) - 1 AS position,
           COUNT(*) OVER () AS total
         FROM ranked
-        WHERE rank = 1
       )
       SELECT id, chain_id, meta FROM candidates
       WHERE position / ${pageSize} = ? % ((total + ${pageSize} - 1) / ${pageSize})
