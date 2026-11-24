@@ -38,13 +38,23 @@ export default {
         // Preserve usable stale data and represent unavailable entries explicitly.
         if (result.upstream === "rate_limited")
           headers.set("retry-after", "60");
-        return response(
+        const tokenResponse = response(
           result,
           result.upstream === "rate_limited" &&
             !result.tokens.some((t) => t.status === "available")
             ? 429
             : 200,
         );
+        if (
+          (result.upstream === "cache" || result.upstream === "ok") &&
+          result.tokens.every((t) => t.status === "available" && !t.stale)
+        ) {
+          tokenResponse.headers.set(
+            "cache-control",
+            "public, max-age=3600, s-maxage=3600, stale-while-revalidate=601200",
+          );
+        }
+        return tokenResponse;
       }
       if (url.pathname === "/events")
         return response(await getEvents(url.searchParams, env));
