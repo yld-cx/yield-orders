@@ -2,7 +2,7 @@
 
 Cloudflare Worker + D1 for token metadata, prices, and protocol events on [supported networks](../../../protocol/ethereum/README.md#deployments). Requires Node.js 24+.
 
-The cron runs once a minute and rotates through the chains in the deployment manifest. Each chain gets one turn every three minutes with the current manifest. Each invocation uses a per-chain lease and shares a 50-subrequest budget across RPC and D1, with capacity reserved for persistence, retention and lease release.
+Indexing runs on the `triggers.crons` schedule in `wrangler.jsonc` and rotates through the chains in the deployment manifest, one chain per invocation. Each run uses a per-chain lease and shares a 50-subrequest budget across RPC and D1, with capacity reserved for persistence, retention and lease release.
 
 A fresh database starts at each chain's first observed head unless `startBlock` is set. Each chunk saves events, changed ticks, and its checkpoint together. Failed log requests can retry with smaller ranges, and later runs resume from the saved checkpoint. Each turn deletes one batch of expired events for the selected chain.
 
