@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test, expect, type Page, type Route } from "@playwright/test";
 import yieldList from "../../public/yieldlist.json" with { type: "json" };
 import { tokenFixture } from "./token-fixtures";
+import { decodePlayStrategy, PLAY_STRATEGIES } from "../../lib/play";
 import {
   decodeFunctionData,
   encodeFunctionData,
@@ -3860,6 +3861,67 @@ test("simplified Trending recovers from an empty discovery response", async ({
   await expect(
     page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
   ).toBeVisible();
+});
+
+test("market Explorer opens strategies with the market asset selected", async ({
+  page,
+}) => {
+  await page.goto(`/market/base/${key}`);
+  const explorer = page.getByRole("region", { name: "Yield Explorer" });
+  await expect(
+    explorer.getByRole("heading", { name: "Yield Explorer." }),
+  ).toBeVisible();
+  await expect(
+    explorer.getByText("Choose your strategy to play"),
+  ).toBeVisible();
+  await expect(explorer.getByRole("link")).toHaveCount(6);
+  const order = page.getByLabel("Yield Order", { exact: true });
+  const orderBox = (await order.boundingBox())!;
+  const explorerBox = (await explorer.boundingBox())!;
+  expect(explorerBox.x).toBeCloseTo(orderBox.x, 0);
+  expect(explorerBox.width).toBeCloseTo(orderBox.width, 0);
+  expect(explorerBox.y).toBeCloseTo(orderBox.y + orderBox.height + 16, 0);
+
+  await page.getByRole("button", { name: /^Invert displayed pair/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "USDC / WETH" }),
+  ).toBeVisible();
+  for (const strategy of PLAY_STRATEGIES) {
+    const link = explorer.getByRole("link", {
+      name: new RegExp(`^${strategy.title}`),
+    });
+    const url = new URL((await link.getAttribute("href"))!, page.url());
+    expect(url.pathname).toBe("/play");
+    expect(url.searchParams.get("network")).toBe("base");
+    expect(decodePlayStrategy(url.searchParams.get("strategy"))).toMatchObject({
+      id: strategy.id,
+      token: a,
+    });
+  }
+
+  await explorer.getByRole("link", { name: /^Long Bullish on WETH$/ }).click();
+  await expect(page).toHaveURL(/\/play\?network=base&strategy=/);
+  await expect(
+    page.getByRole("heading", { name: "Bullish on WETH" }),
+  ).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Rent amount" })).toHaveValue(
+    "1000",
+  );
+  await expect(
+    page.getByRole("searchbox", { name: "Search trending tokens" }),
+  ).toHaveCount(0);
+  await page.getByRole("textbox", { name: "Entry price" }).fill("2100");
+  const target = page.getByRole("slider", { name: "Target price" });
+  await expect(target).toBeEnabled();
+  const targetPrice = (await target.getAttribute("aria-valuetext"))!.replace(
+    " USDC",
+    "",
+  );
+  await page.getByRole("link", { name: "Open Yield Market" }).click();
+  await expect(page).toHaveURL(`/market/base/${key}`);
+  const book = page.getByLabel("Yield Book", { exact: true });
+  await book.getByRole("tab", { name: "Sell", exact: true }).click();
+  await expect(book.getByText(targetPrice, { exact: true })).toBeVisible();
 });
 
 test("market header shows reference price, APY and animated OTC and action colors", async ({

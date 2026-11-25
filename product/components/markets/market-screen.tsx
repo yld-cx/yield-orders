@@ -1,6 +1,5 @@
 "use client";
 import { useReducer, useState } from "react";
-import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeftRight } from "lucide-react";
@@ -31,10 +30,12 @@ import {
   type OrderAction,
 } from "@/lib/market-selection";
 import { queryKeys } from "@/lib/query-keys";
+import { playMarket } from "@/lib/play-market";
 import { ApyLabel } from "@/components/forms/yield-display";
 import { tickYieldText } from "@/lib/yield";
 import { Message } from "@/components/forms/financial-fields";
 import LoadingScreen from "@/components/layout/loading-screen";
+import { StrategyList } from "@/components/play/strategy-list";
 import { TransactionFlow } from "@/components/transactions/transaction-flow";
 import { YieldBook } from "./yield-book";
 import { SupplyForm } from "./supply-form";
@@ -145,6 +146,9 @@ function MarketContent({
   );
   const asset = direction === 0 ? market.token0 : market.token1;
   const network = getNetwork(market.network).slug;
+  const explorerToken = natural.find((token) =>
+    playMarket(network, token.address),
+  );
   const indicative = reference
     ? displayReference(reference, displayInverse)
     : undefined;
@@ -268,89 +272,95 @@ function MarketContent({
             moveBookWindow(windowStart, "lower", displayInverse) !== windowStart
           }
         />
-        <Card className="min-w-0" aria-label="Yield Order">
-          <CardContent className="space-y-4">
-            <div className="flex h-8 items-center justify-between">
-              <h2 className="font-semibold">Yield Order</h2>
-              <Badge
-                variant="outline"
-                data-intent={
-                  state.action === "limit"
-                    ? "term"
-                    : state.action === "rent"
-                      ? "rent"
-                      : "swap"
+        <div className="grid min-w-0 gap-4">
+          <Card className="min-w-0" aria-label="Yield Order">
+            <CardContent className="space-y-4">
+              <div className="flex h-8 items-center justify-between">
+                <h2 className="font-semibold">Yield Order</h2>
+                <Badge
+                  variant="outline"
+                  data-intent={
+                    state.action === "limit"
+                      ? "term"
+                      : state.action === "rent"
+                        ? "rent"
+                        : "swap"
+                  }
+                >
+                  {state.action === "limit" ? "Provide" : "Use"}
+                </Badge>
+              </div>
+              <Tabs
+                value={state.action}
+                onValueChange={(action) =>
+                  dispatch({ type: "action", action: action as OrderAction })
                 }
               >
-                {state.action === "limit" ? "Provide" : "Use"}
-              </Badge>
-            </div>
-            <Tabs
-              value={state.action}
-              onValueChange={(action) =>
-                dispatch({ type: "action", action: action as OrderAction })
-              }
-            >
-              <TabsList
-                className="grid w-full grid-cols-3"
-                aria-label="Order action"
-              >
-                <TabsTrigger
-                  className="text-foreground dark:text-foreground"
-                  value="limit"
-                  data-intent="term"
+                <TabsList
+                  className="grid w-full grid-cols-3"
+                  aria-label="Order action"
                 >
-                  Limit
-                </TabsTrigger>
-                <TabsTrigger
-                  className="text-foreground dark:text-foreground"
-                  value="swap"
-                  data-intent="swap"
-                >
-                  Swap
-                </TabsTrigger>
-                <TabsTrigger
-                  className="text-foreground dark:text-foreground"
-                  value="rent"
-                  data-intent="rent"
-                >
-                  Rent
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-            {state.action === "limit" ? (
-              <SupplyForm
-                key={formKey}
-                market={market}
-                display={display}
-                duration={PRODUCT_MARKET.duration}
-                selectedTick={selected}
-                assetAddress={asset.address}
-                isPending={
-                  (selectedInWindow ? book : outside).discovery.isPending
-                }
-              />
-            ) : state.action === "swap" && state.selection.kind === "market" ? (
-              <SwapForm key={formKey} market={market} asset={asset} />
-            ) : (
-              <UseForm
-                key={formKey}
-                market={market}
-                display={display}
-                tick={selected}
-                mode={state.action === "rent" ? "use" : "swap"}
-                isPending={
-                  selectedTick !== undefined &&
-                  (selectedInWindow ? book : outside).discovery.isPending
-                }
-                isIncomplete={
-                  selected?.status === "failed" &&
-                  !(selectedInWindow ? book : outside).discovery.isPending
-                }
-              />
-            )}
-          </CardContent>
-        </Card>
+                  <TabsTrigger
+                    className="text-foreground dark:text-foreground"
+                    value="limit"
+                    data-intent="term"
+                  >
+                    Limit
+                  </TabsTrigger>
+                  <TabsTrigger
+                    className="text-foreground dark:text-foreground"
+                    value="swap"
+                    data-intent="swap"
+                  >
+                    Swap
+                  </TabsTrigger>
+                  <TabsTrigger
+                    className="text-foreground dark:text-foreground"
+                    value="rent"
+                    data-intent="rent"
+                  >
+                    Rent
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+              {state.action === "limit" ? (
+                <SupplyForm
+                  key={formKey}
+                  market={market}
+                  display={display}
+                  duration={PRODUCT_MARKET.duration}
+                  selectedTick={selected}
+                  assetAddress={asset.address}
+                  isPending={
+                    (selectedInWindow ? book : outside).discovery.isPending
+                  }
+                />
+              ) : state.action === "swap" &&
+                state.selection.kind === "market" ? (
+                <SwapForm key={formKey} market={market} asset={asset} />
+              ) : (
+                <UseForm
+                  key={formKey}
+                  market={market}
+                  display={display}
+                  tick={selected}
+                  mode={state.action === "rent" ? "use" : "swap"}
+                  isPending={
+                    selectedTick !== undefined &&
+                    (selectedInWindow ? book : outside).discovery.isPending
+                  }
+                  isIncomplete={
+                    selected?.status === "failed" &&
+                    !(selectedInWindow ? book : outside).discovery.isPending
+                  }
+                />
+              )}
+            </CardContent>
+          </Card>
+          {explorerToken && (
+            <StrategyList network={network} token={explorerToken} />
+          )}
+        </div>
       </div>
       <MarketPositions market={market} />
       {!exists && (

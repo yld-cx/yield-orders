@@ -20,11 +20,15 @@ export function AmountInput({
   symbol,
   balance,
   max,
+  className,
+  maxLength,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   symbol: string;
+  className?: string;
+  maxLength?: number;
   balance?: {
     value?: bigint;
     decimals: number;
@@ -46,7 +50,7 @@ export function AmountInput({
       balance.value === undefined ||
       balance.value <= 0n;
   return (
-    <Field className="my-4">
+    <Field className={cn("my-4", className)}>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <FieldLabel htmlFor={id}>{label}</FieldLabel>
         {maximum && (
@@ -93,6 +97,7 @@ export function AmountInput({
           spellCheck={false}
           placeholder="0.00"
           value={value}
+          maxLength={maxLength}
           onChange={(event) => {
             const next = event.target.value.replaceAll(",", ".");
             if (/^\d*(?:\.\d*)?$/.test(next)) onChange(next);

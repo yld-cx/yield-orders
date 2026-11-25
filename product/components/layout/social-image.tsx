@@ -4,6 +4,21 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { tokenImageUrl } from "@/lib/token-metadata";
+
+export const socialImageFrame = {
+  padding: "100px",
+  backgroundColor: "#000000",
+  backgroundImage:
+    "radial-gradient(circle at 50% -10%, rgba(0,255,76,0.07), rgba(0,255,76,0) 28%), linear-gradient(rgba(0,255,76,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,76,0.03) 1px, transparent 1px)",
+  backgroundSize: "auto, 28px 28px, 28px 28px",
+  border: "1px solid #26342d",
+};
+
+export const socialImageNetworkStyle = {
+  color: "#ffffff",
+  fontWeight: 400,
+};
+
 export async function tokenLogoData(
   token: Pick<Token, "imageUrl">,
 ): Promise<string> {
@@ -74,14 +89,9 @@ export function SocialImage({
         justifyContent: "space-between",
         width: "100%",
         height: "100%",
-        padding: "100px",
-        backgroundColor: "#000000",
-        backgroundImage:
-          "radial-gradient(circle at 50% -10%, rgba(0,255,76,0.07), rgba(0,255,76,0) 28%), linear-gradient(rgba(0,255,76,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(0,255,76,0.03) 1px, transparent 1px)",
-        backgroundSize: "auto, 28px 28px, 28px 28px",
+        ...socialImageFrame,
         color: "#f5f7f6",
         fontFamily: "sans-serif",
-        border: "1px solid #26342d",
       }}
     >
       <div
@@ -105,12 +115,15 @@ export function SocialImage({
         <div
           style={{
             display: "flex",
+            gap: 6,
             fontSize: 24,
             color: "#b3bfb7",
             fontWeight: "bold",
           }}
         >
-          Yield Orders {network ? `on ${network}` : ""} 👑
+          <span>{network ? "Yield Orders on" : "Yield Orders"}</span>
+          {network && <span style={socialImageNetworkStyle}>{network}</span>}
+          <span>👑</span>
         </div>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

@@ -1,8 +1,32 @@
 import { test, expect } from "@playwright/test";
+import { playParams, PlayStrategy } from "../../lib/play";
 
 const a = "0x4200000000000000000000000000000000000006",
   b = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   key = `${a}:${b}`;
+
+test("Yield Explorer serves PNG previews for network and scenario links", async ({
+  request,
+}) => {
+  const network = playParams("base");
+  const scenario = playParams("base", {
+    id: PlayStrategy.Long,
+    token: a,
+    amount: "1000",
+    entry: "10",
+    target: "14.7651257629",
+    targetTick: -249400,
+    rate: "0.07",
+  });
+  const page = await request.get(`/play?${network}`);
+  expect(page.status()).toBe(200);
+  expect(await page.text()).toContain(`https://yld.cx/play/og?${network}`);
+  for (const query of [network, scenario]) {
+    const preview = await request.get(`/play/og?${query}`);
+    expect(preview.status()).toBe(200);
+    expect(preview.headers()["content-type"]).toContain("image/png");
+  }
+});
 
 test("Safe manifest and icon are public and allow cross-origin discovery", async ({
   request,

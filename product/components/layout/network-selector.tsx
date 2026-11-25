@@ -4,6 +4,7 @@ import { useConnection, useSwitchChain } from "wagmi";
 import { getNetwork, networks } from "@yld-cx/sdk/ethereum";
 import { marketFilterParams, parseMarketFilters } from "@/lib/market-filters";
 import { useNetwork } from "./providers";
+import { decodePlayStrategy, playParams } from "@/lib/play";
 import {
   Select,
   SelectTrigger,
@@ -37,6 +38,12 @@ export function NetworkSelector() {
         params,
       );
       window.history.pushState(null, "", `?${query}${window.location.hash}`);
+    } else if (pathname === "/play") {
+      if (selected.slug === network) return;
+      const params = new URLSearchParams(window.location.search);
+      const settings = decodePlayStrategy(params.get("strategy"));
+      const query = playParams(selected.slug, settings && { id: settings.id });
+      window.history.pushState(null, "", `/play?${query}`);
     } else {
       setNetwork(selected.slug);
       router.push(`/?network=${selected.slug}`);
