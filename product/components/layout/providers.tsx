@@ -55,7 +55,7 @@ export function Providers({
   const pathname = usePathname();
   const urlNetwork = params.get("network");
   const network =
-    pathname === "/" && urlNetwork && isNetworkSlug(urlNetwork)
+    (pathname === "/" || pathname === "/play") && urlNetwork && isNetworkSlug(urlNetwork)
       ? urlNetwork
       : savedNetwork;
   // Remember URL selections for screens that do not have market filters.

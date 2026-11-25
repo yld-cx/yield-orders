@@ -37,6 +37,12 @@ export function NetworkSelector() {
         params,
       );
       window.history.pushState(null, "", `?${query}${window.location.hash}`);
+    } else if (pathname === "/play") {
+      const params = new URLSearchParams(window.location.search);
+      params.set("network", selected.slug);
+      for (const key of ["market", "amount", "entry", "target", "order", "rate"])
+        params.delete(key);
+      window.history.pushState(null, "", `/play?${params}`);
     } else {
       setNetwork(selected.slug);
       router.push(`/?network=${selected.slug}`);

@@ -91,7 +91,8 @@ function Scenario({ strategy, market, asset, quote, params, update }: {
   const values = { amount, entry, target, order, rate };
   function change(key: keyof typeof values, value: string) {
     setShareStatus("");
-    update({ ...values, [key]: value }, true);
+    const snapshot = Object.fromEntries(Object.entries(values).filter(([, current]) => current !== ""));
+    update({ ...snapshot, [key]: value }, true);
   }
   async function share() {
     const url = new URL(window.location.href);
