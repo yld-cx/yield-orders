@@ -4,6 +4,7 @@ import { useConnection, useSwitchChain } from "wagmi";
 import { getNetwork, networks } from "@yld-cx/sdk/ethereum";
 import { marketFilterParams, parseMarketFilters } from "@/lib/market-filters";
 import { useNetwork } from "./providers";
+import { PLAY_SCENARIO_KEYS } from "@/lib/play";
 import {
   Select,
   SelectTrigger,
@@ -40,7 +41,7 @@ export function NetworkSelector() {
     } else if (pathname === "/play") {
       const params = new URLSearchParams(window.location.search);
       params.set("network", selected.slug);
-      for (const key of ["market", "amount", "entry", "target", "order", "rate"])
+      for (const key of ["market", ...PLAY_SCENARIO_KEYS])
         params.delete(key);
       window.history.pushState(null, "", `/play?${params}`);
     } else {
