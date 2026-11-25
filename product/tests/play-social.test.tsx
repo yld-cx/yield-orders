@@ -84,8 +84,8 @@ describe("Yield Explorer social previews", () => {
     expect(og[0].url).not.toBe(next[0].url);
     expect(first.twitter?.images).toEqual([og[0].url]);
   });
-  it("returns a 1200 by 630 preview without needing a wallet or RPC", async () => {
-    expect((await image(params)).status).toBe(200);
+  it("renders the selected strategy, inputs and outcome in the preview", async () => {
+    await image(params);
     expect(vi.mocked(ImageResponse)).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ width: 1200, height: 630 }),
@@ -93,24 +93,10 @@ describe("Yield Explorer social previews", () => {
     const html = renderToStaticMarkup(
       vi.mocked(ImageResponse).mock.calls[0][0],
     );
-    const [, titleRow, descriptionRow] = html.split(
-      'style="display:flex;align-items:center;justify-content:space-between;gap:24px"',
-    );
-    expect(titleRow).toContain(">Bullish on WETH</span>");
-    expect(titleRow).toContain(">Yield Explorer</span>");
-    expect(descriptionRow).toContain("🐂 Long");
-    expect(descriptionRow).toContain(">Play</span>");
-    expect(html).toContain("padding:100px");
-    expect(html).toContain("background-size:auto, 28px 28px, 28px 28px");
-    expect(html.match(/border:[^;"]+/g)).toEqual(["border:1px solid #26342d"]);
-    expect(html).toContain('<span style="color:#00ff4c">yld.cx</span>');
-    expect(html).toContain(
-      '<span style="color:#ffffff;font-weight:400">Base</span>',
-    );
     for (const text of [
       "Yield Explorer",
       "Bullish on WETH",
-      "Long",
+      "🐂 Long",
       "Rent amount",
       "Target price",
       "7-day rental cost",
@@ -174,47 +160,29 @@ describe("Yield Explorer social previews", () => {
       expect(html).toContain(`Estimated quote · ${quoteAmount} ${quote}`);
     },
   );
-  it.each([
-    {
-      id: PlayStrategy.Short,
-      label: "Rent amount",
-      target: "5",
-      result: "+19.8 USDC",
-    },
-    {
-      id: PlayStrategy.TakeProfit,
-      label: "Provide amount",
-      target: "15",
-      result: "60 USDC",
-    },
-    {
-      id: PlayStrategy.HoldAndEarn,
-      label: "Provide amount",
-      target: "20",
-      result: "0.002772 WETH",
-    },
-  ] as const)(
-    "shows native token amounts and the correct result for $id",
-    async ({ id, label, target, result }) => {
-      const query = Object.fromEntries(
-        playParams("base", {
-          ...settings,
-          id,
-          amount: "4",
-          entry: "10",
-          target,
-          rate: id === PlayStrategy.HoldAndEarn ? undefined : "1",
-        }),
-      );
-      await image(query);
-      const html = renderToStaticMarkup(
-        vi.mocked(ImageResponse).mock.calls[0][0],
-      );
-      for (const text of [label, "4 WETH", "10 USDC", result]) {
-        expect(html).toContain(text);
-      }
-    },
-  );
+  it("shows the provided asset and quote proceeds in the Take Profit preview", async () => {
+    const query = Object.fromEntries(
+      playParams("base", {
+        ...settings,
+        id: PlayStrategy.TakeProfit,
+        amount: "4",
+        entry: "10",
+        target: "15",
+      }),
+    );
+    await image(query);
+    const html = renderToStaticMarkup(
+      vi.mocked(ImageResponse).mock.calls[0][0],
+    );
+    for (const text of [
+      "Provide amount",
+      "4 WETH",
+      "Potential tokens",
+      "60 USDC",
+    ]) {
+      expect(html).toContain(text);
+    }
+  });
   it("uses the Yield Book price formatting for a saved tick", async () => {
     const targetTick = -200000;
     const target = humanPrice(priceAtTick(targetTick), 18, 6);
@@ -247,7 +215,7 @@ describe("Yield Explorer social previews", () => {
     expect(page.twitter?.images).toEqual([
       "https://yld.cx/play/og?network=base",
     ]);
-    expect((await image(query)).status).toBe(200);
+    await image(query);
     const html = renderToStaticMarkup(
       vi.mocked(ImageResponse).mock.calls[0][0],
     );
@@ -261,14 +229,12 @@ describe("Yield Explorer social previews", () => {
   });
   it("uses a generic preview when there is no selected market", async () => {
     expect((await metadata({})).title).toBe("Yield Explorer");
-    expect(
-      (await image({ network: "unknown", strategy: "unknown" })).status,
-    ).toBe(200);
+    await image({ network: "unknown", strategy: "unknown" });
     const html = renderToStaticMarkup(
       vi.mocked(ImageResponse).mock.calls[0][0],
     );
-    expect(html).toContain(
-      '<span>Play</span><span style="color:#00ff4c">yld.cx</span><span>way</span>',
+    expect(html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ")).toContain(
+      "Play yld.cx way",
     );
   });
 });

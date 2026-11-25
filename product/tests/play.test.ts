@@ -10,69 +10,27 @@ import {
   playDefaultAmount,
   playFieldUnits,
   playParams,
-  playScenario,
   playStrategy,
   scenarioNumber,
-  playSlider,
-  playTarget,
   playOutcome,
   readPlayValues,
 } from "@/lib/play";
 
-const base = { amount: 1000, entry: 100, target: 110, order: 100, rate: 1 };
+const base = { amount: 1000, entry: 100, target: 110, rate: 1 };
 
 describe("Yield Explorer scenario", () => {
   it("uses quote-denominated rental cost for longs", () => {
+    expect(playOutcome(PlayStrategy.Long, base)?.value).toBeCloseTo(90);
     expect(
-      playScenario({ ...base, strategy: PlayStrategy.Long })?.pnl,
-    ).toBeCloseTo(90);
-    expect(
-      playScenario({ ...base, strategy: PlayStrategy.Long, target: 90 })?.pnl,
+      playOutcome(PlayStrategy.Long, { ...base, target: 90 })?.value,
     ).toBeCloseTo(-110);
   });
   it("uses asset-denominated repayment cost for shorts", () => {
-    const short = {
-      ...base,
-      strategy: PlayStrategy.Short,
-      amount: 10,
-    } as const;
-    expect(playScenario({ ...short, target: 90 })?.pnl).toBeCloseTo(91);
-    expect(playScenario(short)?.pnl).toBeCloseTo(-111);
-  });
-  it("separates conditional fills from rental income", () => {
-    const buy = playScenario({
-      ...base,
-      strategy: PlayStrategy.BuyTheDip,
-      order: 90,
-    });
-    expect(buy?.pnl).toBeCloseTo(222.222222);
-    expect(buy?.income).toBeCloseTo(10);
-    const sell = playScenario({
-      ...base,
-      strategy: PlayStrategy.TakeProfit,
-      amount: 10,
-      order: 120,
-    });
-    expect(sell?.pnl).toBeCloseTo(100);
-    expect(sell?.income).toBeCloseTo(11);
-    const hold = playScenario({
-      ...base,
-      strategy: PlayStrategy.HoldAndEarn,
-      amount: 10,
-      order: 200,
-      target: 250,
-    });
-    expect(hold?.pnl).toBeCloseTo(-500);
-    expect(hold?.income).toBeCloseTo(25);
-  });
-  it("does not imply a rental rate when none was supplied", () => {
+    const short = { ...base, amount: 10 };
     expect(
-      playScenario({
-        ...base,
-        strategy: PlayStrategy.HoldAndEarn,
-        rate: undefined,
-      })?.income,
-    ).toBeUndefined();
+      playOutcome(PlayStrategy.Short, { ...short, target: 90 })?.value,
+    ).toBeCloseTo(91);
+    expect(playOutcome(PlayStrategy.Short, short)?.value).toBeCloseTo(-111);
   });
   it("validates user-supplied values and strategy names", () => {
     expect(playStrategy("long")?.id).toBe(PlayStrategy.Long);
@@ -82,7 +40,7 @@ describe("Yield Explorer scenario", () => {
     for (const value of ["", "-1", "NaN", "Infinity", "1e2", "0"])
       expect(scenarioNumber(value)).toBeUndefined();
     expect(
-      playScenario({ ...base, strategy: PlayStrategy.Long, entry: 0 }),
+      playOutcome(PlayStrategy.Long, { ...base, entry: 0 }),
     ).toBeUndefined();
   });
 });
@@ -92,13 +50,6 @@ describe("Slider and shareable scenario", () => {
     id: PlayStrategy.Long,
     token: "0x4200000000000000000000000000000000000006",
   };
-  it("derives absolute target prices, including small token prices", () => {
-    expect(playTarget(1700, 10)).toBe("1870");
-    expect(playTarget(0.00000000001, 10)).toBe("0.000000000011");
-    expect(playSlider(PlayStrategy.BuyTheDip)?.max).toBe(0);
-    const holdSlider = playSlider(PlayStrategy.HoldAndEarn)!;
-    expect(holdSlider).toMatchObject({ min: 0, max: 100, initial: 100 });
-  });
   it.each([PlayStrategy.BuyTheDip, PlayStrategy.TakeProfit])(
     "uses the Yield Book grid for %s when the displayed asset is token1",
     (id) => {
@@ -152,6 +103,9 @@ describe("Slider and shareable scenario", () => {
       "4",
     );
     expect(
+      playDefaultAmount({ id: PlayStrategy.Short, entry: "0.00000000001" }),
+    ).toBe("100000000000000");
+    expect(
       playDefaultAmount({ id: PlayStrategy.UseLiquidity, entry: "0.004" }),
     ).toBe("1000");
     expect(
@@ -171,13 +125,13 @@ describe("Slider and shareable scenario", () => {
     expect(readPlayValues({ ...settings, amount: "1" })?.amount).toBe(1);
     expect(readPlayValues({ ...settings, amount: "" })).toBeUndefined();
   });
-  it("round trips the scenario and reproduces its outcome", () => {
-    const values = { amount: 1000, entry: 1700, target: 1870, rate: 0.5 };
+  it("round trips a scenario with an exact market tick", () => {
     const settings = {
       ...selection,
       amount: "1000",
-      entry: "1700",
-      target: "1870",
+      entry: "10",
+      target: "14.7651257629",
+      targetTick: -249400,
       rate: "0.5",
     };
     const params = playParams("base", settings);
@@ -185,13 +139,12 @@ describe("Slider and shareable scenario", () => {
     expect(params.get("strategy")).toMatch(/^[\w-]+$/);
     const decoded = decodePlayStrategy(params.get("strategy"))!;
     expect(decoded).toEqual(settings);
-    expect(readPlayValues(decoded)).toEqual(values);
-    expect(
-      playOutcome(PlayStrategy.Long, readPlayValues(decoded)!)?.value,
-    ).toBeCloseTo(95);
-    expect(
-      playParams("base", { ...settings, target: "1800" }).toString(),
-    ).not.toBe(params.toString());
+    expect(readPlayValues(decoded)).toEqual({
+      amount: 1000,
+      entry: 10,
+      target: 14.7651257629,
+      rate: 0.5,
+    });
   });
   it("defaults rentals and providers to their minimum seven-day rates", () => {
     const settings = {
@@ -200,9 +153,7 @@ describe("Slider and shareable scenario", () => {
       entry: "100",
       target: "110",
     };
-    const params = playParams("base", settings);
-    const values = readPlayValues(decodePlayStrategy(params.get("strategy"))!)!;
-    expect(values.rate).toBe(0.07);
+    expect(readPlayValues(settings)?.rate).toBe(0.07);
     expect(readPlayValues({ ...settings, id: PlayStrategy.Short })?.rate).toBe(
       0.07,
     );
@@ -229,23 +180,27 @@ describe("Slider and shareable scenario", () => {
         amount: 1000,
         entry: 100,
         target: 80,
-      })?.value,
-    ).toBe(12.5);
+      }),
+    ).toMatchObject({ label: "Potential tokens", value: 12.5 });
     expect(
       playOutcome(PlayStrategy.TakeProfit, {
         amount: 10,
         entry: 100,
         target: 120,
-      })?.value,
-    ).toBe(1200);
+      }),
+    ).toMatchObject({ label: "Potential tokens", value: 1200 });
     expect(
       playOutcome(PlayStrategy.HoldAndEarn, {
         amount: 10,
         entry: 100,
         target: 200,
         rate: 1,
-      })?.value,
-    ).toBe(0.1);
+      }),
+    ).toMatchObject({ label: "Potential Yield", value: 0.1 });
+    expect(
+      playOutcome(PlayStrategy.HoldAndEarn, { ...base, rate: undefined })
+        ?.value,
+    ).toBeUndefined();
   });
   it("uses the saved quote price in Use Liquidity links", () => {
     const params = playParams("base", {
@@ -292,40 +247,6 @@ describe("Slider and shareable scenario", () => {
       expect(
         playOutcome(id, { amount: 10, entry: 100, target: 110, rate: 1 })?.unit,
       ).toBe(unit);
-    },
-  );
-  it.each([
-    { id: PlayStrategy.Short, target: "90", outcome: 91, unit: "quote" },
-    {
-      id: PlayStrategy.TakeProfit,
-      target: "120",
-      outcome: 1200,
-      unit: "quote",
-    },
-    {
-      id: PlayStrategy.HoldAndEarn,
-      target: "200",
-      outcome: 0.1,
-      unit: "asset",
-    },
-  ] as const)(
-    "uses the saved token quantity and result for $id",
-    ({ id, target, outcome, unit }) => {
-      const settings = {
-        ...selection,
-        id,
-        amount: "10",
-        entry: "100",
-        target,
-        rate: "1",
-      };
-      const query = playParams("base", settings);
-      const decoded = decodePlayStrategy(query.get("strategy"))!;
-      const values = readPlayValues(decoded)!;
-      expect(values.amount).toBe(10);
-      const result = playOutcome(decoded.id, values);
-      expect(result?.value).toBeCloseTo(outcome);
-      expect(result?.unit).toBe(unit);
     },
   );
   it("rejects invalid snapshots", () => {

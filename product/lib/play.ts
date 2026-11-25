@@ -431,20 +431,20 @@ export function playOutcome(
   }
   if (strategy === PlayStrategy.BuyTheDip)
     return {
-      label: "Tokens if filled",
+      label: "Potential tokens",
       value: amount / target,
       unit: "asset" as const,
       signed: false,
     };
   if (strategy === PlayStrategy.TakeProfit)
     return {
-      label: "Proceeds if filled",
+      label: "Potential tokens",
       value: amount * target,
       unit: "quote" as const,
       signed: false,
     };
   return {
-    label: "Potential Yield if repaid",
+    label: "Potential Yield",
     value: rate === undefined ? undefined : (amount * rate) / 100,
     unit: "asset" as const,
     signed: false,

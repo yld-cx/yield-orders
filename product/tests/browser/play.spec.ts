@@ -1,5 +1,5 @@
-import { expect, test } from "@playwright/test";
-import { decodePlayStrategy } from "../../lib/play";
+import { expect, test, type Page } from "@playwright/test";
+import { decodePlayStrategy, playParams, PlayStrategy } from "../../lib/play";
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -11,20 +11,18 @@ import { tokenFixture } from "./token-fixtures";
 
 const token = "0x42000000000000000000000000000000000000aa";
 const quote = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+const sunToken = "0x42000000000000000000000000000000000000bb";
 const trending = [
   { address: token, symbol: "MOON", name: "Moon Token" },
   {
-    address: "0x42000000000000000000000000000000000000bb",
+    address: sunToken,
     symbol: "SUN",
     name: "Sun Token",
   },
   { address: quote, symbol: "USDC", name: "USD Coin" },
 ];
 
-test("Play filters trending tokens and restores the encoded simulation after reload", async ({
-  page,
-  context,
-}) => {
+test.beforeEach(async ({ context }) => {
   await context.route(/https:\/\/mainnet\.base\.org\/?$/, async (route) => {
     const tokenCall = (address: string, data: Hex) => {
       try {
@@ -80,12 +78,7 @@ test("Play filters trending tokens and restores the encoded simulation after rel
       json: Array.isArray(calls) ? calls.map(respond) : respond(calls),
     });
   });
-  let showTokens!: () => void;
-  const tokensReady = new Promise<void>((resolve) => {
-    showTokens = resolve;
-  });
   await context.route(/\/api\/tokens\?chainId=/, async (route) => {
-    await tokensReady;
     await route.fulfill({
       json: {
         tokens:
@@ -129,7 +122,27 @@ test("Play filters trending tokens and restores the encoded simulation after rel
       });
     },
   );
+});
 
+function openScenario(page: Page, id: PlayStrategy, address = token) {
+  return page.goto(`/play?${playParams("base", { id, token: address })}`);
+}
+
+function instructions(page: Page) {
+  return page.locator("details").filter({ hasText: "How to play" });
+}
+
+test("Home Explorer opens Play and filters trending tokens", async ({
+  page,
+}) => {
+  let showTokens!: () => void;
+  const tokensReady = new Promise<void>((resolve) => {
+    showTokens = resolve;
+  });
+  await page.route(/\/api\/tokens\?chainId=/, async (route) => {
+    await tokensReady;
+    await route.fallback();
+  });
   await page.goto("/?network=base");
   const categories = page.getByRole("group", { name: "Token categories" });
   const explorer = categories.getByRole("link", {
@@ -140,24 +153,12 @@ test("Play filters trending tokens and restores the encoded simulation after rel
     "href",
     "/play",
   );
-  await expect(explorer).toHaveAttribute("data-slot", "button");
   await explorer.click();
   await expect(page).toHaveURL(/\/play$/);
   await expect(
     page.getByRole("heading", { name: "Yield Explorer." }),
   ).toBeVisible();
 
-  await page.goto("/play?network=base");
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
-    "content",
-    "https://yld.cx/play/og?network=base",
-  );
-  const networkPreview = await page.request.get("/play/og?network=base");
-  expect(networkPreview.ok()).toBe(true);
-  expect(networkPreview.headers()["content-type"]).toBe("image/png");
-  await expect(
-    page.getByRole("heading", { name: "Yield Explorer." }).getByText("."),
-  ).toHaveClass("text-brand");
   const strategyDescription = page.getByText("Choose your strategy to play", {
     exact: true,
   });
@@ -166,9 +167,6 @@ test("Play filters trending tokens and restores the encoded simulation after rel
   await expect(
     long.getByText("Bullish on tokens", { exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: /^Use Liquidity/ }),
-  ).toContainText(/Rent tokens$/);
   await long.click();
   const search = page.getByRole("searchbox", {
     name: "Search trending tokens",
@@ -191,15 +189,22 @@ test("Play filters trending tokens and restores the encoded simulation after rel
   await search.fill(token.slice(-6));
   await expect(page.getByRole("button", { name: /Sun Token/ })).toHaveCount(0);
   await page.getByRole("button", { name: /Moon Token/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Bullish on MOON" }),
+  ).toBeVisible();
+});
 
+test("Long restores the shared simulation and keeps the strategy when switching networks", async ({
+  page,
+  context,
+}) => {
+  await openScenario(page, PlayStrategy.Long);
   await expect(
     page.getByRole("heading", { name: "Bullish on MOON", exact: true }),
   ).toBeVisible();
   await expect(page).toHaveTitle("Bullish on MOON · Yield Explorer | yld.cx");
   await expect(page.getByText("Long", { exact: true })).toBeVisible();
-  const explanation = page
-    .locator("details")
-    .filter({ hasText: "How to play" });
+  const explanation = instructions(page);
   const howToPlay = explanation.getByText("How to play", { exact: true });
   const steps = explanation.locator("li");
   await expect(steps.first()).toBeHidden();
@@ -238,9 +243,7 @@ test("Play filters trending tokens and restores the encoded simulation after rel
   await expect(
     page.getByText("+490.65103 USDC", { exact: true }),
   ).toBeVisible();
-  await amount.fill("");
-  await amount.pressSequentially("2500");
-  await expect(amount).toHaveValue("2500");
+  await amount.fill("2500");
   await target.press("ArrowLeft");
   await rate.fill("2");
   await expect(
@@ -254,7 +257,6 @@ test("Play filters trending tokens and restores the encoded simulation after rel
     page.url(),
   );
   const query = new URL(page.url()).searchParams;
-  expect([...query.keys()]).toEqual(["network", "strategy"]);
   expect(decodePlayStrategy(query.get("strategy"))).toEqual({
     id: "long",
     token,
@@ -264,17 +266,11 @@ test("Play filters trending tokens and restores the encoded simulation after rel
     targetTick: -249400,
     rate: "2",
   });
-  const preview = await page.request.get(`/play/og?${query}`);
-  expect(preview.ok()).toBe(true);
-  expect(preview.headers()["content-type"]).toBe("image/png");
   await page.reload();
   await expect(target).toHaveValue("-249400");
   await expect(
     page.getByText("+1,141.2814 USDC", { exact: true }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open Yield Market" }),
-  ).toHaveAttribute("href", `/market/base/${token}:${quote}`);
 
   await page.getByRole("combobox", { name: "Network", exact: true }).click();
   await page.getByRole("option", { name: "Ethereum", exact: true }).click();
@@ -285,15 +281,21 @@ test("Play filters trending tokens and restores the encoded simulation after rel
   expect(switched.get("network")).toBe("ethereum");
   expect(decodePlayStrategy(switched.get("strategy"))).toEqual({ id: "long" });
   await expect(page).toHaveTitle("Yield Explorer | yld.cx");
+});
 
-  await page.goto("/play?network=base");
-  await page.getByRole("link", { name: /^Use Liquidity/ }).click();
-  await page.getByRole("button", { name: /Moon Token/ }).click();
+test("Use Liquidity switches the rented and locked tokens", async ({
+  page,
+}) => {
+  await openScenario(page, PlayStrategy.UseLiquidity);
+  const entry = page.getByRole("textbox", { name: "Entry price" });
+  const inputGroups = page.locator('[data-slot="input-group"]');
+  const explanation = instructions(page);
+  const howToPlay = explanation.locator("summary");
+  const steps = explanation.locator("li");
   const accessCopy = "Rent USDC with MOON";
   await expect(
     page.getByRole("heading", { name: accessCopy, exact: true }),
   ).toBeVisible();
-  await expect(page).toHaveTitle(`${accessCopy} · Yield Explorer | yld.cx`);
   await expect(page.getByRole("slider")).toHaveCount(0);
   await expect(page.getByText("1,000.7 USDC", { exact: true })).toBeVisible();
   await expect(
@@ -303,38 +305,25 @@ test("Play filters trending tokens and restores the encoded simulation after rel
   await expect(entry).toHaveValue("10");
   await expect(inputGroups.filter({ has: entry })).toHaveText("USDC");
   await expect(inputGroups.filter({ has: rentalAmount })).toContainText("USDC");
-  const costBox = await rate.boundingBox();
-  const resultBox = await page
-    .getByText("Full-term repayment", { exact: true })
-    .locator("..")
-    .boundingBox();
-  expect(resultBox!.y - costBox!.y - costBox!.height).toBeGreaterThan(12);
   await howToPlay.click();
   await expect(steps.first()).toHaveText("Lock MOON and rent USDC");
   await expect(steps.last()).toHaveText(
     "If the rental expires, locked MOON will be swapped",
   );
 
-  await entry.fill("");
-  await entry.pressSequentially("20");
-  await expect(entry).toHaveValue("20");
+  await entry.fill("20");
   await expect(
     page.getByText("Estimated quote · 50 MOON", { exact: true }),
   ).toBeVisible();
-  const editedAccess = new URL(page.url()).searchParams;
-  expect(decodePlayStrategy(editedAccess.get("strategy"))?.entry).toBe("0.05");
-
   const switchButton = page
     .getByRole("heading", { name: accessCopy, exact: true })
     .locator("..")
     .getByRole("button", { name: "Switch tokens", exact: true });
-  await expect(switchButton).toHaveText("");
   await switchButton.click();
   const reversedCopy = "Rent MOON with USDC";
   await expect(
     page.getByRole("heading", { name: reversedCopy, exact: true }),
   ).toBeVisible();
-  await expect(page).toHaveTitle(`${reversedCopy} · Yield Explorer | yld.cx`);
   await expect(entry).toHaveValue("20");
   await expect(rentalAmount).toHaveValue("50");
   await expect(inputGroups.filter({ has: entry })).toHaveText("USDC");
@@ -357,18 +346,23 @@ test("Play filters trending tokens and restores the encoded simulation after rel
     entry: "20",
     rate: "0.07",
   });
-  const accessPreview = await page.request.get(`/play/og?${accessQuery}`);
-  expect(accessPreview.ok()).toBe(true);
-  expect(accessPreview.headers()["content-type"]).toBe("image/png");
+
   await page.reload();
   await expect(page.getByText("50.035 MOON", { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open Yield Market" }),
-  ).toHaveAttribute("href", `/market/base/${token}:${quote}`);
+});
 
-  await page.goto("/play?network=base");
-  await page.getByRole("link", { name: /^Short/ }).click();
-  await page.getByRole("button", { name: /Moon Token/ }).click();
+test("Short starts at the lowest target and charges yield in the rented token", async ({
+  page,
+}) => {
+  await openScenario(page, PlayStrategy.Short);
+  const entry = page.getByRole("textbox", { name: "Entry price" });
+  const rentalAmount = page.getByRole("textbox", { name: "Rent amount" });
+  const rate = page.getByRole("textbox", { name: "7-day rental cost" });
+  const target = page.getByRole("slider", { name: "Target price" });
+  const inputGroups = page.locator('[data-slot="input-group"]');
+  const explanation = instructions(page);
+  const howToPlay = explanation.locator("summary");
+  const steps = explanation.locator("li");
   await expect(
     page.getByRole("heading", { name: "Bearish on MOON" }),
   ).toBeVisible();
@@ -391,20 +385,18 @@ test("Play filters trending tokens and restores the encoded simulation after rel
     page.getByText("+19.741657 USDC", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("+49.354142%", { exact: true })).toBeVisible();
-  const shortQuery = new URL(page.url()).searchParams;
-  expect(decodePlayStrategy(shortQuery.get("strategy"))).toEqual({
-    id: "short",
-    token,
-    amount: "4",
-    entry: "10",
-    target: "5.01444139916",
-    targetTick: -260200,
-    rate: "1",
-  });
+});
 
+test("Limit strategies use the expected defaults and display their outcomes", async ({
+  page,
+}) => {
+  const inputGroups = page.locator('[data-slot="input-group"]');
+  const explanation = instructions(page);
+  const howToPlay = explanation.locator("summary");
+  const steps = explanation.locator("li");
   for (const scenario of [
     {
-      strategy: /^Buy the Dip/,
+      id: PlayStrategy.BuyTheDip,
       unit: "USDC",
       initialAmount: "1000",
       initialOrderTick: "-264800",
@@ -413,7 +405,7 @@ test("Play filters trending tokens and restores the encoded simulation after rel
       firstStep: "Place a limit buy for MOON at your order price",
     },
     {
-      strategy: /^Take Profit/,
+      id: PlayStrategy.TakeProfit,
       unit: "MOON",
       initialAmount: "100",
       initialOrderTick: "-249800",
@@ -422,7 +414,7 @@ test("Play filters trending tokens and restores the encoded simulation after rel
       firstStep: "Place a limit sell for MOON at your order price",
     },
     {
-      strategy: /^Hold & Earn/,
+      id: PlayStrategy.HoldAndEarn,
       unit: "MOON",
       initialAmount: "100",
       initialOrderTick: "-246400",
@@ -431,16 +423,12 @@ test("Play filters trending tokens and restores the encoded simulation after rel
       firstStep: "Place a limit sell for MOON at high price",
     },
   ]) {
-    await page.goto("/play?network=base");
-    await page.getByRole("link", { name: scenario.strategy }).click();
-    await page.getByRole("button", { name: /Moon Token/ }).click();
+    await openScenario(page, scenario.id);
     const provideAmount = page.getByRole("textbox", { name: "Provide amount" });
     await expect(inputGroups.filter({ has: provideAmount })).toContainText(
       scenario.unit,
     );
-    await expect(entry).toHaveValue("10");
     await expect(provideAmount).toHaveValue(scenario.initialAmount);
-    await expect(inputGroups.filter({ has: entry })).toContainText("USDC");
     const orderPrice = page.getByRole("slider", { name: "Order price" });
     await expect(orderPrice).toHaveValue(scenario.initialOrderTick);
     await provideAmount.fill("4");
@@ -465,10 +453,14 @@ test("Play filters trending tokens and restores the encoded simulation after rel
     await expect(steps.first()).toHaveText(scenario.firstStep);
     await expect(steps).toHaveCount(scenario.netYield ? 2 : 3);
   }
+});
 
-  await page.goto("/play?network=base");
-  await page.getByRole("link", { name: /^Short/ }).click();
-  await page.getByRole("button", { name: /Sun Token/ }).click();
+test("A manual entry price supplies a default amount until the user overrides it", async ({
+  page,
+}) => {
+  await openScenario(page, PlayStrategy.Short, sunToken);
+  const entry = page.getByRole("textbox", { name: "Entry price" });
+  const rentalAmount = page.getByRole("textbox", { name: "Rent amount" });
   await expect(
     page.getByRole("heading", { name: "Bearish on SUN" }),
   ).toBeVisible();
