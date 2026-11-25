@@ -101,6 +101,28 @@ test("RPC fallback retries a transient outage across the providers once", async 
   assert.deepEqual(calls, [urls[0], urls[1], urls[0]]);
 });
 
+test(
+  "a provider Retry-After is cancelled at the resolver deadline",
+  { timeout: 2000 },
+  async (t) => {
+    const calls: string[] = [];
+    t.mock.method(globalThis, "fetch", async (url: string) => {
+      calls.push(String(url));
+      return new Response("Rate limited", {
+        status: 429,
+        headers: { "Retry-After": "3600" },
+      });
+    });
+    await assert.rejects(
+      resolveChain(env, "base", [], { deadline: Date.now() + 150 }),
+      {
+        name: "TimeoutError",
+      },
+    );
+    assert.deepEqual(calls, urls);
+  },
+);
+
 for (const status of [503, 401]) {
   test(`permanent HTTP ${status} failures have bounded provider attempts`, async (t) => {
     const calls: string[] = [];

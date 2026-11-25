@@ -113,13 +113,29 @@ test("packaged cron logs provider failures without emitting private credentials"
     assert.equal(failures.length, 1);
     assert.equal(failures[0].status, 503);
     assert.equal(failures[0].stage, "rpc_chain_check");
+    const endpoints = logs
+      .filter((line) => line.includes("resolver_rpc_endpoint_error"))
+      .map(JSON.parse);
+    assert.deepEqual(
+      endpoints.map((entry) => entry.hostname),
+      ["provider.test", "public.test", "provider.test", "public.test"],
+    );
+    assert.ok(
+      endpoints.every(
+        (entry) =>
+          entry.network === "base" &&
+          entry.method === "eth_chainId" &&
+          entry.name === "HttpRequestError" &&
+          entry.status === 503,
+      ),
+    );
     for (const secret of [
       rpc,
       "runtime-rpc-secret",
       "runtime-query-secret",
       apiKey,
     ])
-      assert.ok(!JSON.stringify(failures).includes(secret));
+      assert.ok(!JSON.stringify(logs).includes(secret));
   } finally {
     await mf.dispose();
   }

@@ -111,31 +111,107 @@ test("invalid configuration on one chain does not disable configured chains", as
   assert.deepEqual(progress(db), { "events:1": 29, "events:4663": 29 });
 });
 
-test("backfill resumes and eventually catches up across multiple scheduled invocations", async () => {
-  const db = new TestDatabase(),
-    env = { ...environment(db), MAX_CHUNKS: "3" };
-  const saved: number[] = [];
-  for (let i = 0; i < 4; i++) {
-    await synchronize(env, i * 300_000, { rpc: () => fakeRpc(31n) });
-    saved.push(Number(progress(db)["events:8453"]));
-  }
-  assert.ok(saved[0]! < 29);
-  assert.ok(saved[1]! > saved[0]!);
-  assert.equal(saved.at(-1), 29);
-  assert.ok(
-    saved.every((value, index) => index === 0 || value >= saved[index - 1]!),
+test("a temporary TypeError retries the same uncommitted range and recovers", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  const ranges: [bigint, bigint][] = [];
+  const delays: number[] = [];
+  const rpc = fakeRpc(31n, [supplied(10), supplied(19, 1), supplied(29, 2)]);
+  await synchronize(env, 0, {
+    sleep: async (ms) => {
+      delays.push(ms);
+    },
+    rpc: (n) =>
+      n.name === "base"
+        ? {
+            ...rpc,
+            logs: async (from, to) => {
+              ranges.push([from, to]);
+              assert.equal(progress(db)["events:8453"], Number(from - 1n));
+              if (ranges.length === 1)
+                throw new TypeError("Network connection lost");
+              return rpc.logs(from, to);
+            },
+          }
+        : fakeRpc(),
+  });
+  assert.deepEqual(ranges, [
+    [10n, 19n],
+    [10n, 19n],
+    [20n, 29n],
+  ]);
+  assert.deepEqual(delays, [150]);
+  assert.equal(progress(db)["events:8453"], 29);
+  assert.deepEqual(
+    db
+      .rows("SELECT block_number FROM events ORDER BY block_number")
+      .map((row) => row.block_number),
+    [10, 19, 29],
   );
 });
 
-test("range-limit errors shrink requests with bounded backoff and retain historical coverage", async () => {
+test("smaller ranges survive failed cron runs and grow during catch-up without skipping blocks", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  const config = JSON.parse(env.NETWORK_CONFIG!);
+  config["8453"].chunkSize = 1000;
+  env.NETWORK_CONFIG = JSON.stringify(config);
+
+  let head = 12n;
+  let unavailable = false;
+  const requested: [bigint, bigint][] = [];
+  const covered: [bigint, bigint][] = [];
+  const run = (slot: number) =>
+    synchronize(env, slot * 300_000, {
+      sleep: async () => {},
+      rpc: (n) =>
+        n.name === "base"
+          ? {
+              ...fakeRpc(head),
+              logs: async (from, to) => {
+                requested.push([from, to]);
+                if (unavailable) throw new TypeError("Network unavailable");
+                covered.push([from, to]);
+                return [];
+              },
+            }
+          : fakeRpc(),
+    });
+
+  await run(0);
+  let previousSize = 1000n;
+  for (let slot = 1; slot <= 6; slot++) {
+    unavailable = true;
+    head += 150n;
+    requested.length = 0;
+    await run(slot);
+    assert.equal(progress(db)["events:8453"], 10);
+    assert.ok(requested.every(([from]) => from === 11n));
+    assert.ok(requested.length <= 3);
+    const [from, to] = requested[0]!;
+    if (slot > 1 && previousSize > 1n) assert.ok(to - from + 1n < previousSize);
+    previousSize = to - from + 1n;
+  }
+  unavailable = false;
+  head = 50_000n;
+  requested.length = 0;
+  await run(7);
+  assert.equal(progress(db)["events:8453"], 49_998);
+  assert.equal(covered[0]![0], 10n);
+  assert.equal(covered.at(-1)![1], 49_998n);
+  assert.ok(
+    covered.every(([from], i) => i === 0 || from === covered[i - 1]![1] + 1n),
+  );
+  assert.ok(requested.length > 12);
+  assert.ok(requested.some(([from, to]) => to - from + 1n === 1000n));
+});
+
+test("range-limit errors shrink requests immediately and retain historical coverage", async () => {
   const db = new TestDatabase(),
-    env = { ...environment(db), MAX_CHUNKS: "30", MAX_D1_QUERIES: "150" };
+    env = environment(db);
   const attempts: bigint[] = [],
     waits: number[] = [];
   await synchronize(env, 0, {
-    sleep: async (ms) => {
-      waits.push(ms);
-    },
     rpc: () => ({
       ...fakeRpc(),
       logs: async (from, to) => {
@@ -149,20 +225,19 @@ test("range-limit errors shrink requests with bounded backoff and retain histori
   assert.ok(
     attempts.includes(10n) && attempts.includes(5n) && attempts.includes(2n),
   );
-  assert.ok(waits.length > 0 && waits.every((ms) => ms <= 1000));
   assert.equal(progress(db)["events:1"], 29);
 });
 
-test("execution deadline stops before committing an incomplete range, then resumes", async () => {
+test("configured execution deadline stops before committing an incomplete range, then resumes", async () => {
   const db = new TestDatabase(),
-    env = environment(db);
+    env = { ...environment(db), SYNC_INTERVAL_MINUTES: "1" };
   let clock = 0;
   await synchronize(env, 0, {
     now: () => clock,
     rpc: () => ({
       ...fakeRpc(),
       logs: async () => {
-        clock = 119000;
+        clock = 60_000;
         return [];
       },
     }),
@@ -176,54 +251,52 @@ test("execution deadline stops before committing an incomplete range, then resum
   assert.equal(progress(db)["events:1"], 29);
 });
 
-test("maximum chunks, RPC requests and D1 queries bound invocation work", async () => {
-  const db = new TestDatabase(),
-    env = {
-      ...environment(db),
-      MAX_CHUNKS: "3",
-      MAX_RPC_REQUESTS: "6",
-      MAX_D1_QUERIES: "15",
-    };
-  let rpcCalls = 0;
+test("a network can catch up in one cron when its backfill exceeds the old chunk budget", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
   await synchronize(env, 0, {
-    rpc: () => ({
-      ...fakeRpc(100000n),
-      head: async () => {
-        rpcCalls++;
-        return 100000n;
-      },
-      logs: async () => {
-        rpcCalls++;
-        return [];
-      },
-    }),
+    rpc: (n) => fakeRpc(n.name === "base" ? 4002n : 31n),
   });
-  assert.equal(rpcCalls, 6);
-  assert.equal(db.queries, 15);
   assert.deepEqual(progress(db), {
-    "events:1": 19,
-    "events:8453": 19,
-    "events:4663": 19,
+    "events:1": 29,
+    "events:8453": 4000,
+    "events:4663": 29,
   });
 });
 
-test("rotation prevents starvation even when only one chunk is allowed per run", async () => {
-  const db = new TestDatabase(),
-    env = { ...environment(db), MAX_CHUNKS: "1" };
-  for (let i = 0; i < 3; i++)
-    await synchronize(env, i * 300_000, { rpc: () => fakeRpc() });
-  assert.ok(Object.values(progress(db)).every((last) => Number(last) > 9));
+test("healthy chains finish while another network is stalled", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  let reject!: (reason: Error) => void;
+  const baseHead = new Promise<bigint>((_, fail) => {
+    reject = fail;
+  });
+  const run = synchronize(env, 0, {
+    rpc: (n) =>
+      n.name === "base" ? { ...fakeRpc(), head: () => baseHead } : fakeRpc(),
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(progress(db), { "events:1": 29, "events:4663": 29 });
+  reject(new TypeError("Network unavailable"));
+  await run;
+  assert.deepEqual(progress(db), { "events:1": 29, "events:4663": 29 });
 });
 
 test("overlapping scheduled invocations preserve checkpoints and unique events", async () => {
   const db = new TestDatabase(),
     env = environment(db);
-  await Promise.all(
-    [0, 1].map(() =>
-      synchronize(env, 0, {
-        rpc: (n) => fakeRpc(31n, [supplied(10, 0, 42n, n.chainId)]),
-      }),
-    ),
+  const heads: number[] = [];
+  const run = () =>
+    synchronize(env, 0, {
+      rpc: (n) => {
+        heads.push(n.chainId);
+        return fakeRpc(31n, [supplied(10, 0, 42n, n.chainId)]);
+      },
+    });
+  await Promise.all([run(), run()]);
+  assert.deepEqual(
+    heads.sort((a, b) => a - b),
+    [1, 4663, 8453],
   );
   assert.deepEqual(progress(db), {
     "events:1": 29,
@@ -231,6 +304,26 @@ test("overlapping scheduled invocations preserve checkpoints and unique events",
     "events:4663": 29,
   });
   assert.equal(db.rows("SELECT * FROM events").length, 3);
+});
+
+test("a stale lease expires and scheduled indexing resumes automatically", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  db.sqlite
+    .prepare("INSERT INTO state VALUES ('sync:lease', ?, ?)")
+    .run(JSON.stringify("expired-owner"), 900_000);
+  await synchronize(env, 300_000, { now: () => 300_000, rpc: () => fakeRpc() });
+  assert.deepEqual(progress(db), {});
+  await synchronize(env, 900_000, { now: () => 900_000, rpc: () => fakeRpc() });
+  assert.deepEqual(progress(db), {
+    "events:1": 29,
+    "events:8453": 29,
+    "events:4663": 29,
+  });
+  assert.equal(
+    db.rows("SELECT key FROM state WHERE key = 'sync:lease'").length,
+    0,
+  );
 });
 
 test("inconsistent block hashes and malformed event data never advance checkpoints", async () => {

@@ -179,24 +179,22 @@ test("cleanup continues during RPC failures without moving sync checkpoints", as
   assert.deepEqual(db.rows("SELECT * FROM state"), saved);
 });
 
-test("cleanup query limits reserve indexing capacity and cap deleted rows per invocation", async () => {
+test("cleanup query limits cap deleted rows while indexing continues", async () => {
   const db = new TestDatabase(),
     env = {
       ...retainedEnvironment(db),
       CLEANUP_BATCH_SIZE: "2",
       MAX_CLEANUP_BATCHES: "2",
-      MAX_D1_QUERIES: "20",
-      MAX_CHUNKS: "3",
     };
   for (const n of supportedNetworks)
     for (let id = 1; id <= 3; id++) seed(db, n.chainId, id, cutoff - 1);
   await synchronize(env, 0, { now: () => nowMs, rpc: () => fakeRpc() });
   assert.equal(db.rows("SELECT * FROM events").length, 5);
-  assert.equal(db.queries, 17); // Two cleanup statements + six checkpoint statements + three atomic chunks.
+  assert.equal(db.requests, 16); // Two lease, two cleanup, six checkpoint and six batch calls.
   assert.ok(
     db
       .rows("SELECT json_extract(meta,'$.lastBlock') AS n FROM state")
-      .every((r) => r.n === 19),
+      .every((r) => r.n === 29),
   );
 });
 
@@ -210,15 +208,6 @@ test("unused cleanup slots go to chains with remaining expired events", async ()
   for (let id = 1; id <= 7; id++) seed(db, 8453, id, cutoff - 1);
   await synchronize(env, 0, { now: () => nowMs, rpc: () => fakeRpc() });
   assert.equal(db.rows("SELECT * FROM events").length, 0);
-});
-
-test("small D1 budget prioritizes indexing over cleanup", async () => {
-  const db = new TestDatabase(),
-    env = { ...retainedEnvironment(db), MAX_D1_QUERIES: "15", MAX_CHUNKS: "3" };
-  seed(db, 8453, 1, cutoff - 1);
-  await synchronize(env, 0, { now: () => nowMs, rpc: () => fakeRpc() });
-  assert.equal(db.rows("SELECT * FROM events").length, 1);
-  assert.equal(db.queries, 15);
 });
 
 test("cleanup failures on one chain do not block other cleanup or indexing", async () => {
@@ -269,7 +258,7 @@ test("cleanup stops admitting work when the execution deadline is exhausted", as
           run = bound.run.bind(bound);
         bound.run = async () => {
           const result = await run();
-          clock += 119000;
+          clock += 300_000;
           return result;
         };
         return bound;
@@ -284,7 +273,7 @@ test("cleanup stops admitting work when the execution deadline is exhausted", as
       return fakeRpc();
     },
   });
-  assert.equal(db.queries, 1);
-  assert.equal(rpcCalls, 0);
+  assert.equal(db.requests, 15); // Two lease, six checkpoint, six batch and one cleanup call.
+  assert.equal(rpcCalls, supportedNetworks.length);
   assert.equal(db.rows("SELECT * FROM events").length, 2);
 });
