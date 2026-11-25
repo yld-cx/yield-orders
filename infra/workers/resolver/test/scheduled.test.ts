@@ -67,7 +67,7 @@ test("shipped cron enables live execution with the shared D1 binding", async () 
     data.d1_databases?.[0].database_name,
   );
   assert.deepEqual(config.triggers?.crons, ["2-59/5 * * * *"]);
-  assert.deepEqual(data.triggers?.crons, ["*/5 * * * *"]);
+  assert.deepEqual(data.triggers?.crons, ["* * * * *"]);
   const h = harness(String(config.vars?.NETWORKS));
   await h.invoke();
   assert.deepEqual(h.calls, ["base"]);

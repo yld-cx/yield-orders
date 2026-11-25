@@ -634,7 +634,7 @@ async function verifyTickSync(
   const batches: string[][] = [];
   const heights: bigint[] = [];
   const groupSizes: number[] = [];
-  const attempts: { url: string; time: number }[] = [];
+  const attempts = new Map<Hex, { url: string; time: number }[]>();
   let outage = scenario === "outage";
   const checkpoint = () =>
     db.rows(
@@ -653,15 +653,25 @@ async function verifyTickSync(
         params: [Hex | { data: Hex }, Hex];
       }[] = JSON.parse(String(init?.body));
       batches.push(calls.map(({ method }) => method));
+      const failed = new Set<number>();
       if (calls[0]?.method === "eth_call") {
-        attempts.push({ url, time: performance.now() });
         assert.equal(checkpoint(), start - 1);
         assert.equal(countRows("events"), 0);
         assert.equal(countRows("ticks"), 0);
-        if (
-          outage ||
-          (scenario === "transient failure" && attempts.length <= 2)
-        ) {
+        // Viem retries individual calls. Separate retry timers can produce separate HTTP batches.
+        const time = performance.now();
+        for (const { id, params } of calls) {
+          const { data } = params[0] as { data: Hex };
+          const history = attempts.get(data) ?? [];
+          history.push({ url, time });
+          attempts.set(data, history);
+          if (
+            outage ||
+            (scenario === "transient failure" && history.length <= 2)
+          )
+            failed.add(id);
+        }
+        if (failed.size === calls.length) {
           if (url === primary) throw new TypeError("Temporary network failure");
           return new Response("Rate limited", { status: 429 });
         }
@@ -670,6 +680,12 @@ async function verifyTickSync(
       }
       return Response.json(
         calls.map(({ id, method, params }) => {
+          if (failed.has(id))
+            return {
+              jsonrpc: "2.0",
+              id,
+              error: { code: 429, message: "Rate limited" },
+            };
           let result: unknown;
           switch (method) {
             case "eth_blockNumber":
@@ -731,21 +747,25 @@ async function verifyTickSync(
       : scenario === "transient failure"
         ? [primary, secondary, primary]
         : [primary, secondary, primary, secondary];
-  assert.deepEqual(
-    attempts.map(({ url }) => url),
-    expectedAttempts,
-  );
-  if (scenario !== "healthy")
-    assert.ok(
-      attempts[2]!.time - attempts[1]!.time >= 125,
-      "Viem waits before repeating the fallback round",
+  assert.equal(attempts.size, 3);
+  for (const history of attempts.values()) {
+    assert.deepEqual(
+      history.map(({ url }) => url),
+      expectedAttempts,
     );
-  assert.deepEqual(batches, [
+    if (scenario !== "healthy")
+      assert.ok(
+        history[2]!.time - history[1]!.time >= 125,
+        "Viem waits before repeating the fallback round",
+      );
+  }
+  assert.deepEqual(batches.slice(0, 3), [
     ["eth_blockNumber"],
     ["eth_getLogs"],
     Array(3).fill("eth_getBlockByNumber"),
-    ...expectedAttempts.map(() => Array(3).fill("eth_call")),
   ]);
+  if (scenario === "healthy")
+    assert.deepEqual(batches.slice(3), [Array(3).fill("eth_call")]);
   assert.deepEqual(heights, [BigInt(start), BigInt(start + 1), BigInt(end)]);
 
   if (outage) {
@@ -754,14 +774,19 @@ async function verifyTickSync(
     assert.equal(countRows("ticks"), 0);
     outage = false;
     await synchronize(env, 240_000);
-    assert.deepEqual(
-      attempts.map(({ url }) => url),
-      [...expectedAttempts, primary],
-    );
+    assert.equal(attempts.size, 3);
+    for (const history of attempts.values())
+      assert.deepEqual(
+        history.map(({ url }) => url),
+        [...expectedAttempts, primary],
+      );
   }
   assert.equal(checkpoint(), end);
   assert.equal(countRows("events"), 65);
-  assert.deepEqual(groupSizes, [32, 32, 1]);
+  assert.deepEqual(
+    groupSizes.sort((a, b) => a - b),
+    [1, 32, 32],
+  );
   const [count] = db.rows(
     "SELECT count(*) AS count, min(timestamp) AS timestamp FROM ticks",
   );
