@@ -245,6 +245,17 @@ export function MarketTable() {
           role="group"
           aria-label="Token categories"
         >
+          <Button
+            render={<Link href="/play" />}
+            nativeButton={false}
+            role="link"
+            size="sm"
+            variant="link"
+            className="text-white hover:text-brand"
+          >
+            Explorer
+          </Button>
+          <span className="text-brand">|</span>
           {MARKET_TAGS.map((tag) => (
             <Button
               key={tag}

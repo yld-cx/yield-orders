@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { ImageResponse } from "next/og";
 import sharp from "sharp";
 import { GET } from "@/app/market/[network]/[pair]/og/route";
@@ -61,11 +62,14 @@ describe("market social previews and SEO", () => {
       params: Promise.resolve(params),
     });
     expect(response.status).toBe(200);
-    const props = (
-      vi.mocked(ImageResponse).mock.calls[0][0] as ReactElement<
-        ComponentProps<typeof SocialImage>
-      >
-    ).props;
+    const image = vi.mocked(ImageResponse).mock.calls[0][0] as ReactElement<
+      ComponentProps<typeof SocialImage>
+    >;
+    const html = renderToStaticMarkup(image);
+    expect(html).toContain(
+      '<span style="color:#ffffff;font-weight:400">Base</span>',
+    );
+    const { props } = image;
     expect(props.label).toBe("WETH / USDC");
     expect(
       props.logos?.every((logo) => logo.startsWith("data:image/png;base64,")),

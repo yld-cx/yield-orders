@@ -59,18 +59,22 @@ export function compactPriceText(value: string) {
   }).format(Number(value));
 }
 
+export function marketGridTick(value: string | null, stepTicks: number) {
+  if (value === null || !/^-?\d+$/.test(value)) return;
+  const tick = Number(value);
+  return Number.isSafeInteger(tick) &&
+    tick % stepTicks === 0 &&
+    tick >= MIN_TICK &&
+    tick <= MAX_TICK
+    ? tick
+    : undefined;
+}
+
 export function discoveryBaseTick(
   value: string | null,
   market: Pick<Market, "baseTick" | "stepTicks">,
 ): number {
-  if (value === null || !/^-?\d+$/.test(value)) return market.baseTick;
-  const tick = Number(value);
-  return Number.isSafeInteger(tick) &&
-    tick % market.stepTicks === 0 &&
-    tick >= MIN_TICK &&
-    tick <= MAX_TICK
-    ? tick
-    : market.baseTick;
+  return marketGridTick(value, market.stepTicks) ?? market.baseTick;
 }
 
 /** Approximate discovery center only; inputs use canonical token order. */
