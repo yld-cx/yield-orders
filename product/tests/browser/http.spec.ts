@@ -27,6 +27,9 @@ test("Yield Explorer serves PNG previews for network and scenario links", async 
     });
     expect(page.status()).toBe(200);
     const head = (await page.text()).split("</head>")[0];
+    expect(head).toContain(
+      `<link rel="canonical" href="https://yld.cx${path}"`,
+    );
     expect(head).toContain(`property="og:url" content="https://yld.cx${path}"`);
     expect(head).toContain(
       `property="og:image" content="https://yld.cx${path}/og"`,
