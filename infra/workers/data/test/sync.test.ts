@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import manifest from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
 import { indexingNetwork, supportedNetworks } from "../src/networks.ts";
-import { synchronize } from "../src/sync.ts";
+import { scheduledNetwork, synchronize } from "../src/sync.ts";
 import type { RpcLog } from "../src/events.ts";
 import {
   TestDatabase,
@@ -26,10 +26,6 @@ test("every manifest network is configured, uses manifest address and permits an
   assert.deepEqual(
     supportedNetworks.map((n) => n.chainId),
     Object.values(manifest.networks),
-  );
-  assert.deepEqual(
-    supportedNetworks.map((n) => n.chainId),
-    [1, 8453, 4663],
   );
   const env = environment();
   for (const n of supportedNetworks) {
@@ -57,43 +53,60 @@ test("every manifest network is configured, uses manifest address and permits an
   }
 });
 
-test("five-minute invocation processes all chains with independent checkpoints and events", async () => {
-  const db = new TestDatabase(),
-    env = environment(db);
+test("one invocation selects one chain and round-robin order follows the manifest", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
   const visited: number[] = [];
-  await synchronize(env, 0, {
-    rpc: (n) => {
-      visited.push(n.chainId);
-      return fakeRpc(31n, [supplied(10, 0, 42n, n.chainId)]);
-    },
-  });
-  assert.deepEqual(
-    visited.sort((a, b) => a - b),
-    [1, 4663, 8453],
+  for (const [index, network] of supportedNetworks.entries()) {
+    await synchronize(env, index * 60_000 + 1000, {
+      rpc: (n) => {
+        visited.push(n.chainId);
+        return fakeRpc(31n, [supplied(10, 0, 42n, n.chainId)]);
+      },
+    });
+    assert.equal(visited.length, index + 1);
+    assert.equal(visited[index], network.chainId);
+    assert.equal(Object.keys(progress(db)).length, index + 1);
+    assert.equal(progress(db)[`events:${network.chainId}`], 29);
+  }
+  assert.equal(
+    scheduledNetwork(supportedNetworks.length * 60_000),
+    supportedNetworks[0],
   );
-  assert.deepEqual(progress(db), {
-    "events:1": 29,
-    "events:8453": 29,
-    "events:4663": 29,
-  });
-  assert.equal(db.rows("SELECT * FROM events").length, 3);
-  assert.ok(db.queries <= 80);
+  assert.equal(
+    db.rows("SELECT * FROM events").length,
+    supportedNetworks.length,
+  );
 });
 
-test("one network RPC failure does not block other networks or advance its checkpoint", async () => {
-  const db = new TestDatabase(),
-    env = environment(db);
-  await synchronize(env, 0, {
-    rpc: (n) =>
-      n.chainId === 8453
-        ? {
-            ...fakeRpc(),
-            logs: async () => {
-              throw new Error("RPC timeout");
-            },
-          }
-        : fakeRpc(),
-  });
+test("round-robin cadence follows the length of an expanded manifest", () => {
+  const added = { ...supportedNetworks[0]!, chainId: 42_000 };
+  const networks = [...supportedNetworks, added];
+  for (let minute = 0; minute < 2 * networks.length; minute++) {
+    assert.equal(
+      scheduledNetwork(minute * 60_000 + 59_999, networks),
+      networks[minute % networks.length],
+    );
+  }
+});
+
+test("one network RPC failure does not block later cron slots or advance its checkpoint", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  for (const minute of [0, 1, 2]) {
+    await synchronize(env, minute * 60_000, {
+      sleep: async () => {},
+      rpc: (n) =>
+        n.name === "base"
+          ? {
+              ...fakeRpc(),
+              logs: async () => {
+                throw new Error("RPC timeout");
+              },
+            }
+          : fakeRpc(),
+    });
+  }
   assert.deepEqual(progress(db), {
     "events:1": 29,
     "events:8453": 9,
@@ -102,40 +115,122 @@ test("one network RPC failure does not block other networks or advance its check
 });
 
 test("invalid configuration on one chain does not disable configured chains", async () => {
-  const db = new TestDatabase(),
-    env = environment(db);
+  const db = new TestDatabase();
+  const env = environment(db);
   const config = JSON.parse(env.NETWORK_CONFIG!);
   config["8453"].startBlock = "invalid";
   env.NETWORK_CONFIG = JSON.stringify(config);
-  await synchronize(env, 0, { rpc: () => fakeRpc() });
+  for (const minute of [0, 1, 2])
+    await synchronize(env, minute * 60_000, { rpc: () => fakeRpc() });
   assert.deepEqual(progress(db), { "events:1": 29, "events:4663": 29 });
 });
 
-test("backfill resumes and eventually catches up across multiple scheduled invocations", async () => {
-  const db = new TestDatabase(),
-    env = { ...environment(db), MAX_CHUNKS: "3" };
-  const saved: number[] = [];
-  for (let i = 0; i < 4; i++) {
-    await synchronize(env, i * 300_000, { rpc: () => fakeRpc(31n) });
-    saved.push(Number(progress(db)["events:8453"]));
-  }
-  assert.ok(saved[0]! < 29);
-  assert.ok(saved[1]! > saved[0]!);
-  assert.equal(saved.at(-1), 29);
-  assert.ok(
-    saved.every((value, index) => index === 0 || value >= saved[index - 1]!),
+test("a temporary TypeError retries the same uncommitted range and recovers", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  const ranges: [bigint, bigint][] = [];
+  const delays: number[] = [];
+  const rpc = fakeRpc(31n, [supplied(10), supplied(19, 1), supplied(29, 2)]);
+  await synchronize(env, 60_000, {
+    sleep: async (ms) => {
+      delays.push(ms);
+    },
+    rpc: (n) =>
+      n.name === "base"
+        ? {
+            ...rpc,
+            logs: async (from, to) => {
+              ranges.push([from, to]);
+              assert.equal(progress(db)["events:8453"], Number(from - 1n));
+              if (ranges.length === 1)
+                throw new TypeError("Network connection lost");
+              return rpc.logs(from, to);
+            },
+          }
+        : fakeRpc(),
+  });
+  assert.deepEqual(ranges, [
+    [10n, 19n],
+    [10n, 19n],
+    [20n, 29n],
+  ]);
+  assert.deepEqual(delays, [150]);
+  assert.equal(progress(db)["events:8453"], 29);
+  assert.deepEqual(
+    db
+      .rows("SELECT block_number FROM events ORDER BY block_number")
+      .map((row) => row.block_number),
+    [10, 19, 29],
   );
 });
 
-test("range-limit errors shrink requests with bounded backoff and retain historical coverage", async () => {
+test("smaller ranges survive failed cron runs and grow during catch-up without skipping blocks", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  const config = JSON.parse(env.NETWORK_CONFIG!);
+  config["8453"].chunkSize = 1000;
+  env.NETWORK_CONFIG = JSON.stringify(config);
+
+  let head = 12n;
+  let unavailable = false;
+  const requested: [bigint, bigint][] = [];
+  const covered: [bigint, bigint][] = [];
+  const run = (slot: number) =>
+    synchronize(env, (1 + slot * supportedNetworks.length) * 60_000, {
+      sleep: async () => {},
+      rpc: (n) =>
+        n.name === "base"
+          ? {
+              ...fakeRpc(head),
+              logs: async (from, to) => {
+                requested.push([from, to]);
+                if (unavailable) throw new TypeError("Network unavailable");
+                covered.push([from, to]);
+                return [];
+              },
+            }
+          : fakeRpc(),
+    });
+
+  await run(0);
+  let previousSize = 1000n;
+  for (let slot = 1; slot <= 6; slot++) {
+    unavailable = true;
+    head += 150n;
+    requested.length = 0;
+    await run(slot);
+    assert.equal(progress(db)["events:8453"], 10);
+    assert.ok(requested.every(([from]) => from === 11n));
+    assert.ok(requested.length <= 3);
+    const [from, to] = requested[0]!;
+    if (slot > 1 && previousSize > 1n) assert.ok(to - from + 1n < previousSize);
+    previousSize = to - from + 1n;
+  }
+  unavailable = false;
+  head = 50_000n;
+  requested.length = 0;
+  for (
+    let slot = 7;
+    slot < 12 && progress(db)["events:8453"] !== 49_998;
+    slot++
+  )
+    await run(slot);
+  assert.equal(progress(db)["events:8453"], 49_998);
+  assert.equal(covered[0]![0], 10n);
+  assert.equal(covered.at(-1)![1], 49_998n);
+  assert.ok(
+    covered.every(([from], i) => i === 0 || from === covered[i - 1]![1] + 1n),
+  );
+  assert.ok(requested.length > 12);
+  assert.ok(requested.some(([from, to]) => to - from + 1n === 1000n));
+});
+
+test("range-limit errors shrink requests immediately and retain historical coverage", async () => {
   const db = new TestDatabase(),
-    env = { ...environment(db), MAX_CHUNKS: "30", MAX_D1_QUERIES: "150" };
+    env = environment(db);
   const attempts: bigint[] = [],
     waits: number[] = [];
   await synchronize(env, 0, {
-    sleep: async (ms) => {
-      waits.push(ms);
-    },
     rpc: () => ({
       ...fakeRpc(),
       logs: async (from, to) => {
@@ -149,11 +244,10 @@ test("range-limit errors shrink requests with bounded backoff and retain histori
   assert.ok(
     attempts.includes(10n) && attempts.includes(5n) && attempts.includes(2n),
   );
-  assert.ok(waits.length > 0 && waits.every((ms) => ms <= 1000));
   assert.equal(progress(db)["events:1"], 29);
 });
 
-test("execution deadline stops before committing an incomplete range, then resumes", async () => {
+test("the round-robin execution deadline leaves an incomplete range for the next turn", async () => {
   const db = new TestDatabase(),
     env = environment(db);
   let clock = 0;
@@ -162,75 +256,85 @@ test("execution deadline stops before committing an incomplete range, then resum
     rpc: () => ({
       ...fakeRpc(),
       logs: async () => {
-        clock = 119000;
+        clock = supportedNetworks.length * 60_000;
         return [];
       },
     }),
   });
-  assert.deepEqual(progress(db), {
-    "events:1": 9,
-    "events:8453": 9,
-    "events:4663": 9,
+  assert.deepEqual(progress(db), { "events:1": 9 });
+  await synchronize(env, supportedNetworks.length * 60_000, {
+    rpc: () => fakeRpc(),
   });
-  await synchronize(env, 0, { rpc: () => fakeRpc() });
   assert.equal(progress(db)["events:1"], 29);
 });
 
-test("maximum chunks, RPC requests and D1 queries bound invocation work", async () => {
-  const db = new TestDatabase(),
-    env = {
-      ...environment(db),
-      MAX_CHUNKS: "3",
-      MAX_RPC_REQUESTS: "6",
-      MAX_D1_QUERIES: "15",
-    };
-  let rpcCalls = 0;
-  await synchronize(env, 0, {
-    rpc: () => ({
-      ...fakeRpc(100000n),
-      head: async () => {
-        rpcCalls++;
-        return 100000n;
-      },
-      logs: async () => {
-        rpcCalls++;
-        return [];
-      },
-    }),
+test("other chains finish during a stalled Base lease, while another Base run yields", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  let reject!: (reason: Error) => void;
+  const baseHead = new Promise<bigint>((_, fail) => {
+    reject = fail;
   });
-  assert.equal(rpcCalls, 6);
-  assert.equal(db.queries, 15);
-  assert.deepEqual(progress(db), {
-    "events:1": 19,
-    "events:8453": 19,
-    "events:4663": 19,
-  });
-});
-
-test("rotation prevents starvation even when only one chunk is allowed per run", async () => {
-  const db = new TestDatabase(),
-    env = { ...environment(db), MAX_CHUNKS: "1" };
-  for (let i = 0; i < 3; i++)
-    await synchronize(env, i * 300_000, { rpc: () => fakeRpc() });
-  assert.ok(Object.values(progress(db)).every((last) => Number(last) > 9));
-});
-
-test("overlapping scheduled invocations preserve checkpoints and unique events", async () => {
-  const db = new TestDatabase(),
-    env = environment(db);
-  await Promise.all(
-    [0, 1].map(() =>
-      synchronize(env, 0, {
-        rpc: (n) => fakeRpc(31n, [supplied(10, 0, 42n, n.chainId)]),
-      }),
-    ),
+  const visited: string[] = [];
+  const run = (scheduledTime: number) =>
+    synchronize(env, scheduledTime, {
+      rpc: (n) => {
+        visited.push(n.name);
+        return n.name === "base"
+          ? { ...fakeRpc(), head: () => baseHead }
+          : fakeRpc();
+      },
+    });
+  const stalled = run(60_000);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await run(120_000);
+  await run(180_000);
+  await run(240_000);
+  assert.deepEqual(visited, ["base", "robinhood", "ethereum"]);
+  assert.deepEqual(progress(db), { "events:1": 29, "events:4663": 29 });
+  assert.equal(
+    db.rows("SELECT key FROM state WHERE key LIKE 'sync:lease:%'")[0]?.key,
+    "sync:lease:8453",
   );
-  assert.deepEqual(progress(db), {
-    "events:1": 29,
-    "events:8453": 29,
-    "events:4663": 29,
-  });
-  assert.equal(db.rows("SELECT * FROM events").length, 3);
+  reject(new TypeError("Network unavailable"));
+  await stalled;
+  assert.equal(
+    db.rows("SELECT key FROM state WHERE key LIKE 'sync:lease:%'").length,
+    0,
+  );
+});
+
+test("overlapping runs for the same chain preserve checkpoints and unique events", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  const heads: number[] = [];
+  const run = () =>
+    synchronize(env, 0, {
+      rpc: (n) => {
+        heads.push(n.chainId);
+        return fakeRpc(31n, [supplied(10, 0, 42n, n.chainId)]);
+      },
+    });
+  await Promise.all([run(), run()]);
+  assert.deepEqual(heads, [1]);
+  assert.deepEqual(progress(db), { "events:1": 29 });
+  assert.equal(db.rows("SELECT * FROM events").length, 1);
+});
+
+test("a stale per-chain lease expires and indexing resumes automatically", async () => {
+  const db = new TestDatabase();
+  const env = environment(db);
+  db.sqlite
+    .prepare("INSERT INTO state VALUES ('sync:lease:1', ?, ?)")
+    .run(JSON.stringify("expired-owner"), 900_000);
+  await synchronize(env, 180_000, { now: () => 180_000, rpc: () => fakeRpc() });
+  assert.deepEqual(progress(db), {});
+  await synchronize(env, 900_000, { now: () => 900_000, rpc: () => fakeRpc() });
+  assert.deepEqual(progress(db), { "events:1": 29 });
+  assert.equal(
+    db.rows("SELECT key FROM state WHERE key LIKE 'sync:lease:%'").length,
+    0,
+  );
 });
 
 test("inconsistent block hashes and malformed event data never advance checkpoints", async () => {
@@ -243,7 +347,7 @@ test("inconsistent block hashes and malformed event data never advance checkpoin
     await synchronize(env, 0, {
       rpc: (n) => fakeRpc(31n, [{ ...invalid, address: n.address }]),
     });
-    assert.ok(Object.values(progress(db)).every((last) => last === 9));
+    assert.deepEqual(progress(db), { "events:1": 9 });
     assert.equal(db.rows("SELECT * FROM events").length, 0);
   }
 });
@@ -282,15 +386,16 @@ test("first run snapshots each current head once and waits for confirmations", a
   const db = new TestDatabase(),
     env = { ...environment(db), NETWORK_CONFIG: "{}" };
   let logCalls = 0;
-  await synchronize(env, 0, {
-    rpc: () => ({
-      ...fakeRpc(100n),
-      logs: async () => {
-        logCalls++;
-        return [];
-      },
-    }),
-  });
+  for (let index = 0; index < supportedNetworks.length; index++)
+    await synchronize(env, index * 60_000, {
+      rpc: () => ({
+        ...fakeRpc(100n),
+        logs: async () => {
+          logCalls++;
+          return [];
+        },
+      }),
+    });
   assert.equal(logCalls, 0);
   assert.deepEqual(progress(db), {
     "events:1": 99,
@@ -303,15 +408,16 @@ test("first run snapshots each current head once and waits for confirmations", a
     assert.equal(JSON.parse(String(saved.meta)).startBlock, 100);
   }
   const ranges: bigint[] = [];
-  await synchronize(env, 300_000, {
-    rpc: () => ({
-      ...fakeRpc(200n),
-      logs: async (from) => {
-        ranges.push(from);
-        return [];
-      },
-    }),
-  });
+  for (let index = 0; index < supportedNetworks.length; index++)
+    await synchronize(env, (supportedNetworks.length + index) * 60_000, {
+      rpc: () => ({
+        ...fakeRpc(200n),
+        logs: async (from) => {
+          ranges.push(from);
+          return [];
+        },
+      }),
+    });
   assert.deepEqual(ranges, [100n, 100n, 100n]);
   assert.deepEqual(progress(db), {
     "events:1": 188,
@@ -357,7 +463,7 @@ test("changed ticks are deduplicated at the confirmed end block and upserted wit
   const reads: [bigint[], bigint][] = [];
   const ranges: [bigint, bigint][] = [];
   const run = (head: bigint, availableSupply: bigint, entries: RpcLog[]) =>
-    synchronize(env, 0, {
+    synchronize(env, 60_000, {
       rpc: (n) => {
         if (n.chainId !== 8453) return fakeRpc(head);
         const rpc = fakeRpc(head, entries);
@@ -419,7 +525,7 @@ test("failed tick batches and failed D1 commits both preserve all data and retry
   let failRead = true;
   const reads: number[] = [];
   const run = () =>
-    synchronize(env, 0, {
+    synchronize(env, 60_000, {
       rpc: (n) => ({
         ...fakeRpc(21n, n.chainId === 8453 ? entries : []),
         ticks: async (ids, block) => {

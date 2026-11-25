@@ -17,7 +17,7 @@ const configuration = () => ({
       fileURLToPath(new URL("../wrangler.jsonc", import.meta.url)),
     ).vars.RPC_URLS,
   },
-  triggers: { crons: ["*/5 * * * *"] },
+  triggers: { crons: ["* * * * *"] },
 });
 function harness(existing = [], failMigration = false, writeBack = true) {
   const commands = [],
@@ -61,7 +61,7 @@ test("first GitHub deployment provisions without cron, migrates, then activates 
     ],
   );
   assert.deepEqual(io.deployed[0].triggers.crons, []);
-  assert.deepEqual(io.deployed[1].triggers.crons, ["*/5 * * * *"]);
+  assert.deepEqual(io.deployed[1].triggers.crons, ["* * * * *"]);
   assert.ok(io.commands.at(-1).includes("--no-x-provision"));
 });
 
@@ -130,7 +130,7 @@ test("public RPCs are configured for every supported production network with no 
       JSON.parse(config.vars.RPC_URLS)[network.name],
     );
   assert.equal("SYNC_ENABLED" in config.vars, false);
-  assert.deepEqual(config.triggers.crons, ["*/5 * * * *"]);
+  assert.deepEqual(config.triggers.crons, ["* * * * *"]);
   assert.ok(
     !Object.keys(config.vars).some((key) => key.startsWith("PRIVATE_RPC_")),
   );

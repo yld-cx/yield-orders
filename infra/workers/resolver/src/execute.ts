@@ -27,6 +27,7 @@ import core from "@yld-cx/ethereum-protocol/deployments/config.json" with { type
 import { chainConfig, LIMITS } from "./config.ts";
 import {
   rpcUrls,
+  rpcErrorDetails,
   rpcFallbackOptions,
   rpcHttpOptions,
   type NetworkName,
@@ -104,13 +105,31 @@ export async function resolveChain(
   const withinBudget = () =>
     subrequests.remaining > 0 && Date.now() < deadline - 5000;
   const urls = rpcUrls(env, slug, chainId);
-  const rpcTransport = (fetchRpc: typeof fetch) =>
-    fallback(
-      urls.map((url) =>
-        http(url, rpcHttpOptions(5000, urls.length, signal, fetchRpc)),
-      ),
-      rpcFallbackOptions,
-    );
+  const rpcTransport =
+    (fetchRpc: typeof fetch): ReturnType<typeof fallback> =>
+    (config) => {
+      const transport = fallback(
+        urls.map((url) => http(url, rpcHttpOptions(signal, fetchRpc))),
+        rpcFallbackOptions,
+      )(config);
+      transport.value?.onResponse((result) => {
+        if (result.status === "error") {
+          log({
+            type: "resolver_rpc_endpoint_error",
+            network: slug,
+            chainId,
+            method: result.method,
+            hostname: new URL(result.transport.value!.url).hostname,
+            ...rpcErrorDetails(result.error),
+          });
+        }
+      });
+      return {
+        ...transport,
+        request: (args, options) =>
+          transport.request(args, { ...options, signal }),
+      };
+    };
   const client = (dependencies.client ??
     createPublicClient({
       chain: network.chain,

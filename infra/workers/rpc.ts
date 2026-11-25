@@ -42,36 +42,71 @@ function validateUrl(url: unknown) {
   throw new Error("Invalid RPC URL");
 }
 
-export function rpcHttpOptions(
-  timeout: number,
-  endpointCount: number,
-  signal?: AbortSignal,
-  fetchRpc: typeof fetch = fetch,
-) {
+export function rpcHttpOptions(signal?: AbortSignal, fetchFn?: typeof fetch) {
   return {
-    // Endpoints share a per-round timeout budget.
-    timeout: Math.max(1, Math.floor(timeout / endpointCount)),
-    retryCount: 0,
-    batch: { batchSize: 100, wait: 10 },
+    batch: { batchSize: 100 },
     maxResponseBodySize: 4 * 1024 * 1024,
     fetchOptions: { signal, redirect: "manual" as const },
-    fetchFn: async (input: RequestInfo | URL, init?: RequestInit) => {
-      const response = await fetchRpc(input, init);
-      if (response.ok || !response.headers.has("Retry-After")) return response;
-      // Viem otherwise lets a provider's Retry-After override the fallback delay.
-      const headers = new Headers(response.headers);
-      headers.delete("Retry-After");
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers,
-      });
-    },
+    fetchFn,
   };
 }
 
-export const rpcFallbackOptions = {
-  rank: false,
-  retryCount: 1,
-  retryDelay: 300,
-} as const;
+export const rpcFallbackOptions = { retryCount: 1 } as const;
+
+const errorMessages: ReadonlyMap<string, string> = new Map([
+  ["TypeError", "Network or response processing failed"],
+  ["SyntaxError", "Invalid RPC response"],
+  ["AbortError", "RPC request aborted"],
+  ["TimeoutError", "RPC request timed out"],
+  ["HttpRequestError", "RPC HTTP request failed"],
+  ["ResponseBodyTooLargeError", "RPC response exceeds the size limit"],
+  ["RpcRequestError", "Provider returned a JSON-RPC error"],
+  ["UnknownRpcError", "RPC request failed"],
+  ["InvalidInputRpcError", "Provider rejected the input"],
+  ["InvalidParamsRpcError", "Provider rejected the parameters"],
+  ["InternalRpcError", "Provider reported an internal error"],
+  ["ResourceUnavailableRpcError", "Provider resource unavailable"],
+  ["LimitExceededRpcError", "Provider request limit exceeded"],
+  ["CapacityError", "Chunk exceeds processing capacity"],
+]);
+
+interface RpcErrorDetails {
+  name: string;
+  message: string;
+  code?: string | number;
+  status?: number;
+  cause?: RpcErrorDetails;
+}
+
+export function rpcErrorDetails(error: unknown): RpcErrorDetails {
+  function describe(error: unknown, depth: number): RpcErrorDetails {
+    const e = error as {
+      name?: string;
+      code?: unknown;
+      status?: unknown;
+      cause?: unknown;
+    } | null;
+    const known = errorMessages.get(e?.name ?? "");
+    const status = typeof e?.status === "number" ? e.status : undefined;
+    const code =
+      typeof e?.code === "number" ||
+      (typeof e?.code === "string" &&
+        /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)$/.test(
+          e.code,
+        ))
+        ? e.code
+        : undefined;
+    const message =
+      status === 429 || code === 429
+        ? "RPC rate limited"
+        : (known ?? "RPC request failed");
+    return {
+      name: (known && e?.name) || "Error",
+      message,
+      code,
+      status,
+      cause: e?.cause && depth > 0 ? describe(e.cause, depth - 1) : undefined,
+    };
+  }
+  return describe(error, 3);
+}

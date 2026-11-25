@@ -8,11 +8,11 @@ import { supportedNetworks } from "../src/networks.ts";
 import type { Env } from "../src/shared.ts";
 import type { Rpc } from "../src/sync.ts";
 
-// Execute the production SQL against real SQLite/JSON1. Only the D1 transport is adapted.
 export class TestDatabase {
   sqlite = new DatabaseSync(":memory:");
   failBatchAt: number | undefined;
   queries = 0;
+  requests = 0;
   constructor() {
     for (const file of ["0001_init.sql", "0002_ticks.sql"])
       this.sqlite.exec(
@@ -26,6 +26,7 @@ export class TestDatabase {
     return new Statement(this, sql, []);
   }
   async batch(statements: Statement[]) {
+    this.requests++;
     this.sqlite.exec("BEGIN");
     try {
       const result = statements.map((stmt, i) => {
@@ -72,12 +73,15 @@ class Statement {
     return { results, success: true, meta: { changes } };
   }
   async all() {
+    this.database.requests++;
     return this.execute();
   }
   async run() {
+    this.database.requests++;
     return this.execute();
   }
   async first() {
+    this.database.requests++;
     return this.execute().results[0] ?? null;
   }
 }

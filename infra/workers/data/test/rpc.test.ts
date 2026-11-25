@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { indexingNetwork, supportedNetworks } from "../src/networks.ts";
 import { rpcFor, synchronize } from "../src/sync.ts";
@@ -108,7 +108,7 @@ test("a healthy primary handles head, logs and block reads without contacting th
       return reply(init, { number: "0xa", timestamp: "0x78", hash: hash(10) });
     },
   );
-  const rpc = rpcFor(network(), 1000);
+  const rpc = rpcFor(network());
   assert.equal(await rpc.head(), 31n);
   assert.deepEqual(await rpc.logs(10n, 20n), []);
   const block = await rpc.block(10n);
@@ -157,7 +157,7 @@ for (const failPrimary of [false, true]) {
         );
       },
     );
-    const rpc = rpcFor(network(), 1000);
+    const rpc = rpcFor(network());
     const blocks = await Promise.all(
       [10n, 11n, 12n].map((number) => rpc.block(number)),
     );
@@ -190,7 +190,7 @@ test("head, logs and block reads fail over in order and return to a recovered pr
       return reply(init, { number: "0xa", timestamp: "0x78", hash: hash(10) });
     },
   );
-  const rpc = rpcFor(network(), 1000);
+  const rpc = rpcFor(network());
   assert.equal(await rpc.head(), 31n);
   assert.deepEqual(await rpc.logs(10n, 20n), []);
   const block = await rpc.block(10n);
@@ -247,7 +247,18 @@ test("rate limits, RPC errors, network errors and timeouts reach the fallback", 
           });
         },
       );
-      assert.equal(await rpcFor(network(), 100).head(), 31n);
+      if (failure === "timeout") {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const head = rpcFor(network()).head();
+        t.mock.timers.tick(0);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        t.mock.timers.tick(10_000);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        t.mock.timers.tick(0);
+        assert.equal(await head, 31n);
+      } else {
+        assert.equal(await rpcFor(network()).head(), 31n);
+      }
       assert.deepEqual(calls, [primary, secondary]);
     });
   }
@@ -266,7 +277,7 @@ test("response-size limits apply to each endpoint and oversized responses fail o
         : reply(init, "0x1f");
     },
   );
-  assert.equal(await rpcFor(network(), 1000).head(), 31n);
+  assert.equal(await rpcFor(network()).head(), 31n);
   assert.deepEqual(calls, [primary, secondary]);
 });
 
@@ -276,7 +287,7 @@ test("failure of every endpoint exhausts only the bounded retry rounds", async (
     calls.push(String(input));
     return new Response("Unavailable", { status: 503 });
   });
-  await assert.rejects(rpcFor(network(), 1000).head());
+  await assert.rejects(rpcFor(network()).head());
   assert.deepEqual(calls, [primary, secondary, primary, secondary]);
 });
 
@@ -301,7 +312,7 @@ test("optional private endpoint precedes public endpoints and falls back in orde
         : reply(init, "0x1f");
     },
   );
-  assert.equal(await rpcFor(n, 1000).head(), 31n);
+  assert.equal(await rpcFor(n).head(), 31n);
   assert.deepEqual(calls, [url, primary, secondary]);
   assert.throws(
     () =>
@@ -310,6 +321,103 @@ test("optional private endpoint precedes public endpoints and falls back in orde
         base,
       ),
     /^Error: Invalid RPC URL$/,
+  );
+});
+
+test("all log endpoints can fail for a cron and public fallback later resumes from the saved block", async (t) => {
+  const db = new TestDatabase();
+  const privateUrl =
+    "https://user:password@private.test/path-secret?key=query-secret";
+  const logs: Array<Record<string, unknown>> = [];
+  t.mock.method(console, "log", (message: string) =>
+    logs.push(JSON.parse(message)),
+  );
+  const attempts: [string, bigint, bigint][] = [];
+  let unavailable = true;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const host = new URL(String(input)).hostname;
+      const [{ method, params }] = JSON.parse(String(init?.body));
+      if (method === "eth_blockNumber") return reply(init, "0x1f");
+      assert.equal(method, "eth_getLogs");
+      attempts.push([
+        host,
+        BigInt(params[0].fromBlock),
+        BigInt(params[0].toBlock),
+      ]);
+      if (host === "private.test") {
+        throw new TypeError("Provider echoed path-secret and a bare-secret", {
+          cause: Object.assign(new Error("query-secret"), {
+            code: "ECONNRESET",
+          }),
+        });
+      }
+      return unavailable
+        ? new Response("query-secret and bare-secret", { status: 503 })
+        : reply(init, []);
+    },
+  );
+  const env = {
+    ...environment(db),
+    RPC_URLS: JSON.stringify({ base: [secondary] }),
+    PRIVATE_RPC_BASE: privateUrl,
+  };
+  const saved = () =>
+    JSON.parse(
+      String(
+        db.rows("SELECT meta FROM state WHERE key = 'events:8453'")[0]!.meta,
+      ),
+    );
+  const options = { sleep: async () => {} };
+  await synchronize(env, 60_000, options);
+  assert.equal(saved().lastBlock, 9);
+  assert.equal(saved().chunkSize, 2);
+  assert.deepEqual(attempts, [
+    ["private.test", 10n, 19n],
+    ["secondary.test", 10n, 19n],
+    ["private.test", 10n, 19n],
+    ["secondary.test", 10n, 19n],
+    ["private.test", 10n, 14n],
+    ["secondary.test", 10n, 14n],
+  ]);
+  const diagnostic = logs.find((entry) => entry.hostname === "private.test");
+  assert.ok(diagnostic);
+  assert.deepEqual(
+    [
+      diagnostic.network,
+      diagnostic.method,
+      diagnostic.fromBlock,
+      diagnostic.toBlock,
+      diagnostic.chunkSize,
+      diagnostic.attempt,
+      diagnostic.checkpoint,
+      diagnostic.lagBlocks,
+    ],
+    ["base", "eth_getLogs", "10", "19", 10, 1, "9", "20"],
+  );
+  assert.equal(diagnostic.name, "HttpRequestError");
+  assert.equal(diagnostic.message, "RPC HTTP request failed");
+  assert.equal((diagnostic.cause as { name: string }).name, "TypeError");
+  assert.match(JSON.stringify(diagnostic), /ECONNRESET/);
+  for (const secret of [
+    privateUrl,
+    "path-secret",
+    "query-secret",
+    "bare-secret",
+    "user:password",
+  ])
+    assert.ok(!JSON.stringify(logs).includes(secret));
+
+  unavailable = false;
+  attempts.length = 0;
+  await synchronize(env, 240_000, options);
+  assert.equal(saved().lastBlock, 29);
+  const covered = attempts.filter(([host]) => host === "secondary.test");
+  assert.deepEqual(covered[0], ["secondary.test", 10n, 11n]);
+  assert.ok(
+    covered.every(([, from], i) => i === 0 || from === covered[i - 1]![2] + 1n),
   );
 });
 
@@ -354,7 +462,7 @@ test("getTick uses one multicall at the confirmed block and rejects any reverted
       );
     },
   );
-  const rpc = rpcFor(network(), 1000);
+  const rpc = rpcFor(network());
   const states = await rpc.ticks([1n, 2n], 8192n);
   assert.deepEqual(
     states.map((tick) => tick.availableSupply),
@@ -365,29 +473,147 @@ test("getTick uses one multicall at the confirmed block and rejects any reverted
 });
 
 test(
-  "provider Retry-After cannot extend the bounded fallback delay",
+  "the execution deadline bounds Viem's Retry-After delay",
   { timeout: 2000 },
   async (t) => {
-    let calls = 0;
-    t.mock.method(
-      globalThis,
-      "fetch",
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        calls++;
-        if (calls <= 2)
-          return new Response("Rate limited", {
-            status: 429,
-            headers: { "Retry-After": "3600" },
-          });
-        return reply(init, "0x1f");
+    const controller = new AbortController();
+    const calls: string[] = [];
+    t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      if (String(input) === secondary) setTimeout(() => controller.abort(), 20);
+      return new Response("Rate limited", {
+        status: 429,
+        headers: { "Retry-After": "3600" },
+      });
+    });
+    await assert.rejects(
+      rpcFor(network(), { signal: controller.signal }).head(),
+      {
+        name: "AbortError",
       },
     );
-    assert.equal(await rpcFor(network(), 1000).head(), 31n);
-    assert.equal(calls, 3);
+    assert.deepEqual(calls, [primary, secondary]);
   },
 );
 
-test("sync coalesces confirmed block lookups and bounded tick multicalls into two HTTP batches", async (t) => {
+for (const scenario of ["healthy", "transient failure", "outage"] as const) {
+  test(`sync batches confirmed block and tick reads (${scenario})`, (t) =>
+    verifyTickSync(t, scenario));
+}
+
+test("the Free-plan budget counts fallback fetches and resumes an unfinished chunk next turn", async (t) => {
+  const db = new TestDatabase();
+  const start = 8200;
+  const eventBlock = start + 190;
+  const end = eventBlock + 9;
+  const log = {
+    ...supplied(eventBlock),
+    blockNumber: toHex(eventBlock),
+    transactionIndex: "0x0",
+    logIndex: "0x0",
+  };
+  const tick = encodeFunctionResult({
+    abi,
+    functionName: "getTick",
+    result: tickState(),
+  });
+  const ranges: number[] = [];
+  const tickAttempts: string[] = [];
+  let httpRequests = 0;
+  let unavailable = true;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      httpRequests++;
+      const calls = JSON.parse(String(init?.body)) as {
+        id: number;
+        method: string;
+        params: [Hex | { fromBlock: Hex }, Hex];
+      }[];
+      if (calls[0]?.method === "eth_call") {
+        tickAttempts.push(String(input));
+        if (unavailable) return new Response("Unavailable", { status: 503 });
+      }
+      return Response.json(
+        calls.map(({ id, method, params }) => {
+          let result: unknown;
+          switch (method) {
+            case "eth_blockNumber":
+              result = toHex(end + 2);
+              break;
+            case "eth_getLogs": {
+              const from = Number(
+                BigInt((params[0] as { fromBlock: Hex }).fromBlock),
+              );
+              ranges.push(from);
+              result = from === eventBlock ? [log] : [];
+              break;
+            }
+            case "eth_getBlockByNumber": {
+              const number = Number(BigInt(params[0] as Hex));
+              result = {
+                number: params[0],
+                timestamp: toHex(number * 12),
+                hash: hash(number),
+              };
+              break;
+            }
+            case "eth_call":
+              assert.equal(params[1], toHex(end));
+              result = encodeFunctionResult({
+                abi: multicall3Abi,
+                functionName: "aggregate3",
+                result: [{ success: true, returnData: tick }],
+              });
+              break;
+            default:
+              throw new Error(`Unexpected RPC method ${method}`);
+          }
+          return { jsonrpc: "2.0", id, result };
+        }),
+      );
+    },
+  );
+  const env = {
+    ...environment(db),
+    EVENT_RETENTION_MONTHS: "2",
+    RPC_URLS: JSON.stringify({ base: [primary, secondary] }),
+    NETWORK_CONFIG: JSON.stringify({
+      [base.chainId]: { startBlock: start, confirmations: 2, chunkSize: 10 },
+    }),
+  };
+  const checkpoint = () =>
+    db.rows(
+      "SELECT json_extract(meta, '$.lastBlock') AS block FROM state WHERE key = 'events:8453'",
+    )[0]?.block;
+  await synchronize(env, 60_000, { now: () => 60_000 });
+  assert.deepEqual(tickAttempts, [primary, secondary]);
+  assert.equal(httpRequests, 24);
+  assert.equal(db.requests, 24); // Includes cleanup and lease release.
+  assert.equal(checkpoint(), eventBlock - 1);
+  assert.equal(db.rows("SELECT id FROM events").length, 0);
+  assert.equal(db.rows("SELECT id FROM ticks").length, 0);
+  assert.deepEqual(
+    db.rows("SELECT key FROM state WHERE key LIKE 'sync:lease:%'"),
+    [],
+  );
+
+  unavailable = false;
+  await synchronize(env, 240_000, { now: () => 240_000 });
+  assert.deepEqual(ranges, [
+    ...Array.from({ length: 20 }, (_, i) => start + i * 10),
+    eventBlock,
+  ]);
+  assert.equal(checkpoint(), end);
+  assert.equal(db.rows("SELECT id FROM events").length, 1);
+  assert.equal(db.rows("SELECT id FROM ticks").length, 1);
+});
+
+async function verifyTickSync(
+  t: TestContext,
+  scenario: "healthy" | "transient failure" | "outage",
+) {
   const db = new TestDatabase();
   const start = 8200;
   const end = start + 9;
@@ -408,19 +634,58 @@ test("sync coalesces confirmed block lookups and bounded tick multicalls into tw
   const batches: string[][] = [];
   const heights: bigint[] = [];
   const groupSizes: number[] = [];
+  const attempts = new Map<Hex, { url: string; time: number }[]>();
+  let outage = scenario === "outage";
+  const checkpoint = () =>
+    db.rows(
+      "SELECT json_extract(meta, '$.lastBlock') AS block FROM state WHERE key = 'events:8453'",
+    )[0]?.block;
+  const countRows = (table: "events" | "ticks") =>
+    db.rows(`SELECT count(*) AS count FROM ${table}`)[0]?.count;
   t.mock.method(
     globalThis,
     "fetch",
     async (input: RequestInfo | URL, init?: RequestInit) => {
-      assert.equal(String(input), primary);
+      const url = String(input);
       const calls: {
         id: number;
         method: string;
         params: [Hex | { data: Hex }, Hex];
       }[] = JSON.parse(String(init?.body));
       batches.push(calls.map(({ method }) => method));
+      const failed = new Set<number>();
+      if (calls[0]?.method === "eth_call") {
+        assert.equal(checkpoint(), start - 1);
+        assert.equal(countRows("events"), 0);
+        assert.equal(countRows("ticks"), 0);
+        // Viem retries individual calls. Separate retry timers can produce separate HTTP batches.
+        const time = performance.now();
+        for (const { id, params } of calls) {
+          const { data } = params[0] as { data: Hex };
+          const history = attempts.get(data) ?? [];
+          history.push({ url, time });
+          attempts.set(data, history);
+          if (
+            outage ||
+            (scenario === "transient failure" && history.length <= 2)
+          )
+            failed.add(id);
+        }
+        if (failed.size === calls.length) {
+          if (url === primary) throw new TypeError("Temporary network failure");
+          return new Response("Rate limited", { status: 429 });
+        }
+      } else {
+        assert.equal(url, primary);
+      }
       return Response.json(
         calls.map(({ id, method, params }) => {
+          if (failed.has(id))
+            return {
+              jsonrpc: "2.0",
+              id,
+              error: { code: 429, message: "Rate limited" },
+            };
           let result: unknown;
           switch (method) {
             case "eth_blockNumber":
@@ -468,27 +733,63 @@ test("sync coalesces confirmed block lookups and bounded tick multicalls into tw
       );
     },
   );
-  await synchronize(
-    {
-      ...environment(db),
-      RPC_URLS: JSON.stringify({ base: [primary] }),
-      NETWORK_CONFIG: JSON.stringify({
-        [base.chainId]: { startBlock: start, confirmations: 2, chunkSize: 10 },
-      }),
-    },
-    0,
-  );
-  assert.deepEqual(batches, [
+  const env = {
+    ...environment(db),
+    RPC_URLS: JSON.stringify({ base: [primary, secondary] }),
+    NETWORK_CONFIG: JSON.stringify({
+      [base.chainId]: { startBlock: start, confirmations: 2, chunkSize: 10 },
+    }),
+  };
+  await synchronize(env, 60_000);
+  const expectedAttempts =
+    scenario === "healthy"
+      ? [primary]
+      : scenario === "transient failure"
+        ? [primary, secondary, primary]
+        : [primary, secondary, primary, secondary];
+  assert.equal(attempts.size, 3);
+  for (const history of attempts.values()) {
+    assert.deepEqual(
+      history.map(({ url }) => url),
+      expectedAttempts,
+    );
+    if (scenario !== "healthy")
+      assert.ok(
+        history[2]!.time - history[1]!.time >= 125,
+        "Viem waits before repeating the fallback round",
+      );
+  }
+  assert.deepEqual(batches.slice(0, 3), [
     ["eth_blockNumber"],
     ["eth_getLogs"],
     Array(3).fill("eth_getBlockByNumber"),
-    Array(3).fill("eth_call"),
   ]);
+  if (scenario === "healthy")
+    assert.deepEqual(batches.slice(3), [Array(3).fill("eth_call")]);
   assert.deepEqual(heights, [BigInt(start), BigInt(start + 1), BigInt(end)]);
-  assert.deepEqual(groupSizes, [32, 32, 1]);
+
+  if (outage) {
+    assert.equal(checkpoint(), start - 1);
+    assert.equal(countRows("events"), 0);
+    assert.equal(countRows("ticks"), 0);
+    outage = false;
+    await synchronize(env, 240_000);
+    assert.equal(attempts.size, 3);
+    for (const history of attempts.values())
+      assert.deepEqual(
+        history.map(({ url }) => url),
+        [...expectedAttempts, primary],
+      );
+  }
+  assert.equal(checkpoint(), end);
+  assert.equal(countRows("events"), 65);
+  assert.deepEqual(
+    groupSizes.sort((a, b) => a - b),
+    [1, 32, 32],
+  );
   const [count] = db.rows(
     "SELECT count(*) AS count, min(timestamp) AS timestamp FROM ticks",
   );
   assert.equal(count?.count, 65);
   assert.equal(count?.timestamp, end * 12);
-});
+}

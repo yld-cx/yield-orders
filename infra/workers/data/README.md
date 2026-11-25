@@ -1,8 +1,10 @@
 # YLD data Worker
 
-Cloudflare Worker + D1 for token metadata, prices, and protocol events on [supported networks](../../../protocol/ethereum/README.md#deployments). Requires Node.js 24+; use Workers Paid for production.
+Cloudflare Worker + D1 for token metadata, prices, and protocol events on [supported networks](../../../protocol/ethereum/README.md#deployments). Requires Node.js 24+.
 
-Indexing runs on the `triggers.crons` schedule in `wrangler.jsonc`. On a fresh database it records each chain's first observed head as the starting block, then waits for confirmations. Subsequent runs scan from the saved checkpoint plus one through the latest confirmed block. Each chunk commits events, changed ticks, and its checkpoint in one revision-guarded D1 batch. RPC or database failures leave that chunk for the next run. Events older than `EVENT_RETENTION_MONTHS` are automatically removed.
+Indexing runs on the `triggers.crons` schedule in `wrangler.jsonc` and rotates through the chains in the deployment manifest, one chain per invocation. Each run uses a per-chain lease and shares a 50-subrequest budget across RPC and D1, with capacity reserved for persistence, retention and lease release.
+
+A fresh database starts at each chain's first observed head unless `startBlock` is set. Each chunk saves events, changed ticks, and its checkpoint together. Failed log requests can retry with smaller ranges, and later runs resume from the saved checkpoint. Each turn deletes one batch of expired events for the selected chain.
 
 The `ticks` table stores complete `getTick()` snapshots keyed by `chainId:tickId`. The Worker deduplicates affected IDs across each chunk and reads them via multicall at the confirmed end block. The row timestamp comes from that block. Bigints are stored as decimal strings, and ticks with zero available supply are retained with `active: false`. Existing installations fill the index as relevant events are synchronized after their saved checkpoint, without resuming earlier ranges.
 
@@ -46,12 +48,11 @@ Deployment provisions or reuses the `yld-data` database, applies migrations, the
 Optional settings in `wrangler.jsonc`:
 
 - `RPC_URLS`: a nonempty ordered array of HTTPS RPC URLs per network name (`ethereum`, `base`, `robinhood`) or chain ID. A chain-ID entry takes precedence if both keys are present. Public primary and fallback URLs are already provided.
-- `RPC_TIMEOUT_MS`: timeout budget per pass through the endpoint list (default `8000`), divided between endpoints. Requests try URLs in order, with at most one fallback retry round. If all attempts fail, the failed range remains uncommitted for a later scheduled run.
 - `NETWORK_CONFIG`: optional per-chain `startBlock` for historical indexing, set before the first run.
 - `EVENT_RETENTION_MONTHS`: defaults to `2`; set `0` to retain all history.
 - `CORS_ORIGINS`: allowed frontend origins.
 
-The optional secrets `PRIVATE_RPC_ETHEREUM`, `PRIVATE_RPC_BASE`, and `PRIVATE_RPC_ROBINHOOD` take priority over the corresponding public URLs. Set them in Cloudflare for this Worker, or in `.dev.vars` for local development. RPC error logs omit provider messages.
+Set `PRIVATE_RPC_ETHEREUM`, `PRIVATE_RPC_BASE`, or `PRIVATE_RPC_ROBINHOOD` in Cloudflare, or in `.dev.vars` locally, to try a private endpoint before public fallbacks. Each endpoint uses Viem's default timeout.
 
 ## Integration
 
