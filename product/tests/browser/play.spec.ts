@@ -1,5 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { decodePlayStrategy, playParams, PlayStrategy } from "../../lib/play";
+import {
+  decodePlayStrategy,
+  encodePlayStrategy,
+  playPath,
+  PlayStrategy,
+  readPlayPath,
+} from "../../lib/play";
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -125,7 +131,9 @@ test.beforeEach(async ({ context }) => {
 });
 
 function openScenario(page: Page, id: PlayStrategy, address = token) {
-  return page.goto(`/play?${playParams("base", { id, token: address })}`);
+  return page.goto(
+    playPath("base", encodePlayStrategy({ id, token: address })),
+  );
 }
 
 function instructions(page: Page) {
@@ -168,6 +176,11 @@ test("Home Explorer opens Play and filters trending tokens", async ({
     long.getByText("Bullish on tokens", { exact: true }),
   ).toBeVisible();
   await long.click();
+  const strategyPath = playPath(
+    "base",
+    encodePlayStrategy({ id: PlayStrategy.Long }),
+  );
+  await expect(page).toHaveURL(strategyPath);
   const search = page.getByRole("searchbox", {
     name: "Search trending tokens",
   });
@@ -189,6 +202,13 @@ test("Home Explorer opens Play and filters trending tokens", async ({
   await search.fill(token.slice(-6));
   await expect(page.getByRole("button", { name: /Sun Token/ })).toHaveCount(0);
   await page.getByRole("button", { name: /Moon Token/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Bullish on MOON" }),
+  ).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(strategyPath);
+  await expect(search).toBeVisible();
+  await page.goForward();
   await expect(
     page.getByRole("heading", { name: "Bullish on MOON" }),
   ).toBeVisible();
@@ -251,13 +271,28 @@ test("Long restores the shared simulation and keeps the strategy when switching 
   ).toBeVisible();
 
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "share", {
+      configurable: true,
+      value: async ({ url }: ShareData) => {
+        document.body.dataset.sharedUrl = url;
+      },
+    });
+  });
   await page.getByRole("button", { name: "Share" }).click();
-  await expect(page.getByText("Link copied", { exact: true })).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+  await expect(page.locator("body")).toHaveAttribute(
+    "data-shared-url",
     page.url(),
   );
-  const query = new URL(page.url()).searchParams;
-  expect(decodePlayStrategy(query.get("strategy"))).toEqual({
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe(page.url());
+  await expect(page.getByText("Link copied", { exact: true })).toHaveCount(0);
+  const shared = new URL(page.url());
+  expect(shared.search).toBe("");
+  const route = readPlayPath(shared.pathname);
+  expect(route?.network).toBe("base");
+  expect(decodePlayStrategy(route?.strategy)).toEqual({
     id: "long",
     token,
     amount: "2500",
@@ -277,9 +312,9 @@ test("Long restores the shared simulation and keeps the strategy when switching 
   await expect(
     page.getByRole("heading", { name: "Long · Choose a token" }),
   ).toBeVisible();
-  const switched = new URL(page.url()).searchParams;
-  expect(switched.get("network")).toBe("ethereum");
-  expect(decodePlayStrategy(switched.get("strategy"))).toEqual({ id: "long" });
+  await expect(page).toHaveURL(
+    playPath("ethereum", encodePlayStrategy({ id: PlayStrategy.Long })),
+  );
   await expect(page).toHaveTitle("Yield Explorer | yld.cx");
 });
 
@@ -337,8 +372,8 @@ test("Use Liquidity switches the rented and locked tokens", async ({
   await expect(steps.last()).toHaveText(
     "If the rental expires, locked USDC will be swapped",
   );
-  const accessQuery = new URL(page.url()).searchParams;
-  expect(decodePlayStrategy(accessQuery.get("strategy"))).toMatchObject({
+  const route = readPlayPath(new URL(page.url()).pathname);
+  expect(decodePlayStrategy(route?.strategy)).toMatchObject({
     id: "use-liquidity",
     token,
     rentSelectedToken: true,
@@ -469,8 +504,16 @@ test("A manual entry price supplies a default amount until the user overrides it
   await entry.pressSequentially("20");
   await expect(rentalAmount).toHaveValue("50");
   await rentalAmount.fill("3");
-  await entry.fill("25");
+  const exactPrice = ".0003741863826";
+  await entry.fill(exactPrice);
+  await rentalAmount.focus();
+  await expect(entry).toHaveValue("0.000374186");
+  const route = readPlayPath(new URL(page.url()).pathname);
+  expect(decodePlayStrategy(route?.strategy)?.entry).toBe(exactPrice);
   await expect(rentalAmount).toHaveValue("3");
   await page.reload();
   await expect(rentalAmount).toHaveValue("3");
+  await expect(entry).toHaveValue("0.000374186");
+  await entry.focus();
+  await expect(entry).toHaveValue(exactPrice);
 });

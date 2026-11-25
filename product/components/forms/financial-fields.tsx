@@ -17,6 +17,8 @@ export function AmountInput({
   label,
   value,
   onChange,
+  onFocus,
+  onBlur,
   symbol,
   balance,
   max,
@@ -26,6 +28,8 @@ export function AmountInput({
   label: string;
   value: string;
   onChange: (value: string) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
   symbol: string;
   className?: string;
   maxLength?: number;
@@ -98,6 +102,8 @@ export function AmountInput({
           placeholder="0.00"
           value={value}
           maxLength={maxLength}
+          onFocus={onFocus}
+          onBlur={onBlur}
           onChange={(event) => {
             const next = event.target.value.replaceAll(",", ".");
             if (/^\d*(?:\.\d*)?$/.test(next)) onChange(next);

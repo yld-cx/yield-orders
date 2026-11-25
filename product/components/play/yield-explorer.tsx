@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { usePathname } from "next/navigation";
 import {
   ArrowLeft,
   ArrowLeftRight,
@@ -37,6 +37,7 @@ import {
   PlayStepAction,
   PlayStrategy,
   decodePlayStrategy,
+  encodePlayStrategy,
   invertPlayPrice,
   orientPlayPrice,
   playDefaultAmount,
@@ -46,12 +47,14 @@ import {
   playOutcome,
   playOutcomeText,
   playPageTitle,
-  playParams,
+  playPath,
+  playPriceText,
   playQuoteText,
   playRateInput,
   playSigned,
   playStrategy,
   playTarget,
+  readPlayPath,
   readPlayValues,
   scenarioNumber,
   type PlaySettings,
@@ -74,7 +77,7 @@ function writePlayUrl(
   replace = false,
 ) {
   const url = new URL(
-    `/play?${playParams(network, settings)}`,
+    playPath(network, settings && encodePlayStrategy(settings)),
     window.location.origin,
   );
   if (replace) window.history.replaceState(null, "", url);
@@ -207,6 +210,7 @@ function Simulation({
 }) {
   const [shareStatus, setShareStatus] = useState("");
   const [edits, setEdits] = useState<Partial<PlaySettings>>({});
+  const [editingEntry, setEditingEntry] = useState(false);
   const draft = { ...settings, ...edits };
   const [assetAddress, quoteAddress] = playAddresses(market, settings);
   const tokens = useTokenMetadata(network, [assetAddress, quoteAddress]);
@@ -239,7 +243,7 @@ function Simulation({
     edits.entry === undefined
       ? (settings.entry ?? reference)
       : orientPlayPrice(settings, edits.entry);
-  const entryInput = edits.entry ?? orientPlayPrice(settings, entryPrice);
+  const entryInput = edits.entry ?? orientPlayPrice(settings, entryPrice) ?? "";
   const entry = scenarioNumber(entryPrice ?? "");
   const slider =
     entry !== undefined && marketAsset && marketQuote
@@ -273,10 +277,10 @@ function Simulation({
         (settings.target === targetInput && settings.targetTick === targetTick))
     )
       return;
-    const params = new URLSearchParams(window.location.search);
-    const current = decodePlayStrategy(params.get("strategy"));
+    const route = readPlayPath(window.location.pathname);
+    const current = decodePlayStrategy(route?.strategy);
     if (
-      params.get("network") !== network ||
+      route?.network !== network ||
       current?.id !== settings.id ||
       current.token !== settings.token ||
       current.rentSelectedToken !== settings.rentSelectedToken ||
@@ -354,10 +358,14 @@ function Simulation({
 
   async function share() {
     const url = writePlayUrl(network, { ...scenario, amount }, true);
-    try {
-      await navigator.clipboard.writeText(url);
-      setShareStatus("Link copied");
-    } catch {
+    setShareStatus("");
+    const copy = navigator.clipboard?.writeText(url);
+    const nativeShare = navigator.share?.({ url });
+    const [copied, shared] = await Promise.allSettled([copy, nativeShare]);
+    if (
+      (!copy || copied.status === "rejected") &&
+      (!nativeShare || shared.status === "rejected")
+    ) {
       setShareStatus("Copy the link from your address bar.");
     }
   }
@@ -417,8 +425,10 @@ function Simulation({
             className="my-0"
             label={labels.entry}
             symbol={units.entry}
-            value={entryInput ?? ""}
+            value={editingEntry ? entryInput : playPriceText(entryInput)}
             maxLength={64}
+            onFocus={() => setEditingEntry(true)}
+            onBlur={() => setEditingEntry(false)}
             onChange={(value) => edit("entry", value)}
           />
         </div>
@@ -524,9 +534,9 @@ function Simulation({
 }
 
 export function YieldExplorer() {
-  const params = useSearchParams();
+  const pathname = usePathname();
   const { network } = useNetwork();
-  const settings = decodePlayStrategy(params.get("strategy"));
+  const settings = decodePlayStrategy(readPlayPath(pathname)?.strategy);
   const strategy = playStrategy(settings?.id ?? null);
   const market = playMarket(network, settings?.token);
   const hasMarket = !!market;

@@ -127,8 +127,7 @@ export function playAddresses(
   return rentsStablecoin(settings) ? [stable, token] : [token, stable];
 }
 
-export function readPlayNetwork(params: Pick<URLSearchParams, "get">) {
-  const network = params.get("network");
+export function readPlayNetwork(network?: string | null) {
   return network && isNetworkSlug(network) ? network : undefined;
 }
 
@@ -138,10 +137,13 @@ export function playPreviewSubtitle(network?: NetworkSlug) {
     : "Play yld.cx way";
 }
 
-export function readPlaySelection(params: Pick<URLSearchParams, "get">) {
-  const network = readPlayNetwork(params);
+export function readPlaySelection(params: {
+  network?: string;
+  strategy?: string;
+}) {
+  const network = readPlayNetwork(params.network);
   if (!network) return undefined;
-  const settings = decodePlayStrategy(params.get("strategy"));
+  const settings = decodePlayStrategy(params.strategy);
   const strategy = playStrategy(settings?.id ?? null);
   const market = playMarket(network, settings?.token);
   if (!settings || !strategy || !market) return undefined;
