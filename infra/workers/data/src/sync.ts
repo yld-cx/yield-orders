@@ -28,6 +28,9 @@ import {
 import { errorKind, integer, json, log, setting, type Env } from "./shared.ts";
 import { cleanupEvents, retentionCutoff } from "./retention.ts";
 
+const CRON_INTERVAL_MS = 60_000;
+const CRON_LIMIT_MS = 15 * CRON_INTERVAL_MS;
+const FREE_SUBREQUESTS = 50;
 const MAX_EVENTS = 256;
 const MAX_EVENT_BLOCKS = 24;
 const TICK_BATCH_SIZE = 32;
@@ -60,12 +63,18 @@ export function rpcFor(
   n: Network,
   options: {
     signal?: AbortSignal;
+    beforeRequest?: () => void;
     onFailure?: (method: string, hostname: string, error: unknown) => void;
   } = {},
 ): Rpc {
   const makeTransport: Transport = (config) => {
     const transport = fallback(
-      n.rpcUrls.map((url) => http(url, rpcHttpOptions(options.signal))),
+      n.rpcUrls.map((url) =>
+        http(url, {
+          ...rpcHttpOptions(options.signal),
+          onFetchRequest: options.beforeRequest,
+        }),
+      ),
       rpcFallbackOptions,
     )(config);
     transport.value?.onResponse((result) => {
@@ -258,6 +267,10 @@ async function syncNetwork(
 ) {
   const { now, started, deadline, signal, cutoff, dependencies } = options;
   const withinWindow = () => !signal.aborted && now() < deadline;
+  // Reserve two lease calls, two checkpoint calls, a retry hint and optional cleanup.
+  let remaining = FREE_SUBREQUESTS - (cutoff === undefined ? 5 : 6);
+  // Keep one D1 batch available while reading the current chunk.
+  const canRead = () => withinWindow() && remaining > 1;
   const sleep =
     dependencies.sleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -297,6 +310,14 @@ async function syncNetwork(
       dependencies.rpc?.(n) ??
       rpcFor(n, {
         signal,
+        beforeRequest: () => {
+          if (!canRead())
+            throw new DOMException(
+              "Synchronization budget exhausted",
+              "AbortError",
+            );
+          remaining--;
+        },
         onFailure: (method, hostname, error) => {
           if (++endpointFailures <= 20)
             log({
@@ -359,7 +380,7 @@ async function syncNetwork(
       size !== undefined &&
       current !== undefined &&
       current < target &&
-      withinWindow()
+      canRead()
     ) {
       const from: bigint = current + 1n;
       const end: bigint = from + BigInt(size) - 1n;
@@ -451,6 +472,7 @@ async function syncNetwork(
           nextSize = Math.min(size * 2, n.chunkSize);
           fullChunks = 0;
         }
+        remaining--;
         const next = await persistChunk(
           env.DB,
           n.chainId,
@@ -475,7 +497,7 @@ async function syncNetwork(
         attempt = 1;
         transientFailures = 0;
       } catch (error) {
-        const budget = !withinWindow();
+        const budget = !canRead();
         const tooLarge = method !== undefined && rangeError(error);
         // The last provider's error can mask a temporary failure at an earlier endpoint.
         if (!budget && !tooLarge && phase === "logs") transientFailures++;
@@ -564,6 +586,15 @@ async function syncNetwork(
   }
 }
 
+export function scheduledNetwork(
+  scheduledTime: number,
+  networks: readonly SupportedNetwork[] = supportedNetworks,
+): SupportedNetwork {
+  return networks[
+    Math.floor(scheduledTime / CRON_INTERVAL_MS) % networks.length
+  ]!;
+}
+
 export async function synchronize(
   env: Env,
   scheduledTime = Date.now(),
@@ -571,91 +602,79 @@ export async function synchronize(
 ): Promise<void> {
   const now = dependencies.now ?? Date.now;
   const started = now();
-  const interval = setting(env.SYNC_INTERVAL_MINUTES, 5, 1, 15) * 60_000;
-  const deadline = started + interval - 5_000;
+  const n = scheduledNetwork(scheduledTime);
+  const deadline =
+    started +
+    Math.min(CRON_INTERVAL_MS * supportedNetworks.length, CRON_LIMIT_MS) -
+    5_000;
   const retentionMonths = setting(env.EVENT_RETENTION_MONTHS, 2, 0, 24);
   const cutoff =
     retentionMonths === 0
       ? undefined
       : retentionCutoff(Math.floor(started / 1000), retentionMonths);
   const cleanupBatchSize = setting(env.CLEANUP_BATCH_SIZE, 1000, 1, 1000);
-  const maxCleanupBatches = setting(env.MAX_CLEANUP_BATCHES, 6, 1, 30);
+  const leaseKey = `sync:lease:${n.chainId}`;
   const lease = json(crypto.randomUUID());
   const acquired = await env.DB.prepare(
-    `INSERT INTO state(key, meta, timestamp) VALUES ('sync:lease', ?, ?)
+    `INSERT INTO state(key, meta, timestamp) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET meta = excluded.meta, timestamp = excluded.timestamp
      WHERE state.timestamp <= ?`,
   )
     // A scheduled invocation can live for up to 15 minutes on Cloudflare.
-    .bind(lease, started + 15 * 60_000, started)
+    .bind(leaseKey, lease, started + CRON_LIMIT_MS, started)
     .run();
   if (!acquired.success) throw new Error("Unable to acquire sync lease");
   if (!acquired.meta.changes) {
-    log({ type: "sync_overlap", scheduledTime });
+    log({
+      type: "sync_overlap",
+      network: n.name,
+      chainId: n.chainId,
+      scheduledTime,
+    });
     return;
   }
 
   try {
     const signal = AbortSignal.timeout(Math.max(1, deadline - now()));
-    await Promise.all(
-      supportedNetworks.map((base) =>
-        syncNetwork(env, base, {
-          now,
-          started,
-          deadline,
-          signal,
+    await syncNetwork(env, n, {
+      now,
+      started,
+      deadline,
+      signal,
+      cutoff,
+      dependencies,
+    });
+    if (cutoff !== undefined && now() < deadline) {
+      try {
+        const deletedEvents = await cleanupEvents(
+          env.DB,
+          n.chainId,
           cutoff,
-          dependencies,
-        }),
-      ),
-    );
-
-    if (cutoff !== undefined) {
-      const pending = new Set(supportedNetworks.map((n) => n.chainId));
-      const offset =
-        Math.floor(scheduledTime / interval) % supportedNetworks.length;
-      for (
-        let i = 0, batches = 0;
-        pending.size && batches < maxCleanupBatches && now() < deadline;
-        i++
-      ) {
-        const network =
-          supportedNetworks[(offset + i) % supportedNetworks.length]!;
-        if (!pending.has(network.chainId)) continue;
-        batches++;
-        try {
-          const deletedEvents = await cleanupEvents(
-            env.DB,
-            network.chainId,
-            cutoff,
-            cleanupBatchSize,
-          );
-          if (deletedEvents < cleanupBatchSize) pending.delete(network.chainId);
-          log({
-            type: "events_cleanup",
-            network: network.name,
-            chainId: network.chainId,
-            cutoff,
-            deletedEvents,
-            status: deletedEvents < cleanupBatchSize ? "complete" : "partial",
-          });
-        } catch (error) {
-          pending.delete(network.chainId);
-          log({
-            type: "events_cleanup_error",
-            network: network.name,
-            chainId: network.chainId,
-            cutoff,
-            error: errorKind(error),
-          });
-        }
+          cleanupBatchSize,
+        );
+        log({
+          type: "events_cleanup",
+          network: n.name,
+          chainId: n.chainId,
+          cutoff,
+          deletedEvents,
+          status: deletedEvents < cleanupBatchSize ? "complete" : "partial",
+        });
+      } catch (error) {
+        log({
+          type: "events_cleanup_error",
+          network: n.name,
+          chainId: n.chainId,
+          cutoff,
+          error: errorKind(error),
+        });
       }
     }
   } finally {
     const released = await env.DB.prepare(
-      "DELETE FROM state WHERE key = 'sync:lease' AND meta = ?",
+      "DELETE FROM state WHERE key = ? AND meta = ?",
     )
-      .bind(lease)
+      .bind(leaseKey, lease)
       .run();
     if (!released.success) throw new Error("Unable to release sync lease");
   }

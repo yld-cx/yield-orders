@@ -129,23 +129,33 @@ test("atomic ingestion never restores expired events but still advances historic
   );
 });
 
-test("scheduled job cleans all chains and filters expired RPC events while keeping the boundary", async () => {
+test("retention cleans only the scheduled chain and keeps events at the cutoff", async () => {
   const db = new TestDatabase(),
     env = retainedEnvironment(db);
   for (const n of supportedNetworks) seed(db, n.chainId, 1, cutoff - 1);
-  await synchronize(env, 0, {
-    now: () => nowMs,
-    rpc: (n) => ({
-      ...fakeRpc(31n, [
-        supplied(10, 10, 1n, n.chainId),
-        supplied(11, 11, 1n, n.chainId),
-      ]),
-      block: async (block) => ({
-        ...(await fakeRpc().block(block)),
-        timestamp: BigInt(block === 10n ? cutoff - 1 : cutoff),
+  for (const [minute, current] of supportedNetworks.entries()) {
+    await synchronize(env, minute * 60_000, {
+      now: () => nowMs,
+      rpc: (n) => ({
+        ...fakeRpc(31n, [
+          supplied(10, 10, 1n, n.chainId),
+          supplied(11, 11, 1n, n.chainId),
+        ]),
+        block: async (block) => ({
+          ...(await fakeRpc().block(block)),
+          timestamp: BigInt(block === 10n ? cutoff - 1 : cutoff),
+        }),
       }),
-    }),
-  });
+    });
+    const [row] = db.rows(
+      `SELECT timestamp FROM events WHERE chain_id = ${current.chainId}`,
+    );
+    assert.equal(row?.timestamp, cutoff);
+    assert.equal(
+      db.rows(`SELECT * FROM events WHERE timestamp < ${cutoff}`).length,
+      supportedNetworks.length - minute - 1,
+    );
+  }
   const events = db.rows(
     "SELECT chain_id, timestamp FROM events ORDER BY chain_id",
   );
@@ -175,39 +185,35 @@ test("cleanup continues during RPC failures without moving sync checkpoints", as
       },
     }),
   });
-  assert.equal(db.rows("SELECT * FROM events").length, 0);
+  assert.deepEqual(
+    db
+      .rows("SELECT chain_id FROM events ORDER BY chain_id")
+      .map((row) => row.chain_id),
+    [4663, 8453],
+  );
   assert.deepEqual(db.rows("SELECT * FROM state"), saved);
 });
 
-test("cleanup query limits cap deleted rows while indexing continues", async () => {
-  const db = new TestDatabase(),
-    env = {
-      ...retainedEnvironment(db),
-      CLEANUP_BATCH_SIZE: "2",
-      MAX_CLEANUP_BATCHES: "2",
-    };
+test("cleanup takes one bounded batch per selected-chain turn", async () => {
+  const db = new TestDatabase();
+  const env = { ...retainedEnvironment(db), CLEANUP_BATCH_SIZE: "2" };
   for (const n of supportedNetworks)
     for (let id = 1; id <= 3; id++) seed(db, n.chainId, id, cutoff - 1);
-  await synchronize(env, 0, { now: () => nowMs, rpc: () => fakeRpc() });
-  assert.equal(db.rows("SELECT * FROM events").length, 5);
-  assert.equal(db.requests, 16); // Two lease, two cleanup, six checkpoint and six batch calls.
-  assert.ok(
+  const options = { now: () => nowMs, rpc: () => fakeRpc() };
+  await synchronize(env, 0, options);
+  assert.equal(db.rows("SELECT * FROM events").length, 7);
+  assert.equal(db.requests, 7); // Two lease, two checkpoint, two chunk and one cleanup call.
+  await synchronize(env, supportedNetworks.length * 60_000, options);
+  assert.deepEqual(
     db
-      .rows("SELECT json_extract(meta,'$.lastBlock') AS n FROM state")
-      .every((r) => r.n === 29),
+      .rows("SELECT DISTINCT chain_id FROM events ORDER BY chain_id")
+      .map((row) => row.chain_id),
+    [4663, 8453],
   );
-});
-
-test("unused cleanup slots go to chains with remaining expired events", async () => {
-  const db = new TestDatabase(),
-    env = {
-      ...retainedEnvironment(db),
-      CLEANUP_BATCH_SIZE: "2",
-      MAX_CLEANUP_BATCHES: "6",
-    };
-  for (let id = 1; id <= 7; id++) seed(db, 8453, id, cutoff - 1);
-  await synchronize(env, 0, { now: () => nowMs, rpc: () => fakeRpc() });
-  assert.equal(db.rows("SELECT * FROM events").length, 0);
+  assert.equal(
+    db.rows("SELECT json_extract(meta,'$.lastBlock') AS n FROM state")[0]!.n,
+    29,
+  );
 });
 
 test("cleanup failures on one chain do not block other cleanup or indexing", async () => {
@@ -230,7 +236,11 @@ test("cleanup failures on one chain do not block other cleanup or indexing", asy
     }
     return statement;
   };
-  await synchronize(env, 0, { now: () => nowMs, rpc: () => fakeRpc() });
+  for (let minute = 0; minute < supportedNetworks.length; minute++)
+    await synchronize(env, minute * 60_000, {
+      now: () => nowMs,
+      rpc: () => fakeRpc(),
+    });
   assert.deepEqual(
     db.rows("SELECT chain_id FROM events").map((r) => r.chain_id),
     [1],
@@ -242,38 +252,21 @@ test("cleanup failures on one chain do not block other cleanup or indexing", asy
   );
 });
 
-test("cleanup stops admitting work when the execution deadline is exhausted", async () => {
-  const db = new TestDatabase(),
-    env = retainedEnvironment(db);
-  for (const n of supportedNetworks) seed(db, n.chainId, 1, cutoff - 1);
-  let clock = nowMs,
-    rpcCalls = 0;
-  const prepare = db.prepare.bind(db);
-  db.prepare = (sql) => {
-    const statement = prepare(sql);
-    if (sql.startsWith("DELETE FROM events WHERE id IN")) {
-      const bind = statement.bind.bind(statement);
-      statement.bind = (...values) => {
-        const bound = bind(...values),
-          run = bound.run.bind(bound);
-        bound.run = async () => {
-          const result = await run();
-          clock += 300_000;
-          return result;
-        };
-        return bound;
-      };
-    }
-    return statement;
-  };
+test("retention yields when the indexing window is exhausted", async () => {
+  const db = new TestDatabase();
+  const env = retainedEnvironment(db);
+  seed(db, 1, 1, cutoff - 1);
+  let clock = nowMs;
   await synchronize(env, 0, {
     now: () => clock,
-    rpc: () => {
-      rpcCalls++;
-      return fakeRpc();
-    },
+    rpc: () => ({
+      ...fakeRpc(),
+      logs: async () => {
+        clock += supportedNetworks.length * 60_000;
+        return [];
+      },
+    }),
   });
-  assert.equal(db.requests, 15); // Two lease, six checkpoint, six batch and one cleanup call.
-  assert.equal(rpcCalls, supportedNetworks.length);
-  assert.equal(db.rows("SELECT * FROM events").length, 2);
+  assert.equal(db.requests, 4); // Two lease and two checkpoint calls.
+  assert.equal(db.rows("SELECT * FROM events").length, 1);
 });

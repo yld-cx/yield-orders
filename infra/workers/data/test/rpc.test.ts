@@ -371,7 +371,7 @@ test("all log endpoints can fail for a cron and public fallback later resumes fr
       ),
     );
   const options = { sleep: async () => {} };
-  await synchronize(env, 0, options);
+  await synchronize(env, 60_000, options);
   assert.equal(saved().lastBlock, 9);
   assert.equal(saved().chunkSize, 2);
   assert.deepEqual(attempts, [
@@ -412,7 +412,7 @@ test("all log endpoints can fail for a cron and public fallback later resumes fr
 
   unavailable = false;
   attempts.length = 0;
-  await synchronize(env, 300_000, options);
+  await synchronize(env, 240_000, options);
   assert.equal(saved().lastBlock, 29);
   const covered = attempts.filter(([host]) => host === "secondary.test");
   assert.deepEqual(covered[0], ["secondary.test", 10n, 11n]);
@@ -500,6 +500,115 @@ for (const scenario of ["healthy", "transient failure", "outage"] as const) {
   test(`sync batches confirmed block and tick reads (${scenario})`, (t) =>
     verifyTickSync(t, scenario));
 }
+
+test("the Free-plan budget counts fallback fetches and resumes an unfinished chunk next turn", async (t) => {
+  const db = new TestDatabase();
+  const start = 8200;
+  const eventBlock = start + 190;
+  const end = eventBlock + 9;
+  const log = {
+    ...supplied(eventBlock),
+    blockNumber: toHex(eventBlock),
+    transactionIndex: "0x0",
+    logIndex: "0x0",
+  };
+  const tick = encodeFunctionResult({
+    abi,
+    functionName: "getTick",
+    result: tickState(),
+  });
+  const ranges: number[] = [];
+  const tickAttempts: string[] = [];
+  let httpRequests = 0;
+  let unavailable = true;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      httpRequests++;
+      const calls = JSON.parse(String(init?.body)) as {
+        id: number;
+        method: string;
+        params: [Hex | { fromBlock: Hex }, Hex];
+      }[];
+      if (calls[0]?.method === "eth_call") {
+        tickAttempts.push(String(input));
+        if (unavailable) return new Response("Unavailable", { status: 503 });
+      }
+      return Response.json(
+        calls.map(({ id, method, params }) => {
+          let result: unknown;
+          switch (method) {
+            case "eth_blockNumber":
+              result = toHex(end + 2);
+              break;
+            case "eth_getLogs": {
+              const from = Number(
+                BigInt((params[0] as { fromBlock: Hex }).fromBlock),
+              );
+              ranges.push(from);
+              result = from === eventBlock ? [log] : [];
+              break;
+            }
+            case "eth_getBlockByNumber": {
+              const number = Number(BigInt(params[0] as Hex));
+              result = {
+                number: params[0],
+                timestamp: toHex(number * 12),
+                hash: hash(number),
+              };
+              break;
+            }
+            case "eth_call":
+              assert.equal(params[1], toHex(end));
+              result = encodeFunctionResult({
+                abi: multicall3Abi,
+                functionName: "aggregate3",
+                result: [{ success: true, returnData: tick }],
+              });
+              break;
+            default:
+              throw new Error(`Unexpected RPC method ${method}`);
+          }
+          return { jsonrpc: "2.0", id, result };
+        }),
+      );
+    },
+  );
+  const env = {
+    ...environment(db),
+    EVENT_RETENTION_MONTHS: "2",
+    RPC_URLS: JSON.stringify({ base: [primary, secondary] }),
+    NETWORK_CONFIG: JSON.stringify({
+      [base.chainId]: { startBlock: start, confirmations: 2, chunkSize: 10 },
+    }),
+  };
+  const checkpoint = () =>
+    db.rows(
+      "SELECT json_extract(meta, '$.lastBlock') AS block FROM state WHERE key = 'events:8453'",
+    )[0]?.block;
+  await synchronize(env, 60_000, { now: () => 60_000 });
+  assert.deepEqual(tickAttempts, [primary, secondary]);
+  assert.equal(httpRequests, 24);
+  assert.equal(db.requests, 24); // Includes cleanup and lease release.
+  assert.equal(checkpoint(), eventBlock - 1);
+  assert.equal(db.rows("SELECT id FROM events").length, 0);
+  assert.equal(db.rows("SELECT id FROM ticks").length, 0);
+  assert.deepEqual(
+    db.rows("SELECT key FROM state WHERE key LIKE 'sync:lease:%'"),
+    [],
+  );
+
+  unavailable = false;
+  await synchronize(env, 240_000, { now: () => 240_000 });
+  assert.deepEqual(ranges, [
+    ...Array.from({ length: 20 }, (_, i) => start + i * 10),
+    eventBlock,
+  ]);
+  assert.equal(checkpoint(), end);
+  assert.equal(db.rows("SELECT id FROM events").length, 1);
+  assert.equal(db.rows("SELECT id FROM ticks").length, 1);
+});
 
 async function verifyTickSync(
   t: TestContext,
@@ -615,7 +724,7 @@ async function verifyTickSync(
       [base.chainId]: { startBlock: start, confirmations: 2, chunkSize: 10 },
     }),
   };
-  await synchronize(env, 0);
+  await synchronize(env, 60_000);
   const expectedAttempts =
     scenario === "healthy"
       ? [primary]
@@ -644,7 +753,7 @@ async function verifyTickSync(
     assert.equal(countRows("events"), 0);
     assert.equal(countRows("ticks"), 0);
     outage = false;
-    await synchronize(env, 300_000);
+    await synchronize(env, 240_000);
     assert.deepEqual(
       attempts.map(({ url }) => url),
       [...expectedAttempts, primary],

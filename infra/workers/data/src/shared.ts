@@ -6,10 +6,8 @@ export interface Env extends RpcEnv {
   DB: D1Database;
   CORS_ORIGINS?: string;
   NETWORK_CONFIG?: string;
-  SYNC_INTERVAL_MINUTES?: string;
   EVENT_RETENTION_MONTHS?: string;
   CLEANUP_BATCH_SIZE?: string;
-  MAX_CLEANUP_BATCHES?: string;
   TOKEN_UPSTREAM_PER_MINUTE?: string;
   COINGECKO_API_KEY?: string;
 }

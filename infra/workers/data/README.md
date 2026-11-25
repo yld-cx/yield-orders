@@ -1,8 +1,10 @@
 # YLD data Worker
 
-Cloudflare Worker + D1 for token metadata, prices, and protocol events on [supported networks](../../../protocol/ethereum/README.md#deployments). Requires Node.js 24+; use Workers Paid for production.
+Cloudflare Worker + D1 for token metadata, prices, and protocol events on [supported networks](../../../protocol/ethereum/README.md#deployments). Requires Node.js 24+.
 
-Scheduled indexing scans each chain through its latest confirmed block. A fresh database starts at each chain's first observed head unless `startBlock` is set. Each chunk saves events, changed ticks, and its checkpoint together. Failed log requests can retry with smaller ranges, and later runs resume from the saved checkpoint. Events older than `EVENT_RETENTION_MONTHS` are automatically removed.
+The cron runs once a minute and rotates through the chains in the deployment manifest. Each chain gets one turn every three minutes with the current manifest. Each invocation uses a per-chain lease and shares a 50-subrequest budget across RPC and D1, with capacity reserved for persistence, retention and lease release.
+
+A fresh database starts at each chain's first observed head unless `startBlock` is set. Each chunk saves events, changed ticks, and its checkpoint together. Failed log requests can retry with smaller ranges, and later runs resume from the saved checkpoint. Each turn deletes one batch of expired events for the selected chain.
 
 The `ticks` table stores complete `getTick()` snapshots keyed by `chainId:tickId`. The Worker deduplicates affected IDs across each chunk and reads them via multicall at the confirmed end block. The row timestamp comes from that block. Bigints are stored as decimal strings, and ticks with zero available supply are retained with `active: false`. Existing installations fill the index as relevant events are synchronized after their saved checkpoint, without resuming earlier ranges.
 
@@ -47,7 +49,6 @@ Optional settings in `wrangler.jsonc`:
 
 - `RPC_URLS`: a nonempty ordered array of HTTPS RPC URLs per network name (`ethereum`, `base`, `robinhood`) or chain ID. A chain-ID entry takes precedence if both keys are present. Public primary and fallback URLs are already provided.
 - `NETWORK_CONFIG`: optional per-chain `startBlock` for historical indexing, set before the first run.
-- `SYNC_INTERVAL_MINUTES`: match the cron interval.
 - `EVENT_RETENTION_MONTHS`: defaults to `2`; set `0` to retain all history.
 - `CORS_ORIGINS`: allowed frontend origins.
 

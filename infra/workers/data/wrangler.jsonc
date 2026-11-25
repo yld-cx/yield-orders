@@ -14,18 +14,15 @@
       "migrations_dir": "migrations",
     },
   ],
-  "triggers": { "crons": ["*/5 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": true },
   "vars": {
     "CORS_ORIGINS": "https://yld.cx",
     "RPC_URLS": "{\"ethereum\":[\"https://ethereum-rpc.publicnode.com\",\"https://gateway.tenderly.co/public/mainnet\"],\"base\":[\"https://base-rpc.publicnode.com\",\"https://mainnet.base.org\"],\"robinhood\":[\"https://robinhood-rpc.publicnode.com\",\"https://rpc.mainnet.chain.robinhood.com\"]}",
     // Optional startBlock enables backfill. Otherwise snapshot the first observed head.
     "NETWORK_CONFIG": "{}",
-    // Match the cron interval above.
-    "SYNC_INTERVAL_MINUTES": "5",
     "EVENT_RETENTION_MONTHS": "2",
     "CLEANUP_BATCH_SIZE": "1000",
-    "MAX_CLEANUP_BATCHES": "6",
     "TOKEN_UPSTREAM_PER_MINUTE": "20",
   },
   "secrets": {
