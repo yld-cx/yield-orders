@@ -44,7 +44,7 @@ export async function playMetadata(
   return {
     title,
     description,
-    alternates: { canonical: "/play" },
+    alternates: { canonical: url },
     openGraph: {
       type: "website",
       siteName: "yld.cx",
