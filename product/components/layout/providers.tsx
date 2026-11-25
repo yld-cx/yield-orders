@@ -18,6 +18,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { getWagmiConfig } from "@/lib/wagmi";
 import type { NetworkSlug } from "@yld-cx/sdk/ethereum";
 import { isNetworkSlug } from "@/lib/registry";
+import { readPlayPath } from "@/lib/play";
 const NetworkContext = createContext<{
   network: NetworkSlug;
   setNetwork: (value: NetworkSlug) => void;
@@ -53,13 +54,10 @@ export function Providers({
   );
   const [savedNetwork, setNetwork] = useState(initialNetwork);
   const pathname = usePathname();
-  const urlNetwork = params.get("network");
+  const urlNetwork =
+    pathname === "/" ? params.get("network") : readPlayPath(pathname)?.network;
   const network =
-    (pathname === "/" || pathname === "/play") &&
-    urlNetwork &&
-    isNetworkSlug(urlNetwork)
-      ? urlNetwork
-      : savedNetwork;
+    urlNetwork && isNetworkSlug(urlNetwork) ? urlNetwork : savedNetwork;
   // Remember URL selections for screens that do not have market filters.
   if (network !== savedNetwork) setNetwork(network);
   useEffect(() => {

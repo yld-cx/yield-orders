@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import { test, expect, type Page, type Route } from "@playwright/test";
 import yieldList from "../../public/yieldlist.json" with { type: "json" };
 import { tokenFixture } from "./token-fixtures";
-import { decodePlayStrategy, PLAY_STRATEGIES } from "../../lib/play";
+import {
+  decodePlayStrategy,
+  PLAY_STRATEGIES,
+  readPlayPath,
+} from "../../lib/play";
 import {
   decodeFunctionData,
   encodeFunctionData,
@@ -3891,16 +3895,17 @@ test("market Explorer opens strategies with the market asset selected", async ({
       name: new RegExp(`^${strategy.title}`),
     });
     const url = new URL((await link.getAttribute("href"))!, page.url());
-    expect(url.pathname).toBe("/play");
-    expect(url.searchParams.get("network")).toBe("base");
-    expect(decodePlayStrategy(url.searchParams.get("strategy"))).toMatchObject({
+    const route = readPlayPath(url.pathname);
+    expect(url.search).toBe("");
+    expect(route?.network).toBe("base");
+    expect(decodePlayStrategy(route?.strategy)).toMatchObject({
       id: strategy.id,
       token: a,
     });
   }
 
   await explorer.getByRole("link", { name: /^Long Bullish on WETH$/ }).click();
-  await expect(page).toHaveURL(/\/play\?network=base&strategy=/);
+  await expect(page).toHaveURL(/\/play\/base\/[\w-]+$/);
   await expect(
     page.getByRole("heading", { name: "Bullish on WETH" }),
   ).toBeVisible();

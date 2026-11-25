@@ -8,7 +8,7 @@ import {
   CardDescription,
   CardHeader,
 } from "@yld-cx/ui/components/ui/card";
-import { PLAY_STRATEGIES, playParams } from "@/lib/play";
+import { encodePlayStrategy, PLAY_STRATEGIES, playPath } from "@/lib/play";
 
 export const PLAY_STRATEGY_PROMPT = "Choose your strategy to play";
 
@@ -39,7 +39,10 @@ export function StrategyList({
         {PLAY_STRATEGIES.map((item) => (
           <Link
             key={item.id}
-            href={`/play?${playParams(network, { id: item.id, token: token?.address })}`}
+            href={playPath(
+              network,
+              encodePlayStrategy({ id: item.id, token: token?.address }),
+            )}
             prefetch={false}
             className={`flex min-w-0 items-center gap-3 text-left hover:bg-muted/40 focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring ${token ? "rounded-md p-2" : "p-4"}`}
           >

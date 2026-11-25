@@ -5,7 +5,7 @@ import {
   type NetworkSlug,
 } from "@yld-cx/sdk/ethereum";
 import { isAddress } from "viem";
-import { marketGridTick } from "./market-values";
+import { marketGridTick, priceText } from "./market-values";
 
 export const enum PlayStrategy {
   Long = "long",
@@ -370,6 +370,13 @@ export function orientPlayPrice(
   return rentsStablecoin(settings) ? invertPlayPrice(input) : input;
 }
 
+export function playPriceText(value: string) {
+  if (!value || value === ".") return value;
+  const [whole, fraction] = value.split(".");
+  const integer = BigInt(whole || "0");
+  return priceText(fraction ? `${integer}.${fraction}` : String(integer));
+}
+
 export function playFormat(value: number) {
   return new Intl.NumberFormat("en-US", {
     maximumSignificantDigits: 8,
@@ -508,7 +515,7 @@ export function playInput(input: unknown): string | undefined {
 }
 
 export function decodePlayStrategy(
-  value: string | null,
+  value?: string | null,
 ): PlaySettings | undefined {
   if (!value || value.length > 1024 || !/^[a-z0-9_-]+$/i.test(value)) return;
   try {
@@ -561,14 +568,19 @@ export function decodePlayStrategy(
   }
 }
 
-export function playParams(network: NetworkSlug, settings?: PlaySettings) {
-  const params = new URLSearchParams({ network });
-  if (settings) {
-    const value = btoa(JSON.stringify(settings))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
-    params.set("strategy", value);
-  }
-  return params;
+export function encodePlayStrategy(settings: PlaySettings) {
+  return btoa(JSON.stringify(settings))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+export function playPath(network?: NetworkSlug, strategy?: string) {
+  if (!network) return "/play";
+  return strategy ? `/play/${network}/${strategy}` : `/play/${network}`;
+}
+
+export function readPlayPath(pathname: string) {
+  const match = pathname.match(/^\/play(?:\/([^/]+)(?:\/([^/]+))?)?$/);
+  if (match) return { network: match[1], strategy: match[2] };
 }

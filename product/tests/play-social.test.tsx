@@ -2,10 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ImageResponse } from "next/og";
 import { renderToStaticMarkup } from "react-dom/server";
 import { humanPrice, priceAtTick } from "@yld-cx/sdk/ethereum";
-import { GET } from "@/app/play/og/route";
-import { generateMetadata } from "@/app/play/page";
+import { GET as scenarioImage } from "@/app/play/[network]/[strategy]/og/route";
+import { GET as networkImage } from "@/app/play/[network]/og/route";
+import { GET as genericImage } from "@/app/play/og/route";
+import { generateMetadata as scenarioMetadata } from "@/app/play/[network]/[strategy]/page";
+import { generateMetadata as networkMetadata } from "@/app/play/[network]/page";
+import { generateMetadata as genericMetadata } from "@/app/play/page";
 import { readPlaySelection } from "@/lib/play-market";
-import { decodePlayStrategy, playParams, PlayStrategy } from "@/lib/play";
+import {
+  encodePlayStrategy,
+  playPath,
+  PlayStrategy,
+  type PlaySettings,
+} from "@/lib/play";
 import { priceText } from "@/lib/market-values";
 
 vi.mock("next/og", () => ({
@@ -45,42 +54,48 @@ const settings = {
   target: "1870",
   rate: "0.5",
 };
-const params = Object.fromEntries(playParams("base", settings));
-const metadata = (value: Record<string, string>) =>
-  generateMetadata({ searchParams: Promise.resolve(value) });
-const image = (value: Record<string, string>) =>
-  GET(new Request("https://yld.cx/play/og?" + new URLSearchParams(value)));
+const scenario = (settings: PlaySettings) => ({
+  network: "base",
+  strategy: encodePlayStrategy(settings),
+});
+const params = scenario(settings);
+const metadata = (value: typeof params) =>
+  scenarioMetadata({
+    params: Promise.resolve(value),
+    searchParams: Promise.resolve({}),
+  });
+const image = (value: typeof params) =>
+  scenarioImage(
+    new Request(`https://yld.cx${playPath("base", value.strategy)}/og`),
+    {
+      params: Promise.resolve(value),
+    },
+  );
 
 describe("Yield Explorer social previews", () => {
   afterEach(() => vi.clearAllMocks());
   it("accepts a valid token outside the Yield List and validates the network", () => {
-    expect(readPlaySelection(new URLSearchParams(params))?.settings).toEqual(
-      settings,
-    );
+    expect(readPlaySelection(params)?.settings).toEqual(settings);
     expect(
-      readPlaySelection(
-        new URLSearchParams({ ...params, strategy: "unknown" }),
-      ),
+      readPlaySelection({ ...params, strategy: "unknown" }),
     ).toBeUndefined();
     expect(
-      readPlaySelection(new URLSearchParams({ ...params, network: "unknown" })),
+      readPlaySelection({ ...params, network: "unknown" }),
     ).toBeUndefined();
   });
   it("creates distinct OG and Twitter image URLs for different scenarios", async () => {
     const first = await metadata(params);
-    const second = await metadata(
-      Object.fromEntries(playParams("base", { ...settings, target: "2000" })),
-    );
+    const second = await metadata(scenario({ ...settings, target: "2000" }));
     expect(first.title).toBe("Bullish on WETH · Yield Explorer");
     expect(first.openGraph?.title).toBe(first.title);
     expect(first.twitter?.title).toBe(first.title);
     expect(first.description).toBe("Potential PnL · +95 USDC");
     const og = first.openGraph?.images as { url: string }[];
     const next = second.openGraph?.images as { url: string }[];
-    expect(og[0].url).toContain("/play/og?");
-    expect(
-      decodePlayStrategy(new URL(og[0].url).searchParams.get("strategy")),
-    ).toEqual(settings);
+    expect(first.openGraph?.url).toBe(
+      `https://yld.cx/play/base/${params.strategy}`,
+    );
+    expect(og[0].url).toBe(`${first.openGraph?.url}/og`);
     expect(og[0].url).not.toBe(next[0].url);
     expect(first.twitter?.images).toEqual([og[0].url]);
   });
@@ -138,18 +153,16 @@ describe("Yield Explorer social previews", () => {
       repayment,
       quoteAmount,
     }) => {
-      const query = Object.fromEntries(
-        playParams("base", {
-          id: PlayStrategy.UseLiquidity,
-          token: settings.token,
-          rentSelectedToken,
-          amount,
-          entry,
-        }),
-      );
+      const params = scenario({
+        id: PlayStrategy.UseLiquidity,
+        token: settings.token,
+        rentSelectedToken,
+        amount,
+        entry,
+      });
       const copy = `Rent ${asset} with ${quote}`;
-      expect((await metadata(query)).title).toBe(`${copy} · Yield Explorer`);
-      await image(query);
+      expect((await metadata(params)).title).toBe(`${copy} · Yield Explorer`);
+      await image(params);
       const html = renderToStaticMarkup(
         vi.mocked(ImageResponse).mock.calls[0][0],
       );
@@ -161,8 +174,8 @@ describe("Yield Explorer social previews", () => {
     },
   );
   it("shows the provided asset and quote proceeds in the Take Profit preview", async () => {
-    const query = Object.fromEntries(
-      playParams("base", {
+    await image(
+      scenario({
         ...settings,
         id: PlayStrategy.TakeProfit,
         amount: "4",
@@ -170,7 +183,6 @@ describe("Yield Explorer social previews", () => {
         target: "15",
       }),
     );
-    await image(query);
     const html = renderToStaticMarkup(
       vi.mocked(ImageResponse).mock.calls[0][0],
     );
@@ -183,39 +195,41 @@ describe("Yield Explorer social previews", () => {
       expect(html).toContain(text);
     }
   });
-  it("uses the Yield Book price formatting for a saved tick", async () => {
-    const targetTick = -200000;
-    const target = humanPrice(priceAtTick(targetTick), 18, 6);
-    await image(
-      Object.fromEntries(
-        playParams("base", { ...settings, target, targetTick }),
-      ),
-    );
-    const html = renderToStaticMarkup(
-      vi.mocked(ImageResponse).mock.calls[0][0],
-    );
-    expect(html).toContain(`>${priceText(target)} USDC</span>`);
-  });
+  it.each([undefined, -351200])(
+    "uses the Yield Book precision for entry and target prices with saved tick %s",
+    async (targetTick) => {
+      const target = humanPrice(priceAtTick(-351200), 18, 6);
+      await image(
+        scenario({ ...settings, entry: ".0003741863826", target, targetTick }),
+      );
+      const html = renderToStaticMarkup(
+        vi.mocked(ImageResponse).mock.calls[0][0],
+      );
+      expect(html).toContain(">0.000374186 USDC</span>");
+      expect(html).toContain(`>${priceText(target)} USDC</span>`);
+    },
+  );
   it("keeps the network in the preview when a strategy has not been selected", async () => {
-    const query = { network: "base" };
-    const page = await metadata(query);
+    const params = Promise.resolve({ network: "base" });
+    const page = await networkMetadata({
+      params,
+      searchParams: Promise.resolve({}),
+    });
     const title = "Yield Explorer";
     const subtitle = "Play yld.cx way on Base";
     expect(page.openGraph?.title).toBe(title);
     expect(page.twitter?.title).toBe(title);
     expect(page.openGraph?.description).toBe(subtitle);
     expect(page.twitter?.description).toBe(subtitle);
-    expect(page.openGraph?.url).toBe("https://yld.cx/play?network=base");
+    expect(page.openGraph?.url).toBe("https://yld.cx/play/base");
     expect(page.openGraph?.images).toEqual([
       expect.objectContaining({
-        url: "https://yld.cx/play/og?network=base",
+        url: "https://yld.cx/play/base/og",
         alt: title,
       }),
     ]);
-    expect(page.twitter?.images).toEqual([
-      "https://yld.cx/play/og?network=base",
-    ]);
-    await image(query);
+    expect(page.twitter?.images).toEqual(["https://yld.cx/play/base/og"]);
+    await networkImage(new Request("https://yld.cx/play/base/og"), { params });
     const html = renderToStaticMarkup(
       vi.mocked(ImageResponse).mock.calls[0][0],
     );
@@ -228,8 +242,8 @@ describe("Yield Explorer social previews", () => {
     );
   });
   it("uses a generic preview when there is no selected market", async () => {
-    expect((await metadata({})).title).toBe("Yield Explorer");
-    await image({ network: "unknown", strategy: "unknown" });
+    expect((await genericMetadata()).title).toBe("Yield Explorer");
+    await genericImage();
     const html = renderToStaticMarkup(
       vi.mocked(ImageResponse).mock.calls[0][0],
     );

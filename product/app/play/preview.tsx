@@ -1,24 +1,19 @@
 import { ImageResponse } from "next/og";
-import { getNetwork } from "@yld-cx/sdk/ethereum";
+import { getNetwork, type NetworkSlug } from "@yld-cx/sdk/ethereum";
 import {
   socialImageFrame,
   socialImageNetworkStyle,
   tokenLogoData,
 } from "@/components/layout/social-image";
-import {
-  playTokens,
-  readPlayNetwork,
-  readPlaySelection,
-} from "@/lib/play-market";
-import { priceText } from "@/lib/market-values";
+import { playTokens, readPlaySelection } from "@/lib/play-market";
 import {
   orientPlayPrice,
-  playDecimal,
   playFieldLabels,
   playFieldUnits,
   playFormat,
   playOutcome,
   playOutcomeText,
+  playPriceText,
   playQuoteText,
   playSigned,
   readPlayValues,
@@ -32,11 +27,9 @@ const headerRow = {
   gap: 24,
 };
 
-export async function GET(request: Request) {
-  const params = new URL(request.url).searchParams;
-  const network = readPlayNetwork(params);
+export async function playPreview(network?: NetworkSlug, encoded?: string) {
   const networkName = network && getNetwork(network).name;
-  const selection = readPlaySelection(params);
+  const selection = readPlaySelection({ network, strategy: encoded });
   const values = selection && readPlayValues(selection.settings);
   const tokens =
     selection && (await playTokens(selection.market, selection.settings));
@@ -53,6 +46,7 @@ export async function GET(request: Request) {
   const units = selection && playFieldUnits(selection.settings, asset, quote);
   const entry =
     selection && orientPlayPrice(selection.settings, selection.settings.entry);
+  const target = selection?.settings.target;
   const fields =
     labels && units && values
       ? [
@@ -65,13 +59,13 @@ export async function GET(request: Request) {
             value:
               entry === undefined
                 ? "—"
-                : `${playFormat(Number(entry))} ${units.entry}`,
+                : `${playPriceText(entry)} ${units.entry}`,
           },
-          ...(labels.target && values.target !== undefined
+          ...(labels.target && target
             ? [
                 {
                   label: labels.target,
-                  value: `${selection.settings.targetTick === undefined ? playFormat(values.target) : priceText(playDecimal(values.target))} ${quote}`,
+                  value: `${playPriceText(target)} ${quote}`,
                 },
               ]
             : []),
@@ -192,7 +186,7 @@ export async function GET(request: Request) {
                 style={{
                   fontSize: value.length > 20 ? 18 : 24,
                   fontWeight: 600,
-                  wordBreak: "break-all",
+                  wordBreak: "break-word",
                 }}
               >
                 {value}
@@ -242,7 +236,10 @@ export async function GET(request: Request) {
     {
       width: 1200,
       height: 630,
-      headers: { "Cache-Control": "public, max-age=300, s-maxage=300" },
+      headers: {
+        "Cache-Control":
+          "public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800",
+      },
     },
   );
 }

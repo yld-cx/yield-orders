@@ -6,13 +6,15 @@ import { playTickSlider } from "@/lib/play-market";
 import {
   PlayStrategy,
   decodePlayStrategy,
+  encodePlayStrategy,
   orientPlayPrice,
   playDefaultAmount,
   playFieldUnits,
-  playParams,
+  playPath,
   playStrategy,
   scenarioNumber,
   playOutcome,
+  readPlayPath,
   readPlayValues,
 } from "@/lib/play";
 
@@ -86,15 +88,13 @@ describe("Slider and shareable scenario", () => {
     },
   );
   it("caps saved Hold & Earn order prices at double the entry price", () => {
-    const params = playParams("base", {
+    const strategy = encodePlayStrategy({
       ...selection,
       id: PlayStrategy.HoldAndEarn,
       entry: "249.3296839",
       target: "2742.626523",
     });
-    expect(decodePlayStrategy(params.get("strategy"))?.target).toBe(
-      "498.6593678",
-    );
+    expect(decodePlayStrategy(strategy)?.target).toBe("498.6593678");
   });
   it("defaults to the amount worth 1,000 quote tokens when an entry price is available", () => {
     expect(playDefaultAmount({ id: PlayStrategy.Long })).toBe("1000");
@@ -134,10 +134,12 @@ describe("Slider and shareable scenario", () => {
       targetTick: -249400,
       rate: "0.5",
     };
-    const params = playParams("base", settings);
-    expect([...params.keys()]).toEqual(["network", "strategy"]);
-    expect(params.get("strategy")).toMatch(/^[\w-]+$/);
-    const decoded = decodePlayStrategy(params.get("strategy"))!;
+    const strategy = encodePlayStrategy(settings);
+    const path = playPath("base", strategy);
+    expect(path).toMatch(/^\/play\/base\/[\w-]+$/);
+    const route = readPlayPath(path);
+    expect(route?.network).toBe("base");
+    const decoded = decodePlayStrategy(route?.strategy)!;
     expect(decoded).toEqual(settings);
     expect(readPlayValues(decoded)).toEqual({
       amount: 1000,
@@ -203,14 +205,14 @@ describe("Slider and shareable scenario", () => {
     ).toBeUndefined();
   });
   it("uses the saved quote price in Use Liquidity links", () => {
-    const params = playParams("base", {
+    const strategy = encodePlayStrategy({
       ...selection,
       id: PlayStrategy.UseLiquidity,
       amount: "1000",
       entry: "0.1",
       rentSelectedToken: false,
     });
-    const decoded = decodePlayStrategy(params.get("strategy"))!;
+    const decoded = decodePlayStrategy(strategy)!;
     const previousLink = Buffer.from(
       JSON.stringify({ ...decoded, id: "access-liquidity" }),
     ).toString("base64url");
@@ -260,9 +262,7 @@ describe("Slider and shareable scenario", () => {
     expect(readPlayValues({ ...settings, rate: "NaN" })).toBeUndefined();
     expect(decodePlayStrategy("malformed!")).toBeUndefined();
     expect(
-      decodePlayStrategy(
-        playParams("base", { ...settings, token: "invalid" }).get("strategy"),
-      ),
+      decodePlayStrategy(encodePlayStrategy({ ...settings, token: "invalid" })),
     ).toBeUndefined();
   });
 });
