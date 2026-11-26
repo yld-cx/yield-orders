@@ -45,6 +45,7 @@ import {
   TransactionTerminalError,
   AtomicUnavailableError,
   supportsAtomic,
+  TransactionStatus,
   type NetworkSlug,
   type Preview,
   type TransactionStage,
@@ -65,7 +66,27 @@ import {
   DialogHeader,
 } from "@yld-cx/ui/components/ui/dialog";
 import { NetworkGuard } from "@/components/wallet/wallet-connect";
-import { TransactionPreview } from "./transaction-preview";
+import { TransactionDetails, TransactionPreview } from "./transaction-preview";
+
+const enum TransactionFlowStage {
+  Idle = "idle",
+  Preparing = "preparing",
+  Approval = "approval",
+  Review = "review",
+}
+
+type Stage = TransactionStage | TransactionFlowStage;
+
+const BUSY_STAGES = new Set<Stage>([
+  TransactionFlowStage.Preparing,
+  TransactionStatus.Verifying,
+  TransactionStatus.ApprovingReset,
+  TransactionStatus.Approving,
+  TransactionStatus.Simulating,
+  TransactionStatus.Signing,
+  TransactionStatus.Submitted,
+  TransactionStatus.Pending,
+]);
 
 const ACTION_ICONS: Record<string, LucideIcon> = {
   Provide: Droplets,
@@ -131,9 +152,7 @@ function TransactionSession({
   onSuccess,
   validatePreview,
 }: Parameters<typeof TransactionFlow>[0]) {
-  const [stage, setStage] = useState<
-    TransactionStage | "idle" | "preparing" | "approval" | "review"
-  >("idle");
+  const [stage, setStage] = useState<Stage>(TransactionFlowStage.Idle);
   const [error, setError] = useState(""),
     [preview, setPreview] = useState<Preview>(),
     [action, setAction] = useState<EconomicAction | MarketSwapAction>(),
@@ -157,12 +176,12 @@ function TransactionSession({
   });
   const batch = useSendCalls();
   useEffect(() => {
-    if (!marketSwap || stage !== "review") return;
+    if (!marketSwap || stage !== TransactionFlowStage.Review) return;
     const timer = setTimeout(
       () => {
         setMarketSwap(undefined);
         setError("Quote expired. Review a fresh quote.");
-        setStage("idle");
+        setStage(TransactionFlowStage.Idle);
       },
       Math.max(0, marketSwap.quote.expiresAt - Date.now()),
     );
@@ -174,20 +193,13 @@ function TransactionSession({
       mounted.current = false;
     };
   }, []);
-  const busy = [
-    "preparing",
-    "verifying",
-    "approving-reset",
-    "approving",
-    "simulating",
-    "signing",
-    "submitted",
-    "pending",
-  ].includes(stage);
-  const blocking = busy && stage !== "pending" && stage !== "submitted";
-  const previewLoading = ["preparing", "verifying", "simulating"].includes(
-    stage,
-  );
+  const busy = BUSY_STAGES.has(stage);
+  const waitingForConfirmation =
+    stage === TransactionStatus.Pending || stage === TransactionStatus.Submitted;
+  const blocking = busy && !waitingForConfirmation;
+  const previewLoading = stage === TransactionFlowStage.Preparing;
+  const checkingTransaction =
+    stage === TransactionStatus.Verifying || stage === TransactionStatus.Simulating;
   const status = (next: TransactionStage, txHash?: `0x${string}`) => {
     if (!mounted.current) return;
     setStage(next);
@@ -198,7 +210,7 @@ function TransactionSession({
     minBlock?: bigint,
     sequential = !!atomicUnavailable,
   ) {
-    setStage("preparing");
+    setStage(TransactionFlowStage.Preparing);
     if (next.kind === "market-swap") {
       setMarketSwap(undefined);
       if (
@@ -216,7 +228,7 @@ function TransactionSession({
       await capabilities.refetch();
       if (!mounted.current) return;
       setMarketSwap({ quote, calls });
-      setStage("review");
+      setStage(TransactionFlowStage.Review);
       return;
     }
     const input = await sdk.requiredInput(next);
@@ -231,14 +243,13 @@ function TransactionSession({
       if (allowance < input.allowanceAmount) {
         const detected = await capabilities.refetch();
         if (!sequential && supportsAtomic(detected.data)) {
-          setStage("simulating");
           try {
             const simulated = await sdk.preview(next, account.address!, {
               atomic: true,
             });
             await validatePreview?.(simulated);
             setPreview(simulated);
-            setStage("review");
+            setStage(TransactionFlowStage.Review);
             return;
           } catch (e) {
             if (
@@ -252,15 +263,14 @@ function TransactionSession({
             );
           }
         }
-        setStage("approval");
+        setStage(TransactionFlowStage.Approval);
         return;
       }
     }
-    setStage("simulating");
     const simulated = await sdk.preview(next, account.address!, { minBlock });
     await validatePreview?.(simulated);
     setPreview(simulated);
-    setStage("review");
+    setStage(TransactionFlowStage.Review);
   }
   async function review() {
     setOpen(true);
@@ -273,15 +283,15 @@ function TransactionSession({
     setAtomicUnavailable("");
     setError("");
     setHash(undefined);
-    setStage("preparing");
+    setStage(TransactionFlowStage.Preparing);
     try {
-      if (!account.address) throw new Error("Connect your wallet first");
+      if (!account.address) throw new Error("Sign in first");
       const next = await prepare();
       setAction(next);
       await refresh(next, undefined, false);
     } catch (e) {
       setError(explainError(e));
-      setStage("idle");
+      setStage(TransactionFlowStage.Idle);
     } finally {
       locked.current = false;
     }
@@ -291,7 +301,7 @@ function TransactionSession({
     locked.current = true;
     setError("");
     setHash(undefined);
-    setStage("verifying");
+    setStage(TransactionStatus.Verifying);
     let approved = false;
     try {
       if (
@@ -311,7 +321,9 @@ function TransactionSession({
       await refresh(action, minBlock);
     } catch (e) {
       setError(explainError(e));
-      setStage(approved ? "idle" : "approval");
+      setStage(
+        approved ? TransactionFlowStage.Idle : TransactionFlowStage.Approval,
+      );
     } finally {
       locked.current = false;
     }
@@ -321,7 +333,7 @@ function TransactionSession({
     locked.current = true;
     setError("");
     setHash(undefined);
-    setStage("verifying");
+    setStage(TransactionStatus.Verifying);
     let confirmed = false;
     try {
       if (action?.kind === "market-swap" && marketSwap) {
@@ -360,7 +372,11 @@ function TransactionSession({
         await assertWallet();
         let hash: Hex;
         const atomic = calls.length > 1 && marketAtomic;
-        setStage(atomic || calls.length === 1 ? "signing" : "approving");
+        setStage(
+          atomic || calls.length === 1
+            ? TransactionStatus.Signing
+            : TransactionStatus.Approving,
+        );
         if (atomic) {
           let sent;
           try {
@@ -377,7 +393,7 @@ function TransactionSession({
               );
             throw error;
           }
-          setStage("submitted");
+          setStage(TransactionStatus.Submitted);
           const receipt = await waitForCallsStatus(signer, {
             id: sent.id,
             timeout: RECEIPT_TIMEOUT_MS,
@@ -399,7 +415,7 @@ function TransactionSession({
             chain: getNetwork(network).chain,
           });
         }
-        status("pending", hash);
+        status(TransactionStatus.Pending, hash);
         const receipt = await waitForTransactionReceipt(signer, {
           hash,
           timeout: RECEIPT_TIMEOUT_MS,
@@ -409,7 +425,7 @@ function TransactionSession({
               throw new TransactionTerminalError(
                 "Transaction cancelled or replaced. Review a fresh quote.",
               );
-            status("pending", replacement.transaction.hash);
+            status(TransactionStatus.Pending, replacement.transaction.hash);
           },
         });
         if (receipt.status !== "success")
@@ -460,7 +476,7 @@ function TransactionSession({
       await finish(result);
     } catch (e) {
       if (confirmed) {
-        setStage("confirmed");
+        setStage(TransactionStatus.Confirmed);
         setError(
           `Transaction confirmed, but refreshing the view failed. ${explainError(e)}`,
         );
@@ -473,14 +489,14 @@ function TransactionSession({
           await refresh(action, undefined, true);
         } catch (refreshError) {
           setError(explainError(refreshError));
-          setStage("idle");
+          setStage(TransactionFlowStage.Idle);
         }
         return;
       }
       if (action?.kind === "market-swap") {
         setMarketSwap(undefined);
         setError(explainError(e));
-        setStage("idle");
+        setStage(TransactionFlowStage.Idle);
         return;
       }
       if (e instanceof PreviewChangedError) setPreview(e.preview);
@@ -498,17 +514,19 @@ function TransactionSession({
       setError(explainError(e));
       if (e instanceof TransactionTerminalError) {
         setPreview(undefined);
-        setStage("idle");
+        setStage(TransactionFlowStage.Idle);
         return;
       }
-      setStage(preview ? "review" : "idle");
+      setStage(
+        preview ? TransactionFlowStage.Review : TransactionFlowStage.Idle,
+      );
       if (!preview?.walletCalls && required && account.address) {
         try {
           if (
             (await sdk.allowance(required.token, account.address)) <
             required.allowanceAmount
           )
-            setStage("approval");
+            setStage(TransactionFlowStage.Approval);
         } catch {
           /* Keep the preview available for another validated attempt. */
         }
@@ -519,7 +537,7 @@ function TransactionSession({
   }
   async function finish(result: TransactionResult) {
     if (!mounted.current) return;
-    setStage("confirmed");
+    setStage(TransactionStatus.Confirmed);
     setHash(result.hash);
     await Promise.all(
       [
@@ -556,6 +574,16 @@ function TransactionSession({
         (t) => t?.address.toLowerCase() === required.token.toLowerCase(),
       )
     : undefined;
+  const transactionLink = hash && (
+    <a
+      className="block text-sm text-primary"
+      href={`${getNetwork(network).chain.blockExplorers.default.url}/tx/${hash}`}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      View transaction ↗
+    </a>
+  );
   return (
     <div className="transaction-flow">
       {showNetworkGuard && <NetworkGuard chainId={sdk.chainId} />}
@@ -582,10 +610,10 @@ function TransactionSession({
             return;
           }
           setOpen(next);
-          if (!next && stage === "confirmed") {
+          if (!next && stage === TransactionStatus.Confirmed) {
             setAction(undefined);
             setPreview(undefined);
-            setStage("idle");
+            setStage(TransactionFlowStage.Idle);
           }
         }}
         disablePointerDismissal={blocking}
@@ -596,7 +624,7 @@ function TransactionSession({
         >
           <DialogHeader>
             <DialogTitle>
-              {stage === "confirmed"
+              {stage === TransactionStatus.Confirmed
                 ? "Transaction confirmed"
                 : `Preview ${actionName}`}
             </DialogTitle>
@@ -604,10 +632,11 @@ function TransactionSession({
               {getNetwork(network).name} · Verify amounts before signing.
             </DialogDescription>
           </DialogHeader>
-          {atomicUnavailable && (stage === "approval" || marketSwap) && (
-            <Message>{atomicUnavailable}</Message>
-          )}
-          {stage === "approval" && required && (
+          {atomicUnavailable &&
+            (stage === TransactionFlowStage.Approval || marketSwap) && (
+              <Message>{atomicUnavailable}</Message>
+            )}
+          {stage === TransactionFlowStage.Approval && required && (
             <>
               <Message>
                 Approve the token to simulate your full preview.
@@ -635,8 +664,13 @@ function TransactionSession({
             </>
           )}
           {preview && !previewLoading && (
-            <TransactionPreview preview={preview} asset={asset} quote={quote} />
-          )}{" "}
+            <TransactionPreview
+              preview={preview}
+              asset={asset}
+              quote={quote}
+              transactionLink={transactionLink}
+            />
+          )}
           {marketSwap && !previewLoading && (
             <div className="space-y-3 border-t pt-3">
               <Metric label="You provide">
@@ -655,8 +689,10 @@ function TransactionSession({
                   ? `${amountText(BigInt(marketSwap.quote.minimumAmountOut), quote.decimals)} ${quote.symbol}`
                   : marketSwap.quote.minimumAmountOut}
               </Metric>
-              <details className="space-y-2 text-xs text-muted-foreground">
-                <summary>Transaction details</summary>
+              <TransactionDetails
+                className="space-y-2"
+                transactionLink={transactionLink}
+              >
                 {[
                   ["Recipient", account.address!],
                   ["Token spender", PERMIT2],
@@ -676,10 +712,10 @@ function TransactionSession({
                     </a>
                   </Metric>
                 ))}
-              </details>
+              </TransactionDetails>
             </div>
           )}
-          {stage === "review" && (
+          {stage === TransactionFlowStage.Review && (
             <Button className="w-full" onClick={() => void execute()}>
               {marketSwap
                 ? marketApproval
@@ -696,37 +732,40 @@ function TransactionSession({
                   : `Confirm ${actionName}`}
             </Button>
           )}
+          {transactionLink && (previewLoading || (!preview && !marketSwap)) && (
+            <div className="text-right">{transactionLink}</div>
+          )}
           {busy && (
-            <Message busy>
-              {stage === "pending" || stage === "submitted"
+            <Message
+              busy
+              className={
+                waitingForConfirmation ||
+                (!previewLoading && (preview || marketSwap))
+                  ? "my-0 min-h-8 content-center py-0 leading-none"
+                  : undefined
+              }
+            >
+              {waitingForConfirmation
                 ? "Waiting for onchain confirmation…"
-                : stage === "approving-reset"
+                : stage === TransactionStatus.ApprovingReset
                   ? "Reset allowance in your wallet…"
-                  : stage === "approving"
+                  : stage === TransactionStatus.Approving
                     ? "Approve token allowance in your wallet…"
-                    : stage === "signing"
+                    : stage === TransactionStatus.Signing
                       ? "Confirm the transaction in your wallet…"
-                      : "Preparing transaction preview…"}
+                      : checkingTransaction
+                        ? "Checking transaction…"
+                        : "Preparing transaction preview…"}
             </Message>
           )}
-          {hash && (
-            <a
-              className="text-sm text-primary"
-              href={`${getNetwork(network).chain.blockExplorers.default.url}/tx/${hash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              View transaction ↗
-            </a>
-          )}
           {error && <Message error>{error}</Message>}
-          {stage === "confirmed" && (
+          {stage === TransactionStatus.Confirmed && (
             <DialogClose render={<Button className="w-full" />}>
               <Check aria-hidden="true" data-icon="inline-start" />
               Done
             </DialogClose>
           )}
-          {stage === "idle" && (
+          {stage === TransactionFlowStage.Idle && (
             <Button variant="outline" onClick={() => void review()}>
               Retry {actionName}
             </Button>

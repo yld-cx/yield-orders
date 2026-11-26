@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { getNetwork, humanPrice, type Preview } from "@yld-cx/sdk/ethereum";
 import { Q128, type Token } from "@yld-cx/sdk";
 import { Message, Metric } from "@/components/forms/financial-fields";
@@ -10,14 +11,41 @@ import {
   tickYieldText,
 } from "@/lib/yield";
 import { ApyLabel } from "@/components/forms/yield-display";
+
+export function TransactionDetails({
+  children,
+  transactionLink,
+  className,
+}: {
+  children: ReactNode;
+  transactionLink?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className="relative text-xs text-muted-foreground">
+      <details className={className}>
+        <summary className="w-fit leading-5 cursor-pointer">
+          Transaction details
+        </summary>
+        {children}
+      </details>
+      {transactionLink && (
+        <div className="absolute top-0 right-0">{transactionLink}</div>
+      )}
+    </div>
+  );
+}
+
 export function TransactionPreview({
   preview,
   asset,
   quote,
+  transactionLink,
 }: {
   preview: Preview;
   asset?: Token;
   quote?: Token;
+  transactionLink?: ReactNode;
 }) {
   const a = (value: bigint) =>
     asset
@@ -227,8 +255,7 @@ export function TransactionPreview({
           Process matured positions.
         </Message>
       )}
-      <details className="text-xs text-muted-foreground">
-        <summary>Transaction details</summary>
+      <TransactionDetails transactionLink={transactionLink}>
         <Metric label="Network">
           {getNetwork(`eip155:${preview.chainId}`).name} · {preview.chainId}
         </Metric>
@@ -245,7 +272,7 @@ export function TransactionPreview({
         )}
         <Metric label="Estimated gas units">{preview.gas.toString()}</Metric>
         <Metric label="Preview block">{preview.blockNumber.toString()}</Metric>
-      </details>
+      </TransactionDetails>
     </div>
   );
 }

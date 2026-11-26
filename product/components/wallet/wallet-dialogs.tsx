@@ -360,7 +360,7 @@ export function ConnectedWalletDialog({
           }}
         >
           <LogOut size={15} />
-          {WALLET_TEXT.connected.disconnect}
+          {WALLET_TEXT.connected.signOut}
         </Button>
       </div>
     </WalletDialog>

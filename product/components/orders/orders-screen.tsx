@@ -133,7 +133,7 @@ function OrdersForWallet({ network }: { network: NetworkSlug }) {
       {!account.address ? (
         <Card className="items-center text-center [&_h2]:text-xl [&_h3]:text-lg [&_p]:max-w-xl [&_p]:text-muted-foreground">
           <CardContent className="space-y-4">
-            <p>Connect to see your Orders</p>
+            <p>Sign in to see your Orders</p>
             <WalletConnect />
           </CardContent>
         </Card>
