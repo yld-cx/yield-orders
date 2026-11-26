@@ -513,7 +513,7 @@ for (const rememberedWallet of [false, true]) {
         page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
       ).toBeVisible({ timeout: 15000 });
       await page
-        .getByRole("button", { name: "Connect wallet", exact: true })
+        .getByRole("button", { name: "Sign in", exact: true })
         .click();
       await page.getByRole("button", { name: "MetaMask", exact: true }).click();
       await expect(
@@ -632,9 +632,10 @@ test("wallet options hide unavailable browser and Safe providers", async ({
 }) => {
   await page.goto("/");
   await page
-    .getByRole("button", { name: "Connect wallet", exact: true })
+    .getByRole("button", { name: "Sign in", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
+  await expect(dialog).toHaveAccessibleName("Sign in");
   await expect(
     dialog.getByRole("button", { name: "Coinbase Wallet", exact: true }),
   ).toBeVisible();
@@ -655,7 +656,7 @@ for (const wallet of ["Phantom", "MetaMask"] as const) {
     test.skip(!isMobile, "Deep links are available only on mobile");
     await page.goto("/orders?ref=a%26b&search=WETH%20%2F%20USDC#positions");
     await page
-      .getByRole("button", { name: "Connect wallet", exact: true })
+      .getByRole("button", { name: "Sign in", exact: true })
       .first()
       .click();
     const option = page
@@ -684,7 +685,7 @@ for (const wallet of ["Phantom", "MetaMask"] as const) {
   }) => {
     await page.goto("/orders?ref=a%26b&search=WETH%20%2F%20USDC");
     await page
-      .getByRole("button", { name: "Connect wallet", exact: true })
+      .getByRole("button", { name: "Sign in", exact: true })
       .first()
       .click();
     const dialog = page.getByRole("dialog");
@@ -763,7 +764,7 @@ for (const profile of [
     }, profile);
     await page.goto("/");
     await page
-      .getByRole("button", { name: "Connect wallet", exact: true })
+      .getByRole("button", { name: "Sign in", exact: true })
       .click();
     await expect(
       page
@@ -779,7 +780,7 @@ test("wallet options name a late discovered wallet without requesting access", a
 }) => {
   await page.goto("/");
   await page
-    .getByRole("button", { name: "Connect wallet", exact: true })
+    .getByRole("button", { name: "Sign in", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
@@ -865,18 +866,18 @@ test("wallet options name a late discovered wallet without requesting access", a
     await expect(fullAddress).toBeVisible();
     await expect(shortAddress).toBeHidden();
   }
-  await dialog.getByRole("button", { name: "Disconnect", exact: true }).click();
+  await dialog.getByRole("button", { name: "Sign out", exact: true }).click();
   const connectWallet = page.getByRole("button", {
-    name: "Connect wallet",
+    name: "Sign in",
     exact: true,
   });
   await expect(connectWallet).toBeVisible();
   await connectWallet.click();
   await expect(dialog).toHaveAccessibleDescription(
-    "Choose your wallet to connect.",
+    "Create an account or connect your wallet.",
   );
   await expect(rabby).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Disconnect" })).toHaveCount(
+  await expect(dialog.getByRole("button", { name: "Sign out" })).toHaveCount(
     0,
   );
 });
@@ -890,18 +891,18 @@ test("connected wallet shows header status and copies the full address", async (
   await page.goto("/");
   const header = page.getByRole("banner");
   const connectedStatus = header.getByRole("status", {
-    name: "Wallet connected",
+    name: "Signed in",
   });
   await expect(connectedStatus).toHaveCount(0);
   await header
-    .getByRole("button", { name: "Connect wallet", exact: true })
+    .getByRole("button", { name: "Sign in", exact: true })
     .click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   await expect(connectedStatus).toBeVisible();
   const wallet = header.getByRole("button", { name: "0x0000…0001" });
   await expect(wallet).toHaveAttribute(
     "title",
-    "Wallet connected: 0x0000000000000000000000000000000000000001",
+    "Signed in as 0x0000000000000000000000000000000000000001",
   );
   await wallet.click();
   const dialog = page.getByRole("dialog");
@@ -948,10 +949,10 @@ test("connected wallet shows header status and copies the full address", async (
   });
   await copy.click();
   await expect(copyIcon).toBeVisible();
-  await dialog.getByRole("button", { name: "Disconnect", exact: true }).click();
+  await dialog.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(connectedStatus).toHaveCount(0);
   await expect(
-    header.getByRole("button", { name: "Connect wallet", exact: true }),
+    header.getByRole("button", { name: "Sign in", exact: true }),
   ).toBeVisible();
 });
 
@@ -961,7 +962,7 @@ test("multiple injected providers, wallet selection, account and network switchi
   await injectWallets(page);
   await page.goto("/");
   await page
-    .getByRole("button", { name: "Connect wallet", exact: true })
+    .getByRole("button", { name: "Sign in", exact: true })
     .click();
   await expect(
     page.getByRole("button", { name: "MetaMask", exact: true }),
@@ -1017,7 +1018,7 @@ test("network selector switches the connected wallet and preserves market filter
   await injectWallets(page);
   await page.goto("/?network=ethereum&search=WETH&ref=test#markets");
   await page
-    .getByRole("button", { name: "Connect wallet", exact: true })
+    .getByRole("button", { name: "Sign in", exact: true })
     .click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   const wallet = page.getByRole("button", { name: "0x0000…0001" });
@@ -1077,7 +1078,7 @@ for (const [reason, code] of [
     await injectWallets(page);
     await page.goto("/?network=ethereum");
     await page
-      .getByRole("button", { name: "Connect wallet", exact: true })
+      .getByRole("button", { name: "Sign in", exact: true })
       .click();
     await page.getByRole("button", { name: "MetaMask", exact: true }).click();
     const wallet = page.getByRole("button", { name: "0x0000…0001" });
@@ -1122,7 +1123,7 @@ test("Orders connection and invalid pair validation", async ({ page }) => {
   await expect(
     page
       .getByRole("main")
-      .getByText("Connect to see your Orders", { exact: true }),
+      .getByText("Sign in to see your Orders", { exact: true }),
   ).toBeVisible();
   await page.goto("/market/open");
   await page.getByRole("combobox", { name: "Token A selection" }).click();
@@ -1815,7 +1816,7 @@ async function transactionRpc(
   await injectWallets(page, true);
   await page.goto(`/market/base/${key}`);
   await page
-    .getByRole("button", { name: "Connect wallet", exact: true })
+    .getByRole("button", { name: "Sign in", exact: true })
     .click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   await expect(

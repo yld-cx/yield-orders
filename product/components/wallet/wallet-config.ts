@@ -18,9 +18,9 @@ export const QR_CODE_OPTIONS = { errorCorrectionLevel: "L" } as const;
 
 export const WALLET_TEXT = {
   connect: {
-    trigger: "Connect wallet",
-    title: "Connect Wallet",
-    description: "Choose your wallet to connect.",
+    trigger: "Sign in",
+    title: "Sign in",
+    description: "Create an account or connect your wallet.",
     other: "Other",
   },
   walletConnect: {
@@ -33,20 +33,20 @@ export const WALLET_TEXT = {
   connected: {
     title: "Your wallet",
     description: "Manage your connected wallet.",
-    status: "Wallet connected",
-    tooltip: (address?: string) => `Wallet connected: ${address}`,
+    status: "Signed in",
+    tooltip: (address?: string) => `Signed in as ${address}`,
     genericName: "Connected wallet",
     copyAddress: "Copy address",
     network: "Network:",
     unsupportedNetwork: (chainId?: number) => `Unsupported (${chainId})`,
-    disconnect: "Disconnect",
+    signOut: "Sign out",
   },
   clipboard: {
     copied: "Copied",
     unavailable: "Clipboard unavailable",
   },
   network: {
-    disconnected: "Connect a wallet to transact.",
+    disconnected: "Sign in to transact.",
     current: (name?: string) =>
       `Your wallet is on ${name ?? "an unsupported network"}.`,
     switch: "Switch network",

@@ -275,7 +275,7 @@ function TransactionSession({
     setHash(undefined);
     setStage("preparing");
     try {
-      if (!account.address) throw new Error("Connect your wallet first");
+      if (!account.address) throw new Error("Sign in first");
       const next = await prepare();
       setAction(next);
       await refresh(next, undefined, false);
