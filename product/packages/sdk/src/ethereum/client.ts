@@ -99,15 +99,17 @@ export interface PortfolioPage {
   offset: number;
   hasMore: boolean;
 }
-export type TransactionStage =
-  | "verifying"
-  | "approving-reset"
-  | "approving"
-  | "simulating"
-  | "signing"
-  | "submitted"
-  | "pending"
-  | "confirmed";
+export const enum TransactionStatus {
+  Verifying = "verifying",
+  ApprovingReset = "approving-reset",
+  Approving = "approving",
+  Simulating = "simulating",
+  Signing = "signing",
+  Submitted = "submitted",
+  Pending = "pending",
+  Confirmed = "confirmed",
+}
+export type TransactionStage = `${TransactionStatus}`;
 export type StatusCallback = (stage: TransactionStage, hash?: Hex) => void;
 export function actionData(action: EconomicAction): Hex {
   switch (action.kind) {
@@ -928,7 +930,7 @@ export class EthereumClient {
     wallet: WalletClient,
     onStatus?: StatusCallback,
   ): Promise<TransactionReceipt> {
-    onStatus?.("pending", hash);
+    onStatus?.(TransactionStatus.Pending, hash);
     const receipt = await waitForTransactionReceipt(wallet, {
       hash,
       timeout: RECEIPT_TIMEOUT_MS,
@@ -938,7 +940,7 @@ export class EthereumClient {
           throw new TransactionTerminalError(
             "Transaction cancelled or replaced with different data. Review current state.",
           );
-        onStatus?.("pending", replacement.transaction.hash);
+        onStatus?.(TransactionStatus.Pending, replacement.transaction.hash);
       },
     });
     if (receipt.status !== "success")
@@ -954,7 +956,7 @@ export class EthereumClient {
     onStatus?: StatusCallback,
   ): Promise<bigint | undefined> {
     return this.exclusive(account, async () => {
-      onStatus?.("verifying");
+      onStatus?.(TransactionStatus.Verifying);
       await this.verifyDeployment();
       await this.assertWallet(wallet, account);
       let minBlock: bigint | undefined;
@@ -969,7 +971,9 @@ export class EthereumClient {
       if (allowance >= input.allowanceAmount) return minBlock;
       const approve = async (amount: bigint, reset: boolean) => {
         await this.assertWallet(wallet, account);
-        onStatus?.(reset ? "approving-reset" : "approving");
+        onStatus?.(
+          reset ? TransactionStatus.ApprovingReset : TransactionStatus.Approving,
+        );
         const { request } = await this.publicClient.simulateContract({
           address: input.token,
           abi: erc20Abi,
@@ -979,7 +983,7 @@ export class EthereumClient {
         });
         await this.assertWallet(wallet, account);
         const hash = await wallet.writeContract(request);
-        onStatus?.("submitted", hash);
+        onStatus?.(TransactionStatus.Submitted, hash);
         const receipt = await this.waitForReceipt(hash, wallet, onStatus);
         minBlock = receipt.blockNumber;
       };
@@ -1005,10 +1009,10 @@ export class EthereumClient {
     return this.exclusive(preview.account, async () => {
       if (preview.chainId !== this.chainId)
         throw new Error("Preview belongs to another network");
-      onStatus?.("verifying");
+      onStatus?.(TransactionStatus.Verifying);
       await this.verifyDeployment();
       await this.assertWallet(wallet, preview.account);
-      onStatus?.("simulating");
+      onStatus?.(TransactionStatus.Simulating);
       let block = await this.publicClient.getBlock();
       if (block.number < preview.blockNumber)
         block = await this.publicClient.getBlock({
@@ -1072,7 +1076,7 @@ export class EthereumClient {
         }
       }
       await this.assertWallet(wallet, preview.account);
-      onStatus?.("signing");
+      onStatus?.(TransactionStatus.Signing);
       let hash: Hex;
       if (preview.walletCalls) {
         let id: string;
@@ -1092,7 +1096,7 @@ export class EthereumClient {
             );
           throw error;
         }
-        onStatus?.("submitted");
+        onStatus?.(TransactionStatus.Submitted);
         const batch = await waitForCallsStatus(wallet, {
           id,
           timeout: RECEIPT_TIMEOUT_MS,
@@ -1104,10 +1108,10 @@ export class EthereumClient {
         hash = batch.receipts[0].transactionHash;
       } else {
         hash = await wallet.writeContract(request!);
-        onStatus?.("submitted", hash);
+        onStatus?.(TransactionStatus.Submitted, hash);
       }
       const receipt = await this.waitForReceipt(hash, wallet, onStatus);
-      onStatus?.("confirmed", receipt.transactionHash);
+      onStatus?.(TransactionStatus.Confirmed, receipt.transactionHash);
       return this.result(receipt);
     });
   }

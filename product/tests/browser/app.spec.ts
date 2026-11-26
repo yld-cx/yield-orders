@@ -2618,12 +2618,21 @@ for (const submitted of ["approval", "transaction"] as const) {
         exact: true,
       })
       .click();
-    await expect(
-      dialog.getByText("Waiting for onchain confirmation…", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      dialog.getByRole("button", { name: "Done", exact: true }),
-    ).toHaveCount(0);
+    const waiting = dialog.getByRole("status").filter({
+      hasText: "Waiting for onchain confirmation…",
+    });
+    const link = dialog.getByRole("link", { name: "View transaction ↗" });
+    const done = dialog.getByRole("button", { name: "Done", exact: true });
+    await expect(waiting).toBeVisible();
+    await expect(link).toBeVisible();
+    await expect(done).toHaveCount(0);
+    const [waitingBounds, linkBounds] = await Promise.all([
+      waiting.boundingBox(),
+      link.boundingBox(),
+    ]);
+    expect(waitingBounds!.y).toBeGreaterThanOrEqual(
+      linkBounds!.y + linkBounds!.height,
+    );
     expect(state.writes).toEqual([
       [submitted === "approval" ? "approve" : "supply"],
     ]);
@@ -2631,8 +2640,12 @@ for (const submitted of ["approval", "transaction"] as const) {
     await expect(
       submitted === "approval"
         ? dialog.getByRole("button", { name: "Confirm Provide", exact: true })
-        : dialog.getByRole("button", { name: "Done", exact: true }),
+        : done,
     ).toBeVisible({ timeout: 10000 });
+    if (submitted === "transaction") {
+      expect(await link.boundingBox()).toEqual(linkBounds);
+      expect(await done.boundingBox()).toEqual(waitingBounds);
+    }
     expect(state.writes).toHaveLength(1);
   });
 }
@@ -3028,22 +3041,56 @@ test("pending atomic batch waits for wallet execution", async ({ page }) => {
   });
   state.batchPending = true;
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("button", { name: "Approve & Provide", exact: true })
-    .click();
-  await expect(
-    dialog.getByText("Waiting for onchain confirmation…", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "Done", exact: true }),
-  ).toHaveCount(0);
+  const confirm = dialog.getByRole("button", {
+    name: "Approve & Provide",
+    exact: true,
+  });
+  const confirmBounds = await confirm.boundingBox();
+  let releaseSimulation!: () => void;
+  const simulation = new Promise<void>((resolve) => {
+    releaseSimulation = resolve;
+  });
+  await page.route("https://mainnet.base.org", async (route) => {
+    const body = route.request().postDataJSON();
+    const requests = Array.isArray(body) ? body : [body];
+    if (requests.some((request) => request.method === "eth_simulateV1"))
+      await simulation;
+    await route.fallback();
+  });
+  await confirm.click();
+  try {
+    const checking = dialog.getByRole("status").filter({
+      hasText: "Checking transaction…",
+    });
+    await expect(checking).toBeVisible();
+    await expect(
+      dialog.getByText("Estimated APY", { exact: true }),
+    ).toBeVisible();
+    expect(await checking.boundingBox()).toEqual(confirmBounds);
+    expect(state.batches).toHaveLength(0);
+  } finally {
+    releaseSimulation();
+  }
+  const waiting = dialog.getByRole("status").filter({
+    hasText: "Waiting for onchain confirmation…",
+  });
+  const link = dialog.getByRole("link", { name: "View transaction ↗" });
+  const done = dialog.getByRole("button", { name: "Done", exact: true });
+  await expect(waiting).toBeVisible();
+  await expect(link).toHaveCount(0);
+  await expect(done).toHaveCount(0);
+  const waitingBounds = await waiting.boundingBox();
   expect(state.batches).toHaveLength(1);
   state.batchPending = false;
-  await expect(
-    dialog.getByRole("button", { name: "Done", exact: true }),
-  ).toBeVisible({
-    timeout: 10000,
-  });
+  await expect(done).toBeVisible({ timeout: 10000 });
+  await expect(link).toBeVisible();
+  const detailsBounds = await dialog
+    .getByText("Transaction details", { exact: true })
+    .boundingBox();
+  const linkBounds = await link.boundingBox();
+  expect(linkBounds!.x).toBeGreaterThan(detailsBounds!.x + detailsBounds!.width);
+  expect(linkBounds!.y).toBe(detailsBounds!.y);
+  expect(await done.boundingBox()).toEqual(waitingBounds);
   expect(state.batches).toHaveLength(1);
 });
 test("batch rejection permits a deliberate retry and reverted batch requires a new preview", async ({
