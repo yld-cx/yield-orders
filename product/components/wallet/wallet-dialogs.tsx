@@ -15,7 +15,8 @@ import {
 } from "wagmi";
 import type { EthereumProvider } from "@walletconnect/ethereum-provider";
 import QRCode from "qrcode";
-import { LogOut, Wallet } from "lucide-react";
+import { LogOut, Plus, Wallet } from "lucide-react";
+import Link from "next/link";
 import {
   Dialog,
   DialogContent,
@@ -23,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@yld-cx/ui/components/ui/dialog";
-import { Button } from "@yld-cx/ui/components/ui/button";
+import { Button, buttonVariants } from "@yld-cx/ui/components/ui/button";
 import { Skeleton } from "@yld-cx/ui/components/ui/skeleton";
 import { Message } from "@/components/forms/financial-fields";
 import { explainError } from "@yld-cx/sdk/ethereum";
@@ -352,6 +353,13 @@ export function ConnectedWalletDialog({
           {connection.chain?.name ??
             WALLET_TEXT.connected.unsupportedNetwork(connection.chainId)}
         </p>
+        <Link
+          href="/agents"
+          onClick={onClose}
+          className={buttonVariants({ variant: "outline" })}
+        >
+          <Plus size={15} /> Agent Wallet
+        </Link>
         <Button
           variant="outline"
           onClick={() => {

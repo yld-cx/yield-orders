@@ -1,4 +1,8 @@
 import { PERMIT2, permit2Abi, swapNetwork } from "@yld-cx/sdk/uniswap";
+import {
+  coinbaseWalletDeployment,
+  coinbaseWalletFactoryAbi,
+} from "@yld-cx/sdk/coinbase";
 import { readFileSync } from "node:fs";
 import { test, expect, type Page, type Route } from "@playwright/test";
 import yieldList from "../../public/yieldlist.json" with { type: "json" };
@@ -10,6 +14,7 @@ import {
 } from "../../lib/play";
 import {
   decodeFunctionData,
+  encodeAbiParameters,
   encodeFunctionData,
   encodeFunctionResult,
   encodeErrorResult,
@@ -512,9 +517,7 @@ for (const rememberedWallet of [false, true]) {
       await expect(
         page.getByRole("link", { name: "Open WETH / USDC", exact: true }),
       ).toBeVisible({ timeout: 15000 });
-      await page
-        .getByRole("button", { name: "Sign in", exact: true })
-        .click();
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
       await page.getByRole("button", { name: "MetaMask", exact: true }).click();
       await expect(
         page.getByRole("button", { name: "0x0000…0001" }),
@@ -606,6 +609,23 @@ test("header uses a mobile navigation sheet and keeps full network names", async
   await menu.click();
   const sheet = page.getByRole("dialog");
   await expect(sheet).toBeVisible();
+  // Keep the panel mounted long enough to inspect the finished backdrop fade.
+  await sheet.evaluate((element) =>
+    element.style.setProperty("--tw-duration", "1s"),
+  );
+  await sheet.getByRole("button", { name: "Close", exact: true }).click();
+  const backdropOpacity = await page
+    .locator('[data-slot="dialog-overlay"]')
+    .evaluate(async (backdrop) => {
+      await Promise.all(
+        backdrop.getAnimations().map((animation) => animation.finished),
+      );
+      return getComputedStyle(backdrop).opacity;
+    });
+  expect(backdropOpacity).toBe("0");
+  await expect(sheet).toBeHidden();
+  await expect(menu).toBeFocused();
+  await menu.click();
   await expect(
     sheet.getByRole("link", { name: "Yield", exact: true }),
   ).toHaveAttribute("aria-current", "page");
@@ -631,9 +651,7 @@ test("wallet options hide unavailable browser and Safe providers", async ({
   isMobile,
 }) => {
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Sign in", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toHaveAccessibleName("Sign in");
   await expect(
@@ -763,9 +781,7 @@ for (const profile of [
         Object.defineProperty(navigator, key, { get: () => profile[key] });
     }, profile);
     await page.goto("/");
-    await page
-      .getByRole("button", { name: "Sign in", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await expect(
       page
         .getByRole("dialog")
@@ -779,9 +795,7 @@ test("wallet options name a late discovered wallet without requesting access", a
   isMobile,
 }) => {
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Sign in", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await expect(
@@ -877,9 +891,7 @@ test("wallet options name a late discovered wallet without requesting access", a
     "Create an account or connect your wallet.",
   );
   await expect(rabby).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Sign out" })).toHaveCount(
-    0,
-  );
+  await expect(dialog.getByRole("button", { name: "Sign out" })).toHaveCount(0);
 });
 
 test("connected wallet shows header status and copies the full address", async ({
@@ -894,9 +906,7 @@ test("connected wallet shows header status and copies the full address", async (
     name: "Signed in",
   });
   await expect(connectedStatus).toHaveCount(0);
-  await header
-    .getByRole("button", { name: "Sign in", exact: true })
-    .click();
+  await header.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   await expect(connectedStatus).toBeVisible();
   const wallet = header.getByRole("button", { name: "0x0000…0001" });
@@ -956,14 +966,117 @@ test("connected wallet shows header status and copies the full address", async (
   ).toBeVisible();
 });
 
+test("the connected wallet opens Agent Wallets and closes the modal", async ({
+  page,
+}) => {
+  await injectWallets(page);
+  const checked: Hex[] = [];
+  const factoryBatches: number[] = [];
+  const ownerBatches: number[] = [];
+  const factory = coinbaseWalletDeployment.factory.toLowerCase();
+  const addresses = new Map(
+    Array.from({ length: 32 }, (_, index) => {
+      const nonce = keccak256(
+        encodeAbiParameters(
+          [{ type: "string" }, { type: "uint256" }],
+          ["yld.cx/agents/v1", BigInt(index)],
+        ),
+      );
+      return [
+        BigInt(nonce),
+        `0x${(100 + index).toString(16).padStart(40, "0")}` as Hex,
+      ] as const;
+    }),
+  );
+  const predicted = addresses.values().next().value!;
+  const slots = new Set(addresses.values());
+  await page.route(/^https:\/\/mainnet\.base\.org\/?$/, async (route) => {
+    const payload = route.request().postDataJSON();
+    const respond = (request: {
+      id: number;
+      method: string;
+      params: [Hex | { data: Hex }];
+    }) => {
+      let result: Hex = "0x";
+      if (request.method === "eth_chainId") result = "0x2105";
+      else if (request.method === "eth_blockNumber") result = "0x989680";
+      else if (request.method === "eth_getCode") {
+        const address = (request.params[0] as Hex).toLowerCase() as Hex;
+        if (slots.has(address)) checked.push(address);
+        else result = "0x1234";
+      } else if (request.method === "eth_call") {
+        const call = decodeFunctionData({
+          abi: multicall3Abi,
+          data: (request.params[0] as { data: Hex }).data,
+        });
+        if (call.functionName !== "aggregate3")
+          throw new Error("Expected Multicall");
+        const targets = call.args[0].map(({ target }) => target.toLowerCase());
+        if (targets.every((target) => target === factory))
+          factoryBatches.push(targets.length);
+        if (targets.every((target) => slots.has(target as Hex)))
+          ownerBatches.push(targets.length);
+        result = encodeFunctionResult({
+          abi: multicall3Abi,
+          functionName: "aggregate3",
+          result: call.args[0].map(({ target, callData }) => {
+            if (slots.has(target.toLowerCase() as Hex))
+              return { success: true, returnData: "0x" as const };
+            if (target.toLowerCase() !== factory)
+              return contractCall(
+                callData,
+                true,
+                undefined,
+                target as typeof a,
+              );
+            const {
+              args: [, nonce],
+            } = decodeFunctionData({
+              abi: coinbaseWalletFactoryAbi,
+              data: callData,
+            });
+            const address = addresses.get(nonce);
+            if (!address) throw new Error("Unexpected Agent Wallet slot");
+            return {
+              success: true,
+              returnData: encodeAbiParameters([{ type: "address" }], [address]),
+            };
+          }),
+        });
+      }
+      return { jsonrpc: "2.0", id: request.id, result };
+    };
+    await route.fulfill({
+      json: Array.isArray(payload) ? payload.map(respond) : respond(payload),
+    });
+  });
+  await page.goto("/");
+  const header = page.getByRole("banner");
+  await header.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "MetaMask", exact: true }).click();
+  await header.getByRole("button", { name: "0x0000…0001" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("link", { name: "Agent Wallet" }).click();
+  await expect(page).toHaveURL("/agents");
+  await expect(dialog).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Agent Wallets" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Switch network" }).click();
+  await expect(page.getByText("No Agent Wallets found on Base.")).toBeVisible();
+  expect(factoryBatches).toEqual([32]);
+  expect(ownerBatches).toEqual([32]);
+  expect(checked).toEqual([predicted]);
+  await page.getByRole("button", { name: "Agent Wallet", exact: true }).click();
+  await expect(page.getByRole("dialog").getByText(predicted)).toBeVisible();
+});
+
 test("multiple injected providers, wallet selection, account and network switching", async ({
   page,
 }) => {
   await injectWallets(page);
   await page.goto("/");
-  await page
-    .getByRole("button", { name: "Sign in", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "MetaMask", exact: true }),
   ).toBeVisible();
@@ -1017,9 +1130,7 @@ test("network selector switches the connected wallet and preserves market filter
 }) => {
   await injectWallets(page);
   await page.goto("/?network=ethereum&search=WETH&ref=test#markets");
-  await page
-    .getByRole("button", { name: "Sign in", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   const wallet = page.getByRole("button", { name: "0x0000…0001" });
   await expect(wallet).toBeVisible();
@@ -1077,9 +1188,7 @@ for (const [reason, code] of [
   }) => {
     await injectWallets(page);
     await page.goto("/?network=ethereum");
-    await page
-      .getByRole("button", { name: "Sign in", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await page.getByRole("button", { name: "MetaMask", exact: true }).click();
     const wallet = page.getByRole("button", { name: "0x0000…0001" });
     await expect(wallet).toBeVisible();
@@ -1815,9 +1924,7 @@ async function transactionRpc(
   });
   await injectWallets(page, true);
   await page.goto(`/market/base/${key}`);
-  await page
-    .getByRole("button", { name: "Sign in", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "MetaMask", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "0x0000…0001", exact: true }),
@@ -3088,7 +3195,9 @@ test("pending atomic batch waits for wallet execution", async ({ page }) => {
     .getByText("Transaction details", { exact: true })
     .boundingBox();
   const linkBounds = await link.boundingBox();
-  expect(linkBounds!.x).toBeGreaterThan(detailsBounds!.x + detailsBounds!.width);
+  expect(linkBounds!.x).toBeGreaterThan(
+    detailsBounds!.x + detailsBounds!.width,
+  );
   expect(linkBounds!.y).toBe(detailsBounds!.y);
   expect(await done.boundingBox()).toEqual(waitingBounds);
   expect(state.batches).toHaveLength(1);

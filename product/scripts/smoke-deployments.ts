@@ -1,12 +1,17 @@
 import { createPublicClient, http, keccak256, type PublicClient } from "viem";
 import { networks, deploymentFor, EthereumClient } from "@yld-cx/sdk/ethereum";
+import { createRpcHttpTransport } from "@yld-cx/sdk/ethereum/rpc";
 for (const network of networks) {
   const url =
     process.env[`${network.slug.toUpperCase()}_RPC_URL`] ||
     network.chain.rpcUrls.default.http[0];
   const publicClient = createPublicClient({
     chain: network.chain,
-    transport: http(url, { timeout: 15000, retryCount: 0 }),
+    transport: createRpcHttpTransport(http, url, {
+      batch: false,
+      timeout: 15000,
+      retryCount: 0,
+    }),
   });
   const expected = deploymentFor(network.id);
   try {

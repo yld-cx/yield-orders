@@ -4,3 +4,4 @@ export * from "./networks.ts";
 export * from "./errors.ts";
 export * from "./client.ts";
 export * from "./operations.ts";
+export * from "./rpc.ts";

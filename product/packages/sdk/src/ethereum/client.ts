@@ -1,6 +1,4 @@
 import {
-  BaseError,
-  ContractFunctionRevertedError,
   decodeFunctionResult,
   encodeFunctionData,
   erc20Abi,
@@ -40,7 +38,7 @@ import { canonicalPair } from "../registry/addresses.ts";
 import { protocolAbi } from "./abi.ts";
 import { deploymentFor, getNetwork } from "./networks.ts";
 import { pairIdFor, tickCandidates, tickIdFor } from "./math.ts";
-import { protocolErrorName } from "./errors.ts";
+import { contractRevert, protocolErrorName } from "./errors.ts";
 import { type WalletCall, type BatchSender } from "./operations.ts";
 type Return<N extends "withdraw" | "collect" | "repay" | "swap" | "close"> =
   ContractFunctionReturnType<typeof protocolAbi, "nonpayable", N>;
@@ -354,7 +352,7 @@ export class EthereumClient {
       stepTicks?: number;
       radius?: number;
       /** Defaults to weekly discovery. */
-      duration?: Duration;
+      duration?: number;
       /** Omit to read both sides. */
       direction?: TickIdentity["direction"];
       /** Share a snapshot across multiple markets without another head read. */
@@ -656,6 +654,27 @@ export class EthereumClient {
       throw error;
     }
   }
+
+  async prepareWalletCalls(action: EconomicAction, account: Address) {
+    await this.verifyDeployment();
+    const block = await this.publicClient.getBlock();
+    const plan = await this.transactionPlan(action, block.number);
+    const input = await this.requiredInput(action, block);
+    const walletCalls = await this.walletCalls(
+      plan,
+      account,
+      block,
+      input,
+      false,
+    );
+    return {
+      plan,
+      walletCalls,
+      input,
+      blockNumber: block.number,
+      timestamp: block.timestamp,
+    };
+  }
   private async simulatePreview(
     action: EconomicAction,
     account: Address,
@@ -725,7 +744,12 @@ export class EthereumClient {
     let result: readonly Hex[], gas: bigint;
     let walletCalls: readonly WalletCall[] | undefined;
     if (options.atomic) {
-      walletCalls = await this.walletCalls(action, account, plan, block);
+      walletCalls = await this.walletCalls(
+        plan,
+        account,
+        block,
+        await this.requiredInput(action, block),
+      );
       const simulation = await this.publicClient.simulateCalls({
         account,
         blockNumber,
@@ -869,22 +893,17 @@ export class EthereumClient {
       });
       return result === false;
     } catch (error) {
-      if (
-        error instanceof BaseError &&
-        error.walk((e) => e instanceof ContractFunctionRevertedError) instanceof
-          ContractFunctionRevertedError
-      )
-        return true;
+      if (contractRevert(error)) return true;
       throw error;
     }
   }
   private async walletCalls(
-    action: EconomicAction,
-    account: Address,
     plan: TransactionPlan,
+    account: Address,
     block: { number: bigint; timestamp: bigint },
+    input: InputRequirement | undefined,
+    requireBalance = true,
   ): Promise<WalletCall[]> {
-    const input = await this.requiredInput(action, block);
     const calls: WalletCall[] = [];
     if (input) {
       const allowance = await this.allowance(
@@ -912,7 +931,10 @@ export class EthereumClient {
           calls.push(approve(0n));
         calls.push(approve(input.allowanceAmount));
       }
-      if ((await this.balance(input.token, account)) < input.amount)
+      if (
+        requireBalance &&
+        (await this.balance(input.token, account)) < input.amount
+      )
         throw new Error("Insufficient token balance for this action");
     }
     calls.push({
@@ -972,7 +994,9 @@ export class EthereumClient {
       const approve = async (amount: bigint, reset: boolean) => {
         await this.assertWallet(wallet, account);
         onStatus?.(
-          reset ? TransactionStatus.ApprovingReset : TransactionStatus.Approving,
+          reset
+            ? TransactionStatus.ApprovingReset
+            : TransactionStatus.Approving,
         );
         const { request } = await this.publicClient.simulateContract({
           address: input.token,

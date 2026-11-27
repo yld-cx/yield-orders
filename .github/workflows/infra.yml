@@ -7,7 +7,10 @@ on:
       - "infra/workers/rpc.ts"
       - "infra/workers/data/**"
       - "infra/workers/resolver/**"
+      - "infra/workers/mcp/**"
+      - "skills/**"
       - "product/packages/sdk/**"
+      - "product/public/yieldlist.json"
       - "product/package-lock.json"
       - ".github/workflows/infra.yml"
   push:
@@ -16,7 +19,10 @@ on:
       - "infra/workers/rpc.ts"
       - "infra/workers/data/**"
       - "infra/workers/resolver/**"
+      - "infra/workers/mcp/**"
+      - "skills/**"
       - "product/packages/sdk/**"
+      - "product/public/yieldlist.json"
       - "product/package-lock.json"
       - ".github/workflows/infra.yml"
   workflow_dispatch:
@@ -79,3 +85,26 @@ jobs:
         run: npm ci --prefix infra/workers/resolver
       - name: Typecheck, test and package resolver
         run: npm run check --prefix infra/workers/resolver
+
+  mcp:
+    name: Skills and MCP Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: infra/workers/mcp/.node-version
+          cache: npm
+          cache-dependency-path: |
+            product/package-lock.json
+            skills/package-lock.json
+            infra/workers/mcp/package-lock.json
+      - name: Install dependencies and build Skills
+        run: npm run setup --prefix infra/workers/mcp
+      - name: Test Skills
+        run: npm test --prefix skills
+      - name: Typecheck, test and package MCP
+        run: npm run check --prefix infra/workers/mcp

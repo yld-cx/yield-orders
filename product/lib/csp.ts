@@ -1,4 +1,5 @@
-import { METADATA_ORIGIN, TOKEN_IMAGE_ORIGINS } from "./token-metadata";
+import { MCP_ORIGIN, METADATA_ORIGIN } from "./endpoints";
+import { TOKEN_IMAGE_ORIGINS } from "./token-metadata";
 const walletConnections = [
   "https://rpc.walletconnect.com",
   "https://relay.walletconnect.com",
@@ -25,6 +26,7 @@ export function contentSecurityPolicy(
       "'self'",
       ...rpcOrigins,
       METADATA_ORIGIN,
+      MCP_ORIGIN,
       ...walletConnections,
       ...(development ? ["ws:"] : []),
     ]),

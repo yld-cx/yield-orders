@@ -5,6 +5,7 @@
   "preview_urls": false,
   "main": "src/index.ts",
   "compatibility_date": "2026-10-20",
+  "routes": [{ "pattern": "md.yld.cx", "custom_domain": true }],
   "cache": { "enabled": true },
   "d1_databases": [
     {

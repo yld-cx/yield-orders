@@ -1,0 +1,41 @@
+{
+  "name": "@yld-cx/skills",
+  "version": "0.1.0",
+  "description": "Yield Orders discovery and unsigned transaction preparation for agents",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "yld": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "SKILL.md",
+    "README.md"
+  ],
+  "scripts": {
+    "setup": "npm ci --prefix ../product && npm ci",
+    "build": "npm run build --prefix ../product --workspace=@yld-cx/sdk && tsc && node build.mjs",
+    "prepack": "npm run build",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "viem": "2.57.6",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3"
+  }
+}

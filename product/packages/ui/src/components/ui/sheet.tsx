@@ -22,11 +22,11 @@ function SheetContent({
 }: DialogPrimitive.Popup.Props) {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay className="duration-200 data-closed:fill-mode-forwards motion-reduce:animate-none!" />
       <DialogPrimitive.Popup
         data-slot="sheet-content"
         className={cn(
-          "fixed inset-y-0 right-0 z-50 flex h-dvh w-72 max-w-[calc(100%-2rem)] flex-col gap-4 overflow-y-auto border-l bg-popover p-4 text-sm text-popover-foreground shadow-lg duration-200 outline-none data-open:animate-in data-open:slide-in-from-right data-closed:animate-out data-closed:slide-out-to-right motion-reduce:animate-none",
+          "fixed inset-y-0 right-0 z-50 flex h-dvh w-72 max-w-[calc(100%-2rem)] flex-col gap-4 overflow-y-auto border-l bg-popover p-4 text-sm text-popover-foreground shadow-lg duration-200 outline-none data-open:animate-in data-open:slide-in-from-right data-closed:animate-out data-closed:fill-mode-forwards data-closed:slide-out-to-right motion-reduce:animate-none!",
           className,
         )}
         {...props}

@@ -1,4 +1,5 @@
 import { SAFE_INFO_TIMEOUT_MS } from "@yld-cx/sdk";
+import { createRpcHttpTransport } from "@yld-cx/sdk/ethereum/rpc";
 import { createConfig, createStorage, cookieStorage, http } from "wagmi";
 import { injected } from "wagmi/connectors/injected";
 import { coinbaseWallet } from "wagmi/connectors/coinbaseWallet";
@@ -59,9 +60,13 @@ function createWagmiConfig(spy?: Address) {
     // Server renders only read cookies; connector setup starts browser SDKs.
     connectors: typeof window === "undefined" ? [] : browserConnectors(spy),
     transports: {
-      [mainnet.id]: http(rpcUrls.ethereum),
-      [base.id]: http(rpcUrls.base),
-      [robinhood.id]: http(rpcUrls.robinhood),
+      [mainnet.id]: createRpcHttpTransport(http, rpcUrls.ethereum, {
+        batch: false,
+      }),
+      [base.id]: createRpcHttpTransport(http, rpcUrls.base, { batch: false }),
+      [robinhood.id]: createRpcHttpTransport(http, rpcUrls.robinhood, {
+        batch: false,
+      }),
     },
   });
 }

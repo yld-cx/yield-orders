@@ -51,7 +51,7 @@ export interface TickIdentity {
   pairId: bigint;
   direction: Direction;
   priceTick: number;
-  durationDays: Duration;
+  durationDays: number;
 }
 export type TickState = ContractFunctionReturnType<
   typeof protocolAbi,
@@ -95,7 +95,7 @@ export type EconomicAction =
         tokenB: Address;
         direction: Direction;
         priceTick: number;
-        durationDays: Duration;
+        durationDays: number;
       };
     }
   | {
@@ -130,5 +130,5 @@ export type EconomicAction =
       pairId: bigint;
       direction: Direction;
       priceTick: number;
-      durationDays: Duration;
+      durationDays: number;
     };
