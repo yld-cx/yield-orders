@@ -1,6 +1,7 @@
 {
   "name": "@yld-cx/sdk",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -11,9 +12,17 @@
       "types": "./dist/ethereum/index.d.ts",
       "default": "./dist/ethereum/index.js"
     },
+    "./ethereum/rpc": {
+      "types": "./dist/ethereum/rpc.d.ts",
+      "default": "./dist/ethereum/rpc.js"
+    },
     "./registry": {
       "types": "./dist/registry/index.d.ts",
       "default": "./dist/registry/index.js"
+    },
+    "./coinbase": {
+      "types": "./dist/coinbase.d.ts",
+      "default": "./dist/coinbase.js"
     },
     "./uniswap": {
       "types": "./dist/uniswap/index.d.ts",

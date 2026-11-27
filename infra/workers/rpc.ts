@@ -1,3 +1,5 @@
+export { createRpcFallbackTransport } from "../../product/packages/sdk/src/ethereum/rpc.ts";
+
 export interface RpcEnv {
   RPC_URLS?: string;
   PRIVATE_RPC_ETHEREUM?: string;
@@ -41,17 +43,6 @@ function validateUrl(url: unknown) {
     return url;
   throw new Error("Invalid RPC URL");
 }
-
-export function rpcHttpOptions(signal?: AbortSignal, fetchFn?: typeof fetch) {
-  return {
-    batch: { batchSize: 100 },
-    maxResponseBodySize: 4 * 1024 * 1024,
-    fetchOptions: { signal, redirect: "manual" as const },
-    fetchFn,
-  };
-}
-
-export const rpcFallbackOptions = { retryCount: 1 } as const;
 
 const errorMessages: ReadonlyMap<string, string> = new Map([
   ["TypeError", "Network or response processing failed"],

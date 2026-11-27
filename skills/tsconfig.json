@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "types": ["node"],
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "rewriteRelativeImportExtensions": true,
+    "paths": {
+      "@yld-cx/sdk": ["../product/packages/sdk/dist/index.d.ts"],
+      "@yld-cx/sdk/ethereum": [
+        "../product/packages/sdk/dist/ethereum/index.d.ts"
+      ],
+      "@yld-cx/sdk/ethereum/rpc": [
+        "../product/packages/sdk/dist/ethereum/rpc.d.ts"
+      ],
+      "@yld-cx/sdk/registry": [
+        "../product/packages/sdk/dist/registry/index.d.ts"
+      ]
+    }
+  },
+  "include": ["src"]
+}

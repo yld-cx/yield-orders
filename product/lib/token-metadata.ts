@@ -1,8 +1,8 @@
 import type { NetworkId, TokenReference } from "@yld-cx/sdk";
 import { getNetwork } from "@yld-cx/sdk/ethereum";
 import { isAddress } from "viem";
+import { METADATA_ORIGIN } from "./endpoints";
 
-export const METADATA_ORIGIN = "https://md.yld.cx";
 // GeckoTerminal token logos are served by these image CDNs. Keep server fetches
 // and browser CSP aligned; untrusted hosts always use the universal fallback.
 export const TOKEN_IMAGE_ORIGINS = [

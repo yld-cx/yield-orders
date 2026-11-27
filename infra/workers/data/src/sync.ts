@@ -4,13 +4,8 @@ import {
   http,
   HttpRequestError,
   ResponseBodyTooLargeError,
-  type Transport,
 } from "viem";
-import {
-  rpcErrorDetails,
-  rpcFallbackOptions,
-  rpcHttpOptions,
-} from "../../rpc.ts";
+import { createRpcFallbackTransport, rpcErrorDetails } from "../../rpc.ts";
 import {
   abi,
   affectedTick,
@@ -67,37 +62,12 @@ export function rpcFor(
     onFailure?: (method: string, hostname: string, error: unknown) => void;
   } = {},
 ): Rpc {
-  const makeTransport: Transport = (config) => {
-    const transport = fallback(
-      n.rpcUrls.map((url) =>
-        http(url, {
-          ...rpcHttpOptions(options.signal),
-          onFetchRequest: options.beforeRequest,
-        }),
-      ),
-      rpcFallbackOptions,
-    )(config);
-    transport.value?.onResponse((result) => {
-      if (result.status === "error")
-        options.onFailure?.(
-          result.method,
-          new URL(result.transport.value!.url).hostname,
-          result.error,
-        );
-    });
-    return {
-      ...transport,
-      request: (args, requestOptions) =>
-        transport.request(args, {
-          ...requestOptions,
-          signal: options.signal,
-          ...(args.method === "eth_getLogs" ? { retryCount: 0 } : {}),
-        }),
-    };
-  };
   const client = createPublicClient({
     chain: n.chain,
-    transport: makeTransport,
+    transport: createRpcFallbackTransport({ http, fallback }, n.rpcUrls, {
+      ...options,
+      noRetryMethods: ["eth_getLogs"],
+    }),
   });
   return {
     head: () => client.getBlockNumber({ cacheTime: 0 }),

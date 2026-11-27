@@ -14,6 +14,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { estimateL1Fee } from "viem/op-stack";
 import { deploymentFor, getNetwork, protocolAbi } from "@yld-cx/sdk/ethereum";
+import { createRpcFallbackTransport } from "@yld-cx/sdk/ethereum/rpc";
 import {
   UniswapClient,
   address,
@@ -25,13 +26,7 @@ import {
 import manifest from "@yld-cx/ethereum-protocol/deployments/resolver.json" with { type: "json" };
 import core from "@yld-cx/ethereum-protocol/deployments/config.json" with { type: "json" };
 import { chainConfig, LIMITS } from "./config.ts";
-import {
-  rpcUrls,
-  rpcErrorDetails,
-  rpcFallbackOptions,
-  rpcHttpOptions,
-  type NetworkName,
-} from "../../rpc.ts";
+import { rpcUrls, rpcErrorDetails, type NetworkName } from "../../rpc.ts";
 import {
   estimatedSurplus,
   fundedSizes,
@@ -105,31 +100,21 @@ export async function resolveChain(
   const withinBudget = () =>
     subrequests.remaining > 0 && Date.now() < deadline - 5000;
   const urls = rpcUrls(env, slug, chainId);
-  const rpcTransport =
-    (fetchRpc: typeof fetch): ReturnType<typeof fallback> =>
-    (config) => {
-      const transport = fallback(
-        urls.map((url) => http(url, rpcHttpOptions(signal, fetchRpc))),
-        rpcFallbackOptions,
-      )(config);
-      transport.value?.onResponse((result) => {
-        if (result.status === "error") {
-          log({
-            type: "resolver_rpc_endpoint_error",
-            network: slug,
-            chainId,
-            method: result.method,
-            hostname: new URL(result.transport.value!.url).hostname,
-            ...rpcErrorDetails(result.error),
-          });
-        }
-      });
-      return {
-        ...transport,
-        request: (args, options) =>
-          transport.request(args, { ...options, signal }),
-      };
-    };
+  const rpcTransport = (fetchFn: typeof fetch) =>
+    createRpcFallbackTransport({ http, fallback }, urls, {
+      signal,
+      fetchFn,
+      onFailure(method, hostname, error) {
+        log({
+          type: "resolver_rpc_endpoint_error",
+          network: slug,
+          chainId,
+          method,
+          hostname,
+          ...rpcErrorDetails(error),
+        });
+      },
+    });
   const client = (dependencies.client ??
     createPublicClient({
       chain: network.chain,

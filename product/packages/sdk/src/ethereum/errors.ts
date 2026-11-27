@@ -20,15 +20,18 @@ const messages: Record<string, string> = {
     "The token does not support the exact transfers required by this protocol.",
   InvalidInput: "Check the amount, duration, and price bounds.",
 };
-export function protocolErrorName(error: unknown): string | undefined {
-  if (error instanceof BaseError) {
-    const revert = error.walk(
-      (e) => e instanceof ContractFunctionRevertedError,
-    );
-    if (revert instanceof ContractFunctionRevertedError)
-      return revert.data?.errorName;
+export function contractRevert(error: unknown) {
+  // A public client can use a separately installed copy of viem.
+  let cause = error;
+  for (let depth = 0; depth < 12 && cause instanceof Error; depth++) {
+    if (cause.name === "ContractFunctionRevertedError")
+      return cause as ContractFunctionRevertedError;
+    cause = cause.cause;
   }
   return undefined;
+}
+export function protocolErrorName(error: unknown): string | undefined {
+  return contractRevert(error)?.data?.errorName;
 }
 export function decodeProtocolError(data: Hex): string {
   try {
@@ -52,6 +55,12 @@ export function explainError(error: unknown): string {
       return "Wallet request declined. You can try again.";
     return error.shortMessage;
   }
+  if (
+    error instanceof Error &&
+    "shortMessage" in error &&
+    typeof error.shortMessage === "string"
+  )
+    return error.shortMessage;
   return error instanceof Error
     ? error.message
     : "The request failed. Please try again.";

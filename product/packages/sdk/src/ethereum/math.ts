@@ -3,7 +3,6 @@ import { canonicalPair } from "../registry/addresses.ts";
 import type { Direction, TickIdentity, TickState } from "../types/index.ts";
 import {
   DEFAULT_DURATION,
-  type Duration,
   DISCOVERY_DEFAULTS,
   MAX_DISCOVERY_RADIUS,
   MIN_TICK,
@@ -246,7 +245,7 @@ export function tickCandidates(
   baseTick: number = DISCOVERY_DEFAULTS.baseTick,
   stepTicks: number = DISCOVERY_DEFAULTS.stepTicks,
   radius: number = DISCOVERY_DEFAULTS.radius,
-  durationDays: Duration = DEFAULT_DURATION,
+  durationDays: number = DEFAULT_DURATION,
 ): TickIdentity[] {
   const out: TickIdentity[] = [];
   for (const canonicalTick of candidateLevels(baseTick, stepTicks, radius))

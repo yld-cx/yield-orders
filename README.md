@@ -23,4 +23,9 @@
 
 - [Ethereum / EVM L2s protocol](./protocol/ethereum/README.md)
 
+## Agents
+
+- [Agent Skills and CLI](./skills/README.md)
+- [Agent Wallet MCP Worker](./infra/workers/mcp/README.md)
+
 **Time to yield** · ⩇⩇:⩇⩇

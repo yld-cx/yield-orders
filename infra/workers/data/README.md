@@ -58,15 +58,15 @@ Set `PRIVATE_RPC_ETHEREUM`, `PRIVATE_RPC_BASE`, or `PRIVATE_RPC_ROBINHOOD` in Cl
 
 Connect `yld-cx/yield-orders` through Cloudflare Workers & Pages → GitHub. Choose a Worker, name it `yld-data`, and configure:
 
-| Setting        | Value                                          |
-| -------------- | ---------------------------------------------- |
-| Branch         | `main`                                         |
-| Preview builds | Disabled                                       |
-| Root directory | `infra/workers/data`                           |
-| Watch paths    | `infra/workers/data/*`, `infra/workers/rpc.ts` |
-| Build command  | `npm run check`                                |
-| Deploy command | `npm run deploy`                               |
-| Node version   | 24 (`.node-version`)                           |
+| Setting        | Value                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| Branch         | `main`                                                                                     |
+| Preview builds | Disabled                                                                                   |
+| Root directory | `infra/workers/data`                                                                       |
+| Watch paths    | `infra/workers/data/*`, `infra/workers/rpc.ts`, `product/packages/sdk/src/ethereum/rpc.ts` |
+| Build command  | `npm run check`                                                                            |
+| Deploy command | `npm run deploy`                                                                           |
+| Node version   | 24 (`.node-version`)                                                                       |
 
 The deployment token needs Worker deployment and **D1 Write** permissions for this account. Cloudflare's default generated build token omits D1; add that permission or select a custom token before the first build. See [Cloudflare build token permissions](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/#api-token). Later builds automatically reuse the database; optionally pin its ID as `database_id` or the build variable `YLD_D1_DATABASE_ID`.
 

@@ -195,11 +195,13 @@ function TransactionSession({
   }, []);
   const busy = BUSY_STAGES.has(stage);
   const waitingForConfirmation =
-    stage === TransactionStatus.Pending || stage === TransactionStatus.Submitted;
+    stage === TransactionStatus.Pending ||
+    stage === TransactionStatus.Submitted;
   const blocking = busy && !waitingForConfirmation;
   const previewLoading = stage === TransactionFlowStage.Preparing;
   const checkingTransaction =
-    stage === TransactionStatus.Verifying || stage === TransactionStatus.Simulating;
+    stage === TransactionStatus.Verifying ||
+    stage === TransactionStatus.Simulating;
   const status = (next: TransactionStage, txHash?: `0x${string}`) => {
     if (!mounted.current) return;
     setStage(next);
